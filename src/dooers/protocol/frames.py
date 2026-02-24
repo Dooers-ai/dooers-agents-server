@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from dooers.features.analytics.models import AnalyticsEventPayload
 from dooers.features.settings.models import SettingsField, SettingsFieldGroup
-from dooers.protocol.models import ContentPart, Run, Thread, ThreadEvent, User
+from dooers.protocol.models import Run, Thread, ThreadEvent, User, WireC2S_ContentPart
 
 T = TypeVar("T")
 
@@ -42,7 +42,7 @@ class ThreadUnsubscribePayload(BaseModel):
 class EventCreateEventPayload(BaseModel):
     type: Literal["message"]
     actor: Literal["user"]
-    content: list[ContentPart]
+    content: list[WireC2S_ContentPart]
     data: dict | None = None
 
 

@@ -41,3 +41,6 @@ class WorkerConfig:
     analytics_flush_interval: float | None = None
 
     settings_schema: "SettingsSchema | None" = None
+
+    upload_max_size_bytes: int = 25 * 1024 * 1024  # 25MB
+    upload_ttl_seconds: int = 300  # 5 minutes

@@ -22,11 +22,12 @@ from dooers.features.settings import (
 from dooers.handlers.context import WorkerContext
 from dooers.handlers.incoming import WorkerIncoming
 from dooers.handlers.memory import WorkerMemory
-from dooers.handlers.pipeline import Handler
+from dooers.handlers.pipeline import Handler, UploadReferenceError
 from dooers.handlers.send import WorkerSend
 from dooers.persistence.base import Persistence
 from dooers.protocol.models import (
     Actor,
+    AudioPart,
     ContentPart,
     DocumentPart,
     EventType,
@@ -37,6 +38,16 @@ from dooers.protocol.models import (
     Thread,
     ThreadEvent,
     User,
+    WireC2S_AudioPart,
+    WireC2S_ContentPart,
+    WireC2S_DocumentPart,
+    WireC2S_ImagePart,
+    WireC2S_TextPart,
+    WireS2C_AudioPart,
+    WireS2C_ContentPart,
+    WireS2C_DocumentPart,
+    WireS2C_ImagePart,
+    WireS2C_TextPart,
 )
 from dooers.registry import ConnectionRegistry
 from dooers.repository import Repository
@@ -57,6 +68,7 @@ __all__ = [
     "DispatchStream",
     "DispatchError",
     "HandlerError",
+    "UploadReferenceError",
     "Handler",
     # Repository
     "Repository",
@@ -64,8 +76,19 @@ __all__ = [
     "User",
     "ContentPart",
     "TextPart",
+    "AudioPart",
     "ImagePart",
     "DocumentPart",
+    "WireC2S_ContentPart",
+    "WireC2S_TextPart",
+    "WireC2S_AudioPart",
+    "WireC2S_ImagePart",
+    "WireC2S_DocumentPart",
+    "WireS2C_ContentPart",
+    "WireS2C_TextPart",
+    "WireS2C_AudioPart",
+    "WireS2C_ImagePart",
+    "WireS2C_DocumentPart",
     "Thread",
     "ThreadEvent",
     "Run",

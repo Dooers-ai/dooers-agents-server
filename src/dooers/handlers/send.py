@@ -40,6 +40,18 @@ class WorkerSend:
             data={"url": url, "filename": filename, "mime_type": mime_type, "author": author},
         )
 
+    def audio(
+        self,
+        url: str,
+        mime_type: str,
+        duration: float | None = None,
+        author: str | None = None,
+    ) -> WorkerEvent:
+        return WorkerEvent(
+            send_type="audio",
+            data={"url": url, "mime_type": mime_type, "duration": duration, "author": author},
+        )
+
     def tool_call(
         self,
         name: str,

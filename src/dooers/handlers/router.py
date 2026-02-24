@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
 from dooers.exceptions import HandlerError
-from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline
+from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.persistence.base import Persistence
 from dooers.protocol.frames import (
     AckPayload,
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from dooers.features.analytics.collector import AnalyticsCollector
     from dooers.features.settings.broadcaster import SettingsBroadcaster
     from dooers.features.settings.models import SettingsSchema
+    from dooers.upload_store import UploadStore
 
 logger = logging.getLogger("workers")
 
@@ -92,6 +93,7 @@ class Router:
         assistant_name: str = "Assistant",
         analytics_subscriptions: dict[str, set[str]] | None = None,
         settings_subscriptions: dict[str, set[str]] | None = None,
+        upload_store: UploadStore | None = None,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -120,6 +122,7 @@ class Router:
             settings_broadcaster=settings_broadcaster,
             settings_schema=settings_schema,
             assistant_name=assistant_name,
+            upload_store=upload_store,
         )
 
     async def _send(self, ws: WebSocketProtocol, frame: ServerToClient) -> None:
@@ -272,6 +275,7 @@ class Router:
             cursor=frame.payload.cursor,
             limit=limit + 1,
             scope=scope,
+            user_email=user.user_email,
         )
         has_more = len(threads) > limit
         if has_more:
@@ -286,6 +290,7 @@ class Router:
                 workspace_id=self._workspace_id,
                 user_id=user.user_id,
                 scope=scope,
+                user_email=user.user_email,
             )
 
         last = threads[-1] if has_more else None
@@ -435,6 +440,14 @@ class Router:
 
         try:
             result = await self._pipeline.setup(context)
+        except UploadReferenceError as e:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "UPLOAD_NOT_FOUND", "message": str(e)},
+            )
+            return
         except ValueError:
             await self._send_ack(
                 ws,
@@ -457,7 +470,7 @@ class Router:
             self._subscriptions[self._ws_id].add(result.thread.id)
 
         # Upsert participant into thread's users array
-        if user.user_id:
+        if user.user_id or user.user_email:
             await self._persistence.upsert_thread_participant(result.thread.id, user)
 
         await self._send_ack(ws, frame.id)
@@ -719,7 +732,6 @@ class Router:
                 worker_id=self._worker_id,
                 field_id=field_id,
                 value=value,
-                exclude_ws=ws,
             )
 
         await self._send_ack(ws, frame.id)

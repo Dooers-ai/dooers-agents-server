@@ -200,6 +200,7 @@ class CosmosPersistence:
         workspace_id: str,
         user_id: str | None,
         scope: str = "member",
+        user_email: str | None = None,
     ) -> int:
         container = self._get_container("threads")
 
@@ -219,8 +220,12 @@ class CosmosPersistence:
             params.append({"name": "@organization_id", "value": organization_id})
             conditions.append("c.workspace_id = @workspace_id")
             params.append({"name": "@workspace_id", "value": workspace_id})
-            conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
-            params.append({"name": "@user_id", "value": user_id})
+            if user_id:
+                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
+                params.append({"name": "@user_id", "value": user_id})
+            elif user_email:
+                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_email = @user_email)")
+                params.append({"name": "@user_email", "value": user_email})
         # scope == "admin" — no additional filters
 
         where = " AND ".join(conditions)
@@ -245,6 +250,7 @@ class CosmosPersistence:
         cursor: str | None,
         limit: int,
         scope: str = "member",
+        user_email: str | None = None,
     ) -> list[Thread]:
         container = self._get_container("threads")
 
@@ -264,8 +270,12 @@ class CosmosPersistence:
             params.append({"name": "@organization_id", "value": organization_id})
             conditions.append("c.workspace_id = @workspace_id")
             params.append({"name": "@workspace_id", "value": workspace_id})
-            conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
-            params.append({"name": "@user_id", "value": user_id})
+            if user_id:
+                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
+                params.append({"name": "@user_id", "value": user_id})
+            elif user_email:
+                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_email = @user_email)")
+                params.append({"name": "@user_email", "value": user_email})
         # scope == "admin" — no additional filters
 
         if cursor:
@@ -437,9 +447,17 @@ class CosmosPersistence:
         if not thread:
             return
 
-        existing_ids = {u.user_id for u in thread.users}
-        if user.user_id in existing_ids:
-            thread.users = [user if u.user_id == user.user_id else u for u in thread.users]
+        # Determine match key: prefer user_id, fallback to user_email
+        if user.user_id:
+            match = lambda u: u.user_id == user.user_id
+        elif user.user_email:
+            match = lambda u: u.user_email == user.user_email
+        else:
+            return  # No identifier to match on
+
+        existing = next((u for u in thread.users if match(u)), None)
+        if existing:
+            thread.users = [user if match(u) else u for u in thread.users]
         else:
             thread.users.append(user)
 

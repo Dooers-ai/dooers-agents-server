@@ -44,7 +44,7 @@ class WorkerMemory:
             if event.type != "message" or not event.content:
                 continue
 
-            text = " ".join(part.text for part in event.content if hasattr(part, "text"))
+            text = self._extract_text_with_media(event.content)
             if not text:
                 continue
 
@@ -53,6 +53,46 @@ class WorkerMemory:
         if order == "desc":
             return messages[-limit:]
         return messages[:limit]
+
+    @staticmethod
+    def _extract_text_with_media(content: list) -> str:
+        """Extract text from content parts, adding indicators for media parts."""
+        segments: list[str] = []
+        for part in content:
+            # Handle both Pydantic models and raw dicts (from DB deserialization)
+            if isinstance(part, dict):
+                p_type = part.get("type")
+                if p_type == "text" and part.get("text"):
+                    segments.append(part["text"])
+                elif p_type == "audio":
+                    fname = part.get("filename") or "audio"
+                    mime = part.get("mime_type") or ""
+                    dur = part.get("duration")
+                    dur_str = f", {dur}s" if dur else ""
+                    segments.append(f"[audio: {fname}{', ' + mime if mime else ''}{dur_str}]")
+                elif p_type == "image":
+                    fname = part.get("filename") or "image"
+                    segments.append(f"[image: {fname}]")
+                elif p_type == "document":
+                    fname = part.get("filename") or "document"
+                    segments.append(f"[document: {fname}]")
+            else:
+                if hasattr(part, "text") and part.text:
+                    segments.append(part.text)
+                elif hasattr(part, "type"):
+                    if part.type == "audio":
+                        fname = getattr(part, "filename", None) or "audio"
+                        mime = getattr(part, "mime_type", None) or ""
+                        dur = getattr(part, "duration", None)
+                        dur_str = f", {dur}s" if dur else ""
+                        segments.append(f"[audio: {fname}{', ' + mime if mime else ''}{dur_str}]")
+                    elif part.type == "image":
+                        fname = getattr(part, "filename", None) or "image"
+                        segments.append(f"[image: {fname}]")
+                    elif part.type == "document":
+                        fname = getattr(part, "filename", None) or "document"
+                        segments.append(f"[document: {fname}]")
+        return " ".join(segments)
 
     def _format_message(
         self,

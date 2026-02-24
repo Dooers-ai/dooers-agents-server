@@ -32,6 +32,7 @@ from dooers.settings import (
     ANALYTICS_FLUSH_INTERVAL,
     ANALYTICS_WEBHOOK_URL,
 )
+from dooers.upload_store import UploadStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class WorkerServer:
 
         self._broadcast: BroadcastManager | None = None
 
+        self._upload_store: UploadStore | None = None
         self._analytics_collector: AnalyticsCollector | None = None
         self._settings_broadcaster: SettingsBroadcaster | None = None
 
@@ -68,6 +70,16 @@ class WorkerServer:
         if not self._broadcast:
             raise RuntimeError("Server not initialized. Call handle() first or ensure_initialized().")
         return self._broadcast
+
+    @property
+    def upload_store(self) -> UploadStore | None:
+        return self._upload_store
+
+    async def upload(self, data: bytes, filename: str, mime_type: str) -> str:
+        """Stage a file for a future WebSocket event.create. Returns a reference ID."""
+        await self._ensure_initialized()
+        assert self._upload_store is not None
+        return self._upload_store.store(data, filename, mime_type)
 
     async def _ensure_initialized(self) -> Persistence:
         if self._persistence and self._initialized:
@@ -123,6 +135,12 @@ class WorkerServer:
             subscriptions=self._settings_subscriptions,
         )
 
+        self._upload_store = UploadStore(
+            max_size=self._config.upload_max_size_bytes,
+            ttl=self._config.upload_ttl_seconds,
+        )
+        await self._upload_store.start()
+
         self._initialized = True
         return self._persistence
 
@@ -146,6 +164,7 @@ class WorkerServer:
             assistant_name=self._config.assistant_name,
             analytics_subscriptions=self._analytics_subscriptions,
             settings_subscriptions=self._settings_subscriptions,
+            upload_store=self._upload_store,
         )
 
         try:
@@ -181,6 +200,7 @@ class WorkerServer:
             settings_broadcaster=self._settings_broadcaster,
             settings_schema=self._config.settings_schema,
             assistant_name=self._config.assistant_name,
+            upload_store=self._upload_store,
         )
 
         context = HandlerContext(
@@ -196,6 +216,11 @@ class WorkerServer:
         )
 
         result = await pipeline.setup(context)
+
+        # Upsert participant for existing threads (new threads already include the user)
+        resolved_user = user or User(user_id="")
+        if not result.is_new_thread and (resolved_user.user_id or resolved_user.user_email):
+            await persistence.upsert_thread_participant(result.thread.id, resolved_user)
 
         return DispatchStream(pipeline=pipeline, context=context, result=result)
 
@@ -304,6 +329,10 @@ class WorkerServer:
         await self._registry.broadcast(worker_id, message)
 
     async def close(self) -> None:
+        if self._upload_store:
+            await self._upload_store.stop()
+            self._upload_store = None
+
         if self._analytics_collector:
             await self._analytics_collector.stop()
             self._analytics_collector = None

@@ -374,6 +374,7 @@ class PostgresPersistence:
         workspace_id: str,
         user_id: str | None,
         scope: str = "member",
+        user_email: str | None = None,
     ) -> int:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -401,9 +402,14 @@ class PostgresPersistence:
             conditions.append(f"workspace_id = ${idx}")
             params.append(workspace_id)
             idx += 1
-            conditions.append(f"users @> ${idx}::jsonb")
-            params.append(json.dumps([{"user_id": user_id}]))
-            idx += 1
+            if user_id:
+                conditions.append(f"users @> ${idx}::jsonb")
+                params.append(json.dumps([{"user_id": user_id}]))
+                idx += 1
+            elif user_email:
+                conditions.append(f"users @> ${idx}::jsonb")
+                params.append(json.dumps([{"user_email": user_email}]))
+                idx += 1
         # scope == "admin" — no additional filters
 
         where = " AND ".join(conditions)
@@ -421,6 +427,7 @@ class PostgresPersistence:
         cursor: str | None,
         limit: int,
         scope: str = "member",
+        user_email: str | None = None,
     ) -> list[Thread]:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -448,9 +455,14 @@ class PostgresPersistence:
             conditions.append(f"workspace_id = ${idx}")
             params.append(workspace_id)
             idx += 1
-            conditions.append(f"users @> ${idx}::jsonb")
-            params.append(json.dumps([{"user_id": user_id}]))
-            idx += 1
+            if user_id:
+                conditions.append(f"users @> ${idx}::jsonb")
+                params.append(json.dumps([{"user_id": user_id}]))
+                idx += 1
+            elif user_email:
+                conditions.append(f"users @> ${idx}::jsonb")
+                params.append(json.dumps([{"user_email": user_email}]))
+                idx += 1
         # scope == "admin" — no additional filters
 
         if cursor:
@@ -595,9 +607,19 @@ class PostgresPersistence:
         if not self._pool:
             raise RuntimeError("Not connected")
 
+        # Determine match key: prefer user_id, fallback to user_email
+        if user.user_id:
+            match_field = "user_id"
+            match_value = user.user_id
+        elif user.user_email:
+            match_field = "user_email"
+            match_value = user.user_email
+        else:
+            return  # No identifier to match on
+
         table = f"{self._prefix}threads"
         user_json = json.dumps(user.model_dump())
-        containment_check = json.dumps([{"user_id": user.user_id}])
+        containment_check = json.dumps([{match_field: match_value}])
 
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -610,7 +632,7 @@ class PostgresPersistence:
                         ELSE (
                             SELECT jsonb_agg(
                                 CASE
-                                    WHEN elem->>'user_id' = $4 THEN $3::jsonb
+                                    WHEN elem->>$5 = $4 THEN $3::jsonb
                                     ELSE elem
                                 END
                             )
@@ -624,7 +646,8 @@ class PostgresPersistence:
                 thread_id,
                 containment_check,
                 user_json,
-                user.user_id,
+                match_value,
+                match_field,
             )
 
     async def create_run(self, run: Run) -> None:

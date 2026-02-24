@@ -17,6 +17,7 @@ from dooers.handlers.memory import WorkerMemory
 from dooers.handlers.send import WorkerEvent, WorkerSend
 from dooers.persistence.base import Persistence
 from dooers.protocol.models import (
+    AudioPart,
     DocumentPart,
     ImagePart,
     Run,
@@ -24,14 +25,23 @@ from dooers.protocol.models import (
     Thread,
     ThreadEvent,
     User,
+    WireS2C_AudioPart,
+    WireS2C_DocumentPart,
+    WireS2C_ImagePart,
+    WireS2C_TextPart,
 )
 
 if TYPE_CHECKING:
     from dooers.features.analytics.collector import AnalyticsCollector
     from dooers.features.settings.broadcaster import SettingsBroadcaster
     from dooers.features.settings.models import SettingsSchema
+    from dooers.upload_store import UploadStore
 
 logger = logging.getLogger("workers")
+
+
+class UploadReferenceError(ValueError):
+    """Raised when a ref_id cannot be resolved from the upload store."""
 
 
 def _generate_id() -> str:
@@ -72,6 +82,7 @@ class PipelineResult:
     thread: Thread
     user_event: ThreadEvent
     is_new_thread: bool
+    handler_content: list | None = None
 
 
 class HandlerPipeline:
@@ -83,6 +94,7 @@ class HandlerPipeline:
         settings_broadcaster: SettingsBroadcaster | None = None,
         settings_schema: SettingsSchema | None = None,
         assistant_name: str = "Assistant",
+        upload_store: UploadStore | None = None,
     ):
         self._persistence = persistence
         self._broadcast_callback = broadcast_callback
@@ -90,6 +102,7 @@ class HandlerPipeline:
         self._settings_broadcaster = settings_broadcaster
         self._settings_schema = settings_schema
         self._assistant_name = assistant_name
+        self._upload_store = upload_store
 
     async def setup(self, context: HandlerContext) -> PipelineResult:
         now = _now()
@@ -164,7 +177,12 @@ class HandlerPipeline:
                     user_id=context.user.user_id,
                 )
 
-        content_parts = self._convert_content_parts(context.content) if context.content else [TextPart(text=context.message)]
+        if context.content:
+            handler_parts, storage_parts = self._resolve_content_parts(context.content)
+        else:
+            text = context.message or ""
+            handler_parts = [TextPart(text=text)]
+            storage_parts = [WireS2C_TextPart(text=text)]
 
         user_event_id = _generate_id()
         user_event = ThreadEvent(
@@ -174,7 +192,7 @@ class HandlerPipeline:
             type="message",
             actor="user",
             user=context.user,
-            content=content_parts,
+            content=storage_parts,
             data=context.data,
             created_at=now,
             client_event_id=context.client_event_id,
@@ -202,6 +220,7 @@ class HandlerPipeline:
             thread=thread,
             user_event=user_event,
             is_new_thread=is_new_thread,
+            handler_content=handler_parts,
         )
 
     async def execute(
@@ -212,7 +231,8 @@ class HandlerPipeline:
         thread_id = result.thread.id
         thread = result.thread
 
-        message = self._extract_message(result.user_event.content or [])
+        handler_content = result.handler_content or []
+        message = self._extract_message(handler_content)
         worker_context = WorkerContext(
             thread_id=thread_id,
             event_id=result.user_event.id,
@@ -224,7 +244,7 @@ class HandlerPipeline:
         )
         incoming = WorkerIncoming(
             message=message,
-            content=result.user_event.content or [],
+            content=handler_content,
             context=worker_context,
         )
         send = WorkerSend()
@@ -291,7 +311,7 @@ class HandlerPipeline:
                         type="message",
                         actor="assistant",
                         author=event.data.get("author") or self._assistant_name,
-                        content=[TextPart(text=event.data["text"])],
+                        content=[WireS2C_TextPart(text=event.data["text"])],
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
@@ -313,6 +333,43 @@ class HandlerPipeline:
                         data={"type": "text"},
                     )
 
+                elif event.send_type == "audio":
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="message",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        content=[
+                            WireS2C_AudioPart(
+                                url=event.data["url"],
+                                mime_type=event.data.get("mime_type"),
+                                duration=event.data.get("duration"),
+                            )
+                        ],
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.MESSAGE_S2C.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"type": "audio"},
+                    )
+
                 elif event.send_type == "image":
                     event_id = _generate_id()
                     thread_event = ThreadEvent(
@@ -323,7 +380,7 @@ class HandlerPipeline:
                         actor="assistant",
                         author=event.data.get("author") or self._assistant_name,
                         content=[
-                            ImagePart(
+                            WireS2C_ImagePart(
                                 url=event.data["url"],
                                 mime_type=event.data.get("mime_type"),
                                 alt=event.data.get("alt"),
@@ -360,7 +417,7 @@ class HandlerPipeline:
                         actor="assistant",
                         author=event.data.get("author") or self._assistant_name,
                         content=[
-                            DocumentPart(
+                            WireS2C_DocumentPart(
                                 url=event.data["url"],
                                 filename=event.data["filename"],
                                 mime_type=event.data["mime_type"],
@@ -542,7 +599,7 @@ class HandlerPipeline:
                 run_id=current_run_id,
                 type="message",
                 actor="system",
-                content=[TextPart(text=str(e))],
+                content=[WireS2C_TextPart(text=str(e))],
                 created_at=error_now,
             )
             await self._persistence.create_event(error_event)
@@ -655,24 +712,115 @@ class HandlerPipeline:
             broadcaster=NoopBroadcaster(),  # type: ignore
         )
 
-    def _convert_content_parts(self, parts: list) -> list:
-        result = []
+    def _resolve_content_parts(self, parts: list) -> tuple[list, list]:
+        """Resolve C2S wire content parts into handler format (with bytes) and
+        storage format (metadata only, no bytes).
+
+        Returns (handler_parts, storage_parts).
+        """
+        handler_parts: list = []
+        storage_parts: list = []
+
         for part in parts:
             if hasattr(part, "model_dump"):
                 data = part.model_dump()
             else:
                 data = dict(part) if hasattr(part, "__iter__") else part
 
-            part_type = data.get("type") if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                handler_parts.append(part)
+                storage_parts.append(part)
+                continue
+
+            part_type = data.get("type")
+
             if part_type == "text":
-                result.append(TextPart(**data))
-            elif part_type == "image":
-                result.append(ImagePart(**data))
-            elif part_type == "document":
-                result.append(DocumentPart(**data))
+                handler_parts.append(TextPart(text=data["text"]))
+                storage_parts.append(WireS2C_TextPart(text=data["text"]))
+
+            elif part_type in ("audio", "image", "document") and "ref_id" in data:
+                # WebSocket path — resolve ref_id from upload store
+                ref_id = data["ref_id"]
+                entry = self._upload_store.consume(ref_id) if self._upload_store else None
+                if entry is None:
+                    raise UploadReferenceError(f"Upload reference '{ref_id}' not found or expired")
+
+                if part_type == "audio":
+                    handler_parts.append(AudioPart(
+                        data=entry.data, mime_type=entry.mime_type,
+                        duration=data.get("duration"), filename=entry.filename,
+                    ))
+                    storage_parts.append(WireS2C_AudioPart(
+                        mime_type=entry.mime_type, duration=data.get("duration"),
+                        filename=entry.filename,
+                    ))
+                elif part_type == "image":
+                    handler_parts.append(ImagePart(
+                        data=entry.data, mime_type=entry.mime_type,
+                        filename=entry.filename,
+                    ))
+                    storage_parts.append(WireS2C_ImagePart(
+                        mime_type=entry.mime_type, filename=entry.filename,
+                    ))
+                elif part_type == "document":
+                    handler_parts.append(DocumentPart(
+                        data=entry.data, mime_type=entry.mime_type,
+                        filename=entry.filename, size_bytes=entry.size_bytes,
+                    ))
+                    storage_parts.append(WireS2C_DocumentPart(
+                        mime_type=entry.mime_type, filename=entry.filename,
+                        size_bytes=entry.size_bytes,
+                    ))
+
+            elif part_type == "audio" and "data" in data:
+                # Dispatch path — bytes passed directly
+                handler_parts.append(AudioPart(
+                    data=data["data"], mime_type=data.get("mime_type", ""),
+                    duration=data.get("duration"), filename=data.get("filename"),
+                ))
+                storage_parts.append(WireS2C_AudioPart(
+                    mime_type=data.get("mime_type"), duration=data.get("duration"),
+                    filename=data.get("filename"),
+                ))
+
+            elif part_type == "image" and "data" in data:
+                handler_parts.append(ImagePart(
+                    data=data["data"], mime_type=data.get("mime_type", ""),
+                    filename=data.get("filename"),
+                ))
+                storage_parts.append(WireS2C_ImagePart(
+                    mime_type=data.get("mime_type"), filename=data.get("filename"),
+                ))
+
+            elif part_type == "document" and "data" in data:
+                handler_parts.append(DocumentPart(
+                    data=data["data"], mime_type=data.get("mime_type", ""),
+                    filename=data.get("filename", ""), size_bytes=data.get("size_bytes", 0),
+                ))
+                storage_parts.append(WireS2C_DocumentPart(
+                    mime_type=data.get("mime_type"), filename=data.get("filename"),
+                    size_bytes=data.get("size_bytes"),
+                ))
+
+            elif part_type == "image" and "url" in data:
+                # Legacy URL-based format (backward compat)
+                handler_parts.append(part)
+                storage_parts.append(WireS2C_ImagePart(
+                    url=data.get("url"), mime_type=data.get("mime_type"), alt=data.get("alt"),
+                ))
+
+            elif part_type == "document" and "url" in data:
+                handler_parts.append(part)
+                storage_parts.append(WireS2C_DocumentPart(
+                    url=data.get("url"), filename=data.get("filename"),
+                    mime_type=data.get("mime_type"), size_bytes=data.get("size_bytes"),
+                ))
+
             else:
-                result.append(part)
-        return result
+                handler_parts.append(part)
+                storage_parts.append(part)
+
+        return handler_parts, storage_parts
 
     def _extract_message(self, content: list) -> str:
         texts = []
