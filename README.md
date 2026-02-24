@@ -76,6 +76,8 @@ async def ws(websocket: WebSocket):
 For REST endpoints, webhooks, background jobs — anything outside a WebSocket connection. You provide the context explicitly and iterate over the handler's events.
 
 ```python
+from dooers import User
+
 @app.post("/api/webhook")
 async def webhook(request: Request):
     body = await request.json()
@@ -86,8 +88,7 @@ async def webhook(request: Request):
         organization_id="org-1",
         workspace_id="ws-1",
         message=body["text"],
-        user_id=body["user_id"],
-        user_name="Alice",
+        user=User(user_id=body["user_id"], user_name="Alice"),
         thread_id=body.get("thread_id"),   # None → creates new thread
         thread_title="Webhook conversation",
     )
@@ -113,20 +114,31 @@ async def agent_handler(incoming, send, memory, analytics, settings):
 
 The incoming message and its context.
 
+Messages can contain text, images, and documents. `incoming.message` is a convenience shortcut that joins all text parts into a single string. `incoming.content` is the full list of content parts — use it when you need to handle images or documents.
+
 ```python
-incoming.message                     # str — extracted text
+incoming.message                     # str — all text parts joined with spaces
 incoming.content                     # list[ContentPart] — full content parts
+
+# ContentPart types:
+# TextPart:     { type: "text", text: str }
+# ImagePart:    { type: "image", url: str, mime_type?, alt? }
+# DocumentPart: { type: "document", url: str, filename: str, mime_type: str }
 
 incoming.context.thread_id           # str
 incoming.context.event_id            # str
 incoming.context.organization_id     # str
 incoming.context.workspace_id        # str
-incoming.context.user_id             # str
-incoming.context.user_name           # str
-incoming.context.user_email          # str
-incoming.context.user_role           # str
 incoming.context.thread_title        # str | None
 incoming.context.thread_created_at   # datetime | None
+
+# User (incoming.context.user)
+incoming.context.user.user_id             # str
+incoming.context.user.user_name           # str | None
+incoming.context.user.user_email          # str | None
+incoming.context.user.system_role         # str — "admin" | "user"
+incoming.context.user.organization_role   # str — "owner" | "manager" | "member"
+incoming.context.user.workspace_role      # str — "manager" | "member"
 ```
 
 ### send
@@ -196,16 +208,22 @@ await settings.set("field_id", new_value)
 Full signature for programmatic handler execution.
 
 ```python
+from dooers import User
+
 stream = await worker_server.dispatch(
     handler=my_handler,
     worker_id="worker-1",
     organization_id="org-1",
     workspace_id="ws-1",
     message="Hello from webhook",
-    user_id="user-1",
-    user_name="Alice",              # optional
-    user_email="alice@example.com", # optional
-    user_role="member",             # optional
+    user=User(                      # optional — defaults to User(user_id="")
+        user_id="user-1",
+        user_name="Alice",
+        user_email="alice@example.com",
+        system_role="user",         # "admin" | "user"
+        organization_role="member", # "owner" | "manager" | "member"
+        workspace_role="member",    # "manager" | "member"
+    ),
     thread_id=None,                 # None → creates new thread
     thread_title="Webhook",         # title for new threads
     content=None,                   # optional list of ContentPart
@@ -438,6 +456,34 @@ worker_server = WorkerServer(WorkerConfig(
 | `database_password` | `WORKER_DATABASE_PASSWORD` |
 | `database_key` | `WORKER_DATABASE_KEY` |
 | `database_ssl` | `WORKER_DATABASE_SSL` |
+
+## User Roles and Thread Scoping
+
+Users have three role levels that determine thread visibility:
+
+```python
+from dooers import User
+
+user = User(
+    user_id="user-1",
+    user_name="Alice",
+    user_email="alice@example.com",
+    system_role="user",         # "admin" | "user"
+    organization_role="member", # "owner" | "manager" | "member"
+    workspace_role="member",    # "manager" | "member"
+)
+```
+
+When listing threads, the SDK resolves the user's highest scope and filters accordingly:
+
+| Scope | Condition | Sees |
+|-------|-----------|------|
+| `admin` | `system_role == "admin"` | All threads |
+| `organization` | `organization_role` is `"owner"` or `"manager"` | All threads in the organization |
+| `workspace` | `workspace_role == "manager"` | All threads in the workspace |
+| `member` | Default | Only threads where they are a participant |
+
+Threads track participants automatically — each user who sends a message is added to the thread's `users` list.
 
 ## Thread Privacy
 
