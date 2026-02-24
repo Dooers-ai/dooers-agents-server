@@ -2,7 +2,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from dooers.protocol.models import DocumentPart, ImagePart, Run, TextPart, Thread, ThreadEvent, User
+from dooers.protocol.models import Run, Thread, ThreadEvent, User, WireS2C_AudioPart, WireS2C_DocumentPart, WireS2C_ImagePart, WireS2C_TextPart
 
 logger = logging.getLogger(__name__)
 
@@ -508,11 +508,13 @@ class CosmosPersistence:
     def _deserialize_content_part(self, data: dict):
         part_type = data.get("type")
         if part_type == "text":
-            return TextPart(**data)
+            return WireS2C_TextPart(**data)
+        elif part_type == "audio":
+            return WireS2C_AudioPart(**data)
         elif part_type == "image":
-            return ImagePart(**data)
+            return WireS2C_ImagePart(**data)
         elif part_type == "document":
-            return DocumentPart(**data)
+            return WireS2C_DocumentPart(**data)
         return data
 
     async def get_settings(self, worker_id: str) -> dict[str, Any]:
