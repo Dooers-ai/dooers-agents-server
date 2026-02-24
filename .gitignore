@@ -1,0 +1,6 @@
+.venv
+venv
+__pycache__
+.claude
+.ruff_cache
+.pytest_cache

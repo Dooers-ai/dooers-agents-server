@@ -1,0 +1,682 @@
+from __future__ import annotations
+
+import logging
+import uuid
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from dooers.exceptions import HandlerError
+from dooers.features.analytics.models import AnalyticsEvent
+from dooers.features.analytics.worker_analytics import WorkerAnalytics
+from dooers.features.settings.worker_settings import WorkerSettings
+from dooers.handlers.context import WorkerContext
+from dooers.handlers.incoming import WorkerIncoming
+from dooers.handlers.memory import WorkerMemory
+from dooers.handlers.send import WorkerEvent, WorkerSend
+from dooers.persistence.base import Persistence
+from dooers.protocol.models import (
+    DocumentPart,
+    ImagePart,
+    Run,
+    TextPart,
+    Thread,
+    ThreadEvent,
+    User,
+)
+
+if TYPE_CHECKING:
+    from dooers.features.analytics.collector import AnalyticsCollector
+    from dooers.features.settings.broadcaster import SettingsBroadcaster
+    from dooers.features.settings.models import SettingsSchema
+
+logger = logging.getLogger("workers")
+
+
+def _generate_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+Handler = Callable[
+    [WorkerIncoming, WorkerSend, WorkerMemory, WorkerAnalytics, WorkerSettings],
+    AsyncGenerator[WorkerEvent, None],
+]
+
+
+@dataclass
+class HandlerContext:
+    handler: Handler
+    worker_id: str
+    message: str
+    organization_id: str = ""
+    workspace_id: str = ""
+    user: User = None  # type: ignore[assignment]
+    thread_id: str | None = None
+    thread_title: str | None = None
+    content: list[Any] | None = None
+    data: dict | None = None
+    client_event_id: str | None = None
+
+    def __post_init__(self):
+        if self.user is None:
+            self.user = User(user_id="")
+
+
+@dataclass
+class PipelineResult:
+    thread: Thread
+    user_event: ThreadEvent
+    is_new_thread: bool
+
+
+class HandlerPipeline:
+    def __init__(
+        self,
+        persistence: Persistence,
+        broadcast_callback: Callable[[str, dict], Any] | None = None,
+        analytics_collector: AnalyticsCollector | None = None,
+        settings_broadcaster: SettingsBroadcaster | None = None,
+        settings_schema: SettingsSchema | None = None,
+        assistant_name: str = "Assistant",
+    ):
+        self._persistence = persistence
+        self._broadcast_callback = broadcast_callback
+        self._analytics_collector = analytics_collector
+        self._settings_broadcaster = settings_broadcaster
+        self._settings_schema = settings_schema
+        self._assistant_name = assistant_name
+
+    async def setup(self, context: HandlerContext) -> PipelineResult:
+        now = _now()
+        thread_id = context.thread_id
+        is_new_thread = False
+
+        if not thread_id:
+            thread_id = _generate_id()
+            thread = Thread(
+                id=thread_id,
+                worker_id=context.worker_id,
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+                owner=context.user,
+                users=[context.user],
+                title=context.thread_title,
+                created_at=now,
+                updated_at=now,
+                last_event_at=now,
+            )
+            await self._persistence.create_thread(thread)
+            is_new_thread = True
+
+            await self._broadcast(
+                context.worker_id,
+                {
+                    "type": "thread.upsert",
+                    "thread": thread,
+                },
+            )
+
+            await self._track_event(
+                context.worker_id,
+                AnalyticsEvent.THREAD_CREATED.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+            )
+        else:
+            thread = await self._persistence.get_thread(thread_id)
+            if thread:
+                if thread.worker_id != context.worker_id:
+                    raise PermissionError(f"Thread {thread_id} belongs to different worker")
+            else:
+                # Auto-create thread for deterministic IDs (e.g., dispatch with pre-computed thread_id)
+                thread = Thread(
+                    id=thread_id,
+                    worker_id=context.worker_id,
+                    organization_id=context.organization_id,
+                    workspace_id=context.workspace_id,
+                    owner=context.user,
+                    users=[context.user],
+                    title=context.thread_title,
+                    created_at=now,
+                    updated_at=now,
+                    last_event_at=now,
+                )
+                await self._persistence.create_thread(thread)
+                is_new_thread = True
+
+                await self._broadcast(
+                    context.worker_id,
+                    {
+                        "type": "thread.upsert",
+                        "thread": thread,
+                    },
+                )
+
+                await self._track_event(
+                    context.worker_id,
+                    AnalyticsEvent.THREAD_CREATED.value,
+                    thread_id=thread_id,
+                    user_id=context.user.user_id,
+                )
+
+        content_parts = self._convert_content_parts(context.content) if context.content else [TextPart(text=context.message)]
+
+        user_event_id = _generate_id()
+        user_event = ThreadEvent(
+            id=user_event_id,
+            thread_id=thread_id,
+            run_id=None,
+            type="message",
+            actor="user",
+            user=context.user,
+            content=content_parts,
+            data=context.data,
+            created_at=now,
+            client_event_id=context.client_event_id,
+        )
+        await self._persistence.create_event(user_event)
+
+        await self._broadcast(
+            context.worker_id,
+            {
+                "type": "event.append",
+                "thread_id": thread_id,
+                "events": [user_event],
+            },
+        )
+
+        await self._track_event(
+            context.worker_id,
+            AnalyticsEvent.MESSAGE_C2S.value,
+            thread_id=thread_id,
+            user_id=context.user.user_id,
+            event_id=user_event_id,
+        )
+
+        return PipelineResult(
+            thread=thread,
+            user_event=user_event,
+            is_new_thread=is_new_thread,
+        )
+
+    async def execute(
+        self,
+        context: HandlerContext,
+        result: PipelineResult,
+    ) -> AsyncGenerator[WorkerEvent, None]:
+        thread_id = result.thread.id
+        thread = result.thread
+
+        message = self._extract_message(result.user_event.content or [])
+        worker_context = WorkerContext(
+            thread_id=thread_id,
+            event_id=result.user_event.id,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            user=context.user,
+            thread_title=thread.title,
+            thread_created_at=thread.created_at,
+        )
+        incoming = WorkerIncoming(
+            message=message,
+            content=result.user_event.content or [],
+            context=worker_context,
+        )
+        send = WorkerSend()
+        memory = WorkerMemory(thread_id=thread_id, persistence=self._persistence)
+
+        analytics = self._create_analytics(
+            worker_id=context.worker_id,
+            thread_id=thread_id,
+            user_id=context.user.user_id,
+        )
+
+        settings = self._create_settings(worker_id=context.worker_id)
+
+        current_run_id: str | None = None
+
+        try:
+            async for event in context.handler(incoming, send, memory, analytics, settings):
+                event_now = _now()
+
+                if event.send_type == "run_start":
+                    current_run_id = _generate_id()
+                    run = Run(
+                        id=current_run_id,
+                        thread_id=thread_id,
+                        agent_id=event.data.get("agent_id"),
+                        status="running",
+                        started_at=event_now,
+                    )
+                    await self._persistence.create_run(run)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "run.upsert",
+                            "run": run,
+                        },
+                    )
+
+                elif event.send_type == "run_end":
+                    if current_run_id:
+                        run = Run(
+                            id=current_run_id,
+                            thread_id=thread_id,
+                            status=event.data.get("status", "succeeded"),
+                            started_at=event_now,
+                            ended_at=event_now,
+                            error=event.data.get("error"),
+                        )
+                        await self._persistence.update_run(run)
+                        await self._broadcast(
+                            context.worker_id,
+                            {
+                                "type": "run.upsert",
+                                "run": run,
+                            },
+                        )
+                        current_run_id = None
+
+                elif event.send_type == "text":
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="message",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        content=[TextPart(text=event.data["text"])],
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.MESSAGE_S2C.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"type": "text"},
+                    )
+
+                elif event.send_type == "image":
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="message",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        content=[
+                            ImagePart(
+                                url=event.data["url"],
+                                mime_type=event.data.get("mime_type"),
+                                alt=event.data.get("alt"),
+                            )
+                        ],
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.MESSAGE_S2C.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"type": "image"},
+                    )
+
+                elif event.send_type == "document":
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="message",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        content=[
+                            DocumentPart(
+                                url=event.data["url"],
+                                filename=event.data["filename"],
+                                mime_type=event.data["mime_type"],
+                            )
+                        ],
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.MESSAGE_S2C.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"type": "document"},
+                    )
+
+                elif event.send_type == "tool_call":
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="tool.call",
+                        actor="assistant",
+                        data={
+                            "id": event.data["id"],
+                            "name": event.data["name"],
+                            "display_name": event.data.get("display_name"),
+                            "args": event.data["args"],
+                        },
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.TOOL_CALLED.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"name": event.data["name"]},
+                    )
+
+                elif event.send_type == "tool_result":
+                    thread_event = ThreadEvent(
+                        id=_generate_id(),
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="tool.result",
+                        actor="tool",
+                        data={
+                            "id": event.data.get("id"),
+                            "name": event.data["name"],
+                            "display_name": event.data.get("display_name"),
+                            "args": event.data.get("args"),
+                            "result": event.data["result"],
+                        },
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+
+                elif event.send_type == "tool_transaction":
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="tool.transaction",
+                        actor="assistant",
+                        data={
+                            "id": event.data["id"],
+                            "name": event.data["name"],
+                            "display_name": event.data.get("display_name"),
+                            "args": event.data["args"],
+                            "result": event.data["result"],
+                        },
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.TOOL_CALLED.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"name": event.data["name"]},
+                    )
+
+                elif event.send_type == "thread_update":
+                    thread = await self._persistence.get_thread(thread_id)
+                    if thread:
+                        if event.data.get("title") is not None:
+                            thread.title = event.data["title"]
+                        thread.updated_at = event_now
+                        await self._persistence.update_thread(thread)
+                        await self._broadcast(
+                            context.worker_id,
+                            {
+                                "type": "thread.upsert",
+                                "thread": thread,
+                            },
+                        )
+
+                if event.send_type != "thread_update":
+                    await self._update_thread_last_event(thread_id, event_now)
+
+                yield event
+
+        except Exception as e:
+            logger.error("[workers] handler error: %s", e, exc_info=True)
+
+            await self._track_event(
+                context.worker_id,
+                AnalyticsEvent.ERROR_OCCURRED.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                data={"error": str(e), "type": type(e).__name__},
+            )
+
+            error_now = _now()
+
+            if current_run_id:
+                run = Run(
+                    id=current_run_id,
+                    thread_id=thread_id,
+                    status="failed",
+                    started_at=error_now,
+                    ended_at=error_now,
+                    error=str(e),
+                )
+                await self._persistence.update_run(run)
+                await self._broadcast(
+                    context.worker_id,
+                    {
+                        "type": "run.upsert",
+                        "run": run,
+                    },
+                )
+
+            error_event = ThreadEvent(
+                id=_generate_id(),
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="system",
+                content=[TextPart(text=str(e))],
+                created_at=error_now,
+            )
+            await self._persistence.create_event(error_event)
+            await self._broadcast(
+                context.worker_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [error_event],
+                },
+            )
+            await self._update_thread_last_event(thread_id, error_now)
+
+            raise HandlerError(str(e), original=e) from e
+
+    async def _broadcast(self, worker_id: str, payload: dict) -> None:
+        if self._broadcast_callback:
+            await self._broadcast_callback(worker_id, payload)
+
+    async def _track_event(
+        self,
+        worker_id: str,
+        event: str,
+        thread_id: str | None = None,
+        user_id: str | None = None,
+        run_id: str | None = None,
+        event_id: str | None = None,
+        data: dict | None = None,
+    ) -> None:
+        if self._analytics_collector:
+            await self._analytics_collector.track(
+                event=event,
+                worker_id=worker_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                run_id=run_id,
+                event_id=event_id,
+                data=data,
+            )
+
+    async def _update_thread_last_event(self, thread_id: str, timestamp: datetime) -> None:
+        thread = await self._persistence.get_thread(thread_id)
+        if thread:
+            thread.last_event_at = timestamp
+            thread.updated_at = timestamp
+            await self._persistence.update_thread(thread)
+
+    def _create_analytics(
+        self,
+        worker_id: str,
+        thread_id: str,
+        user_id: str | None,
+    ) -> WorkerAnalytics:
+        if self._analytics_collector:
+            return WorkerAnalytics(
+                worker_id=worker_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                run_id=None,
+                collector=self._analytics_collector,
+            )
+
+        class NoopCollector:
+            async def track(self, **kwargs) -> None:
+                pass
+
+            async def feedback(self, **kwargs) -> None:
+                pass
+
+        return WorkerAnalytics(
+            worker_id=worker_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            run_id=None,
+            collector=NoopCollector(),  # type: ignore
+        )
+
+    def _create_settings(self, worker_id: str) -> WorkerSettings:
+        if self._settings_schema and self._settings_broadcaster:
+            return WorkerSettings(
+                worker_id=worker_id,
+                schema=self._settings_schema,
+                persistence=self._persistence,
+                broadcaster=self._settings_broadcaster,
+            )
+
+        from dooers.features.settings.models import SettingsSchema
+
+        class NoopBroadcaster:
+            async def broadcast_snapshot(self, **kwargs) -> None:
+                pass
+
+            async def broadcast_patch(self, **kwargs) -> None:
+                pass
+
+        class NoopPersistence:
+            async def get_settings(self, worker_id: str) -> dict:
+                return {}
+
+            async def update_setting(self, worker_id: str, field_id: str, value) -> None:
+                pass
+
+            async def set_settings(self, worker_id: str, values: dict) -> None:
+                pass
+
+        return WorkerSettings(
+            worker_id=worker_id,
+            schema=SettingsSchema(fields=[]),
+            persistence=NoopPersistence(),  # type: ignore
+            broadcaster=NoopBroadcaster(),  # type: ignore
+        )
+
+    def _convert_content_parts(self, parts: list) -> list:
+        result = []
+        for part in parts:
+            if hasattr(part, "model_dump"):
+                data = part.model_dump()
+            else:
+                data = dict(part) if hasattr(part, "__iter__") else part
+
+            part_type = data.get("type") if isinstance(data, dict) else None
+            if part_type == "text":
+                result.append(TextPart(**data))
+            elif part_type == "image":
+                result.append(ImagePart(**data))
+            elif part_type == "document":
+                result.append(DocumentPart(**data))
+            else:
+                result.append(part)
+        return result
+
+    def _extract_message(self, content: list) -> str:
+        texts = []
+        for part in content:
+            if isinstance(part, TextPart):
+                texts.append(part.text)
+        return " ".join(texts)

@@ -1,0 +1,43 @@
+import os
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from dooers.features.settings.models import SettingsSchema
+
+
+def _parse_ssl(value: str) -> bool | str:
+    """Parse SSL config: accepts bool strings ('true'/'false') or PostgreSQL SSL modes."""
+    lower = value.lower().strip()
+    if lower in ("false", "0", "no", "off", ""):
+        return False
+    if lower in ("true", "1", "yes", "on"):
+        return True
+    if lower in ("disable", "allow", "prefer", "require", "verify-ca", "verify-full"):
+        return lower
+    return False
+
+
+@dataclass
+class WorkerConfig:
+    database_type: Literal["postgres", "cosmos"]
+
+    assistant_name: str = "Assistant"
+
+    database_host: str = field(default_factory=lambda: os.environ.get("WORKER_DATABASE_HOST", "localhost"))
+    database_port: int = field(default_factory=lambda: int(os.environ.get("WORKER_DATABASE_PORT", "5432")))
+    database_user: str = field(default_factory=lambda: os.environ.get("WORKER_DATABASE_USER", "postgres"))
+    database_name: str = field(default_factory=lambda: os.environ.get("WORKER_DATABASE_NAME", ""))
+    database_password: str = field(default_factory=lambda: os.environ.get("WORKER_DATABASE_PASSWORD", ""))
+    database_key: str = field(default_factory=lambda: os.environ.get("WORKER_DATABASE_KEY", ""))
+    database_ssl: bool | str = field(default_factory=lambda: _parse_ssl(os.environ.get("WORKER_DATABASE_SSL", "false")))
+
+    database_table_prefix: str = "worker_"
+    database_auto_migrate: bool = True
+
+    analytics_enabled: bool = True
+    analytics_webhook_url: str | None = None
+    analytics_batch_size: int | None = None
+    analytics_flush_interval: float | None = None
+
+    settings_schema: "SettingsSchema | None" = None
