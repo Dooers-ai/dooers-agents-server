@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from dooers.protocol.models import Run, Thread, ThreadEvent, User
+
+if TYPE_CHECKING:
+    from dooers.features.analytics.models import AnalyticsEventPayload
 
 EventOrder = Literal["asc", "desc"]
 
@@ -64,3 +69,5 @@ class Persistence(Protocol):
     async def get_settings(self, worker_id: str) -> dict[str, Any]: ...
     async def update_setting(self, worker_id: str, field_id: str, value: Any) -> datetime: ...
     async def set_settings(self, worker_id: str, values: dict[str, Any]) -> datetime: ...
+
+    async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None: ...

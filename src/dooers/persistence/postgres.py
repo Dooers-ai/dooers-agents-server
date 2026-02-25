@@ -1,11 +1,13 @@
 import json
 import logging
 import ssl as ssl_module
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
+from dooers.features.analytics.models import AnalyticsEventPayload
 from dooers.protocol.models import Run, Thread, ThreadEvent, User, WireS2C_AudioPart, WireS2C_DocumentPart, WireS2C_ImagePart, WireS2C_TextPart
 
 logger = logging.getLogger(__name__)
@@ -261,6 +263,32 @@ class PostgresPersistence:
             await conn.execute(f"""
                 CREATE INDEX IF NOT EXISTS idx_{self._prefix}settings_worker
                     ON {settings_table}(worker_id)
+            """)
+
+            analytics_table = f"{self._prefix}analytics_events"
+            await conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {analytics_table} (
+                    id TEXT PRIMARY KEY,
+                    event TEXT NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    worker_id TEXT NOT NULL,
+                    thread_id TEXT,
+                    user_id TEXT,
+                    run_id TEXT,
+                    event_id TEXT,
+                    organization_id TEXT,
+                    workspace_id TEXT,
+                    data JSONB,
+                    created_at TIMESTAMPTZ NOT NULL
+                )
+            """)
+            await conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}analytics_events_worker_id
+                    ON {analytics_table}(worker_id)
+            """)
+            await conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}analytics_events_timestamp
+                    ON {analytics_table}(timestamp)
             """)
 
     async def create_thread(self, thread: Thread) -> None:
@@ -879,3 +907,33 @@ class PostgresPersistence:
                 now,
             )
         return now
+
+    async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None:
+        if not self._pool or not events:
+            return
+
+        table = f"{self._prefix}analytics_events"
+        data_json: str | None
+        async with self._pool.acquire() as conn:
+            for ev in events:
+                data_json = json.dumps(ev.data) if ev.data else None
+                await conn.execute(
+                    f"""
+                    INSERT INTO {table}
+                        (id, event, timestamp, worker_id, thread_id, user_id, run_id, event_id,
+                         organization_id, workspace_id, data, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    """,
+                    str(uuid.uuid4()),
+                    ev.event,
+                    ev.timestamp,
+                    ev.worker_id,
+                    ev.thread_id,
+                    ev.user_id,
+                    ev.run_id,
+                    ev.event_id,
+                    ev.organization_id,
+                    ev.workspace_id,
+                    data_json,
+                    ev.created_at,
+                )

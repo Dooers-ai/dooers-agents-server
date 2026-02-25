@@ -11,6 +11,7 @@ import httpx
 from .models import AnalyticsBatch, AnalyticsEvent, AnalyticsEventPayload
 
 if TYPE_CHECKING:
+    from dooers.persistence.base import Persistence
     from dooers.registry import ConnectionRegistry
 
 logger = logging.getLogger(__name__)
@@ -24,12 +25,14 @@ class AnalyticsCollector:
         subscriptions: dict[str, set[str]],
         batch_size: int = 10,
         flush_interval: float = 5.0,
+        persistence: Persistence | None = None,
     ) -> None:
         self._webhook_url = webhook_url
         self._registry = registry
         self._subscriptions = subscriptions
         self._batch_size = batch_size
         self._flush_interval = flush_interval
+        self._persistence = persistence
         self._buffer: list[AnalyticsEventPayload] = []
         self._lock = asyncio.Lock()
         self._flush_task: asyncio.Task[None] | None = None
@@ -69,16 +72,22 @@ class AnalyticsCollector:
         run_id: str | None = None,
         event_id: str | None = None,
         data: dict[str, Any] | None = None,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> None:
+        now = datetime.now(UTC)
         payload = AnalyticsEventPayload(
             event=event,
-            timestamp=datetime.now(UTC),
+            timestamp=now,
             worker_id=worker_id,
             thread_id=thread_id,
             user_id=user_id,
             run_id=run_id,
             event_id=event_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
             data=data,
+            created_at=now,
         )
 
         await self._broadcast(worker_id, payload)
@@ -97,6 +106,7 @@ class AnalyticsCollector:
         thread_id: str | None = None,
         user_id: str | None = None,
         reason: str | None = None,
+        classification: str | None = None,
     ) -> None:
         event = AnalyticsEvent.FEEDBACK_LIKE if feedback_type == "like" else AnalyticsEvent.FEEDBACK_DISLIKE
         await self.track(
@@ -108,6 +118,7 @@ class AnalyticsCollector:
                 "target_type": target_type,
                 "target_id": target_id,
                 "reason": reason,
+                "classification": classification,
             },
         )
 
@@ -162,6 +173,8 @@ class AnalyticsCollector:
 
         self._buffer.clear()
 
+        all_events = [e for events in events_by_worker.values() for e in events]
+
         for worker_id, events in events_by_worker.items():
             batch = AnalyticsBatch(
                 batch_id=str(uuid4()),
@@ -170,6 +183,12 @@ class AnalyticsCollector:
                 sent_at=datetime.now(UTC),
             )
             await self._send_to_webhook(batch)
+
+        if self._persistence and all_events:
+            try:
+                await self._persistence.insert_analytics_events(all_events)
+            except Exception as e:
+                logger.warning("[workers] failed to persist analytics events: %s", e)
 
     async def _send_to_webhook(self, batch: AnalyticsBatch) -> None:
         if not self._http_client:

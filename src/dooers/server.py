@@ -127,6 +127,7 @@ class WorkerServer:
                 subscriptions=self._analytics_subscriptions,
                 batch_size=batch_size,
                 flush_interval=flush_interval,
+                persistence=self._persistence,
             )
             await self._analytics_collector.start()
 
@@ -274,6 +275,8 @@ class WorkerServer:
         thread_id: str | None = None,
         user_id: str | None = None,
         run_id: str | None = None,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> WorkerAnalytics:
         await self._ensure_initialized()
         if self._analytics_collector:
@@ -283,6 +286,8 @@ class WorkerServer:
                 user_id=user_id,
                 run_id=run_id,
                 collector=self._analytics_collector,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
             )
 
         class _NoopCollector:
@@ -298,6 +303,8 @@ class WorkerServer:
             user_id=user_id,
             run_id=run_id,
             collector=_NoopCollector(),  # type: ignore
+            organization_id=organization_id,
+            workspace_id=workspace_id,
         )
 
     async def _broadcast_dict_to_worker(self, worker_id: str, payload: dict) -> None:

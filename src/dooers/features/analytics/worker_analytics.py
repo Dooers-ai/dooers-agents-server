@@ -21,12 +21,16 @@ class WorkerAnalytics:
         user_id: str | None,
         run_id: str | None,
         collector: AnalyticsCollector,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         self._worker_id = worker_id
         self._thread_id = thread_id
         self._user_id = user_id
         self._run_id = run_id
         self._collector = collector
+        self._organization_id = organization_id
+        self._workspace_id = workspace_id
 
     async def track(self, event: str, data: dict[str, Any] | None = None) -> None:
         """
@@ -43,6 +47,8 @@ class WorkerAnalytics:
             user_id=self._user_id,
             run_id=self._run_id,
             data=data,
+            organization_id=self._organization_id,
+            workspace_id=self._workspace_id,
         )
 
     async def like(
@@ -50,6 +56,7 @@ class WorkerAnalytics:
         target_type: str,
         target_id: str,
         reason: str | None = None,
+        classification: str | None = None,
     ) -> None:
         """
         Record a like (positive feedback).
@@ -61,6 +68,7 @@ class WorkerAnalytics:
             target_type: Type of target ("event", "run", or "thread")
             target_id: ID of the target
             reason: Optional reason for the feedback
+            classification: Optional classification label for the feedback
         """
         await self._collector.feedback(
             feedback_type="like",
@@ -70,6 +78,7 @@ class WorkerAnalytics:
             thread_id=self._thread_id,
             user_id=self._user_id,
             reason=reason,
+            classification=classification,
         )
 
     async def dislike(
@@ -77,6 +86,7 @@ class WorkerAnalytics:
         target_type: str,
         target_id: str,
         reason: str | None = None,
+        classification: str | None = None,
     ) -> None:
         """
         Record a dislike (negative feedback).
@@ -88,6 +98,7 @@ class WorkerAnalytics:
             target_type: Type of target ("event", "run", or "thread")
             target_id: ID of the target
             reason: Optional reason for the feedback
+            classification: Optional classification label for the feedback
         """
         await self._collector.feedback(
             feedback_type="dislike",
@@ -97,4 +108,5 @@ class WorkerAnalytics:
             thread_id=self._thread_id,
             user_id=self._user_id,
             reason=reason,
+            classification=classification,
         )
