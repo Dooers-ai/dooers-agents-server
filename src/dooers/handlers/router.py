@@ -590,6 +590,8 @@ class Router:
 
         if self._analytics_collector:
             user = self._user or User(user_id="")
+            # Derive thread_id only when the feedback directly targets a thread.
+            thread_id = frame.payload.target_id if frame.payload.target_type == "thread" else None
             await self._analytics_collector.feedback(
                 feedback_type=frame.payload.feedback,
                 target_type=frame.payload.target_type,
@@ -597,7 +599,7 @@ class Router:
                 worker_id=self._worker_id,
                 user_id=user.user_id,
                 reason=frame.payload.reason,
-                thread_id=frame.payload.thread_id,
+                thread_id=thread_id,
             )
 
         ack = S2C_FeedbackAck(
