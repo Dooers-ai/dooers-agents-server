@@ -1,7 +1,9 @@
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from dooers.features.analytics.models import AnalyticsEventPayload
 from dooers.protocol.models import Run, Thread, ThreadEvent, User, WireS2C_AudioPart, WireS2C_DocumentPart, WireS2C_ImagePart, WireS2C_TextPart
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,7 @@ class CosmosPersistence:
             f"{self._prefix}events",
             f"{self._prefix}runs",
             f"{self._prefix}settings",
+            f"{self._prefix}analytics_events",
         ]
 
         for container_name in container_names:
@@ -556,3 +559,25 @@ class CosmosPersistence:
 
         await container.upsert_item(doc)
         return now
+
+    async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None:
+        if not events:
+            return
+
+        container = self._get_container("analytics_events")
+        for ev in events:
+            doc = {
+                "id": str(uuid.uuid4()),
+                "worker_id": ev.worker_id,
+                "event": ev.event,
+                "timestamp": ev.timestamp.isoformat(),
+                "thread_id": ev.thread_id,
+                "user_id": ev.user_id,
+                "run_id": ev.run_id,
+                "event_id": ev.event_id,
+                "organization_id": ev.organization_id,
+                "workspace_id": ev.workspace_id,
+                "data": ev.data,
+                "created_at": ev.created_at.isoformat(),
+            }
+            await container.create_item(doc)

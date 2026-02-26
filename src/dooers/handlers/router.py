@@ -597,6 +597,7 @@ class Router:
                 worker_id=self._worker_id,
                 user_id=user.user_id,
                 reason=frame.payload.reason,
+                thread_id=frame.payload.thread_id,
             )
 
         ack = S2C_FeedbackAck(
@@ -755,4 +756,6 @@ class Router:
                 run_id=run_id,
                 event_id=event_id,
                 data=data,
+                organization_id=self._organization_id,
+                workspace_id=self._workspace_id,
             )

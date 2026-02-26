@@ -139,6 +139,8 @@ class HandlerPipeline:
                 AnalyticsEvent.THREAD_CREATED.value,
                 thread_id=thread_id,
                 user_id=context.user.user_id,
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
             )
         else:
             thread = await self._persistence.get_thread(thread_id)
@@ -175,6 +177,8 @@ class HandlerPipeline:
                     AnalyticsEvent.THREAD_CREATED.value,
                     thread_id=thread_id,
                     user_id=context.user.user_id,
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
                 )
 
         if context.content:
@@ -214,6 +218,8 @@ class HandlerPipeline:
             thread_id=thread_id,
             user_id=context.user.user_id,
             event_id=user_event_id,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
         )
 
         return PipelineResult(
@@ -254,11 +260,14 @@ class HandlerPipeline:
             worker_id=context.worker_id,
             thread_id=thread_id,
             user_id=context.user.user_id,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
         )
 
         settings = self._create_settings(worker_id=context.worker_id)
 
         current_run_id: str | None = None
+        current_agent_id: str | None = None
 
         try:
             async for event in context.handler(incoming, send, memory, analytics, settings):
@@ -266,10 +275,11 @@ class HandlerPipeline:
 
                 if event.send_type == "run_start":
                     current_run_id = _generate_id()
+                    current_agent_id = event.data.get("agent_id")
                     run = Run(
                         id=current_run_id,
                         thread_id=thread_id,
-                        agent_id=event.data.get("agent_id"),
+                        agent_id=current_agent_id,
                         status="running",
                         started_at=event_now,
                     )
@@ -287,6 +297,7 @@ class HandlerPipeline:
                         run = Run(
                             id=current_run_id,
                             thread_id=thread_id,
+                            agent_id=current_agent_id,
                             status=event.data.get("status", "succeeded"),
                             started_at=event_now,
                             ended_at=event_now,
@@ -301,6 +312,7 @@ class HandlerPipeline:
                             },
                         )
                         current_run_id = None
+                        current_agent_id = None
 
                 elif event.send_type == "text":
                     event_id = _generate_id()
@@ -331,6 +343,8 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "text"},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "audio":
@@ -368,6 +382,8 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "audio"},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "image":
@@ -405,6 +421,8 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "image"},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "document":
@@ -442,6 +460,8 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "document"},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "tool_call":
@@ -477,6 +497,8 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"name": event.data["name"]},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "tool_result":
@@ -539,6 +561,8 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"name": event.data["name"]},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "thread_update":
@@ -571,6 +595,8 @@ class HandlerPipeline:
                 user_id=context.user.user_id,
                 run_id=current_run_id,
                 data={"error": str(e), "type": type(e).__name__},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
             )
 
             error_now = _now()
@@ -579,6 +605,7 @@ class HandlerPipeline:
                 run = Run(
                     id=current_run_id,
                     thread_id=thread_id,
+                    agent_id=current_agent_id,
                     status="failed",
                     started_at=error_now,
                     ended_at=error_now,
@@ -623,11 +650,14 @@ class HandlerPipeline:
         self,
         worker_id: str,
         event: str,
+        *,
         thread_id: str | None = None,
         user_id: str | None = None,
         run_id: str | None = None,
         event_id: str | None = None,
         data: dict | None = None,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         if self._analytics_collector:
             await self._analytics_collector.track(
@@ -638,6 +668,8 @@ class HandlerPipeline:
                 run_id=run_id,
                 event_id=event_id,
                 data=data,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
             )
 
     async def _update_thread_last_event(self, thread_id: str, timestamp: datetime) -> None:
@@ -652,6 +684,8 @@ class HandlerPipeline:
         worker_id: str,
         thread_id: str,
         user_id: str | None,
+        organization_id: str | None,
+        workspace_id: str | None,
     ) -> WorkerAnalytics:
         if self._analytics_collector:
             return WorkerAnalytics(
@@ -660,6 +694,8 @@ class HandlerPipeline:
                 user_id=user_id,
                 run_id=None,
                 collector=self._analytics_collector,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
             )
 
         class NoopCollector:
@@ -675,6 +711,8 @@ class HandlerPipeline:
             user_id=user_id,
             run_id=None,
             collector=NoopCollector(),  # type: ignore
+            organization_id=organization_id,
+            workspace_id=workspace_id,
         )
 
     def _create_settings(self, worker_id: str) -> WorkerSettings:

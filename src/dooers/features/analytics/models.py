@@ -30,7 +30,10 @@ class AnalyticsEventPayload(BaseModel):
     user_id: str | None = None
     run_id: str | None = None
     event_id: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
     data: dict[str, Any] | None = None
+    created_at: datetime
 
 
 class FeedbackData(BaseModel):
@@ -39,6 +42,7 @@ class FeedbackData(BaseModel):
     target_type: Literal["event", "run", "thread"]
     target_id: str
     reason: str | None = None
+    classification: str | None = None
 
 
 class AnalyticsBatch(BaseModel):

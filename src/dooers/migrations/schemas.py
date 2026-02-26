@@ -3,6 +3,7 @@ def get_migration_sql(table_prefix: str = "worker_") -> str:
     events_table = f"{table_prefix}events"
     runs_table = f"{table_prefix}runs"
     settings_table = f"{table_prefix}settings"
+    analytics_table = f"{table_prefix}analytics_events"
 
     return f"""
         CREATE TABLE IF NOT EXISTS {threads_table} (
@@ -70,4 +71,23 @@ def get_migration_sql(table_prefix: str = "worker_") -> str:
             ON {runs_table}(thread_id);
         CREATE INDEX IF NOT EXISTS idx_{table_prefix}settings_worker
             ON {settings_table}(worker_id);
+
+        CREATE TABLE IF NOT EXISTS {analytics_table} (
+            id TEXT PRIMARY KEY,
+            event TEXT NOT NULL,
+            timestamp TIMESTAMPTZ NOT NULL,
+            worker_id TEXT NOT NULL,
+            thread_id TEXT,
+            user_id TEXT,
+            run_id TEXT,
+            event_id TEXT,
+            organization_id TEXT,
+            workspace_id TEXT,
+            data JSONB,
+            created_at TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_{table_prefix}analytics_events_worker_id
+            ON {analytics_table}(worker_id);
+        CREATE INDEX IF NOT EXISTS idx_{table_prefix}analytics_events_timestamp
+            ON {analytics_table}(timestamp);
     """
