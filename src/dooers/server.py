@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from dooers.broadcast import BroadcastManager
 from dooers.config import WorkerConfig
@@ -23,7 +24,7 @@ from dooers.protocol.frames import (
     S2C_ThreadUpsert,
     ThreadUpsertPayload,
 )
-from dooers.protocol.models import User
+from dooers.protocol.models import User, WireC2S_ContentPart
 from dooers.protocol.parser import parse_frame, serialize_frame
 from dooers.registry import ConnectionRegistry
 from dooers.repository import Repository
@@ -190,7 +191,7 @@ class WorkerServer:
         workspace_id: str = "",
         thread_id: str | None = None,
         thread_title: str | None = None,
-        content: list | None = None,
+        content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
     ) -> DispatchStream:
         persistence = await self._ensure_initialized()
 
@@ -307,7 +308,7 @@ class WorkerServer:
             workspace_id=workspace_id,
         )
 
-    async def _broadcast_dict_to_worker(self, worker_id: str, payload: dict) -> None:
+    async def _broadcast_dict_to_worker(self, worker_id: str, payload: dict[str, Any]) -> None:
         """Convert dict payload to S2C frame and broadcast via registry."""
         payload_type = payload.get("type")
 

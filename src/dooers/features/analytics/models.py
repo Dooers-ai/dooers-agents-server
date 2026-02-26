@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -34,15 +34,6 @@ class AnalyticsEventPayload(BaseModel):
     workspace_id: str | None = None
     data: dict[str, Any] | None = None
     created_at: datetime
-
-
-class FeedbackData(BaseModel):
-    """Feedback targeting information."""
-
-    target_type: Literal["event", "run", "thread"]
-    target_id: str
-    reason: str | None = None
-    classification: str | None = None
 
 
 class AnalyticsBatch(BaseModel):

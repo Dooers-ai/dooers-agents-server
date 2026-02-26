@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -18,6 +18,7 @@ from dooers.handlers.send import WorkerEvent, WorkerSend
 from dooers.persistence.base import Persistence
 from dooers.protocol.models import (
     AudioPart,
+    ContentPart,
     DocumentPart,
     ImagePart,
     Run,
@@ -25,7 +26,9 @@ from dooers.protocol.models import (
     Thread,
     ThreadEvent,
     User,
+    WireC2S_ContentPart,
     WireS2C_AudioPart,
+    WireS2C_ContentPart,
     WireS2C_DocumentPart,
     WireS2C_ImagePart,
     WireS2C_TextPart,
@@ -68,8 +71,8 @@ class HandlerContext:
     user: User = None  # type: ignore[assignment]
     thread_id: str | None = None
     thread_title: str | None = None
-    content: list[Any] | None = None
-    data: dict | None = None
+    content: list[WireC2S_ContentPart | dict[str, Any]] | None = None
+    data: dict[str, Any] | None = None
     client_event_id: str | None = None
 
     def __post_init__(self):
@@ -82,14 +85,14 @@ class PipelineResult:
     thread: Thread
     user_event: ThreadEvent
     is_new_thread: bool
-    handler_content: list | None = None
+    handler_content: list[ContentPart] | None = None
 
 
 class HandlerPipeline:
     def __init__(
         self,
         persistence: Persistence,
-        broadcast_callback: Callable[[str, dict], Any] | None = None,
+        broadcast_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         analytics_collector: AnalyticsCollector | None = None,
         settings_broadcaster: SettingsBroadcaster | None = None,
         settings_schema: SettingsSchema | None = None,
@@ -177,8 +180,8 @@ class HandlerPipeline:
                     AnalyticsEvent.THREAD_CREATED.value,
                     thread_id=thread_id,
                     user_id=context.user.user_id,
-                organization_id=context.organization_id,
-                workspace_id=context.workspace_id,
+                    organization_id=context.organization_id,
+                    workspace_id=context.workspace_id,
                 )
 
         if context.content:
@@ -642,7 +645,7 @@ class HandlerPipeline:
 
             raise HandlerError(str(e), original=e) from e
 
-    async def _broadcast(self, worker_id: str, payload: dict) -> None:
+    async def _broadcast(self, worker_id: str, payload: dict[str, Any]) -> None:
         if self._broadcast_callback:
             await self._broadcast_callback(worker_id, payload)
 
@@ -655,7 +658,7 @@ class HandlerPipeline:
         user_id: str | None = None,
         run_id: str | None = None,
         event_id: str | None = None,
-        data: dict | None = None,
+        data: dict[str, Any] | None = None,
         organization_id: str | None = None,
         workspace_id: str | None = None,
     ) -> None:
@@ -750,25 +753,24 @@ class HandlerPipeline:
             broadcaster=NoopBroadcaster(),  # type: ignore
         )
 
-    def _resolve_content_parts(self, parts: list) -> tuple[list, list]:
+    def _resolve_content_parts(
+        self, parts: list[WireC2S_ContentPart | dict[str, Any]]
+    ) -> tuple[list[ContentPart], list[WireS2C_ContentPart]]:
         """Resolve C2S wire content parts into handler format (with bytes) and
         storage format (metadata only, no bytes).
 
         Returns (handler_parts, storage_parts).
         """
-        handler_parts: list = []
-        storage_parts: list = []
+        handler_parts: list[ContentPart] = []
+        storage_parts: list[WireS2C_ContentPart] = []
 
         for part in parts:
             if hasattr(part, "model_dump"):
                 data = part.model_dump()
+            elif isinstance(part, dict):
+                data = part
             else:
-                data = dict(part) if hasattr(part, "__iter__") else part
-
-            if not isinstance(data, dict):
-                handler_parts.append(part)
-                storage_parts.append(part)
-                continue
+                raise ValueError(f"Unsupported content part: {type(part)}")
 
             part_type = data.get("type")
 
@@ -840,27 +842,12 @@ class HandlerPipeline:
                     size_bytes=data.get("size_bytes"),
                 ))
 
-            elif part_type == "image" and "url" in data:
-                # Legacy URL-based format (backward compat)
-                handler_parts.append(part)
-                storage_parts.append(WireS2C_ImagePart(
-                    url=data.get("url"), mime_type=data.get("mime_type"), alt=data.get("alt"),
-                ))
-
-            elif part_type == "document" and "url" in data:
-                handler_parts.append(part)
-                storage_parts.append(WireS2C_DocumentPart(
-                    url=data.get("url"), filename=data.get("filename"),
-                    mime_type=data.get("mime_type"), size_bytes=data.get("size_bytes"),
-                ))
-
             else:
-                handler_parts.append(part)
-                storage_parts.append(part)
+                raise ValueError(f"Unsupported content part type: {part_type!r}")
 
         return handler_parts, storage_parts
 
-    def _extract_message(self, content: list) -> str:
+    def _extract_message(self, content: list[ContentPart]) -> str:
         texts = []
         for part in content:
             if isinstance(part, TextPart):

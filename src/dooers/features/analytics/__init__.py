@@ -1,5 +1,5 @@
 from .collector import AnalyticsCollector
-from .models import AnalyticsBatch, AnalyticsEvent, AnalyticsEventPayload, FeedbackData
+from .models import AnalyticsBatch, AnalyticsEvent, AnalyticsEventPayload
 from .worker_analytics import WorkerAnalytics
 
 __all__ = [
@@ -7,6 +7,5 @@ __all__ = [
     "AnalyticsBatch",
     "AnalyticsEvent",
     "AnalyticsEventPayload",
-    "FeedbackData",
     "WorkerAnalytics",
 ]

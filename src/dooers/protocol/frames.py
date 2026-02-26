@@ -105,6 +105,7 @@ class FeedbackPayload(BaseModel):
     target_id: str
     feedback: Literal["like", "dislike"]
     reason: str | None = None
+    classification: str | None = None
 
 
 class C2S_AnalyticsSubscribe(BaseModel):

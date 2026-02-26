@@ -79,6 +79,8 @@ class WorkerAnalytics:
             user_id=self._user_id,
             reason=reason,
             classification=classification,
+            organization_id=self._organization_id,
+            workspace_id=self._workspace_id,
         )
 
     async def dislike(
@@ -109,4 +111,6 @@ class WorkerAnalytics:
             user_id=self._user_id,
             reason=reason,
             classification=classification,
+            organization_id=self._organization_id,
+            workspace_id=self._workspace_id,
         )

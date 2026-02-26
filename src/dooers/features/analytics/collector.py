@@ -107,6 +107,8 @@ class AnalyticsCollector:
         user_id: str | None = None,
         reason: str | None = None,
         classification: str | None = None,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         event = AnalyticsEvent.FEEDBACK_LIKE if feedback_type == "like" else AnalyticsEvent.FEEDBACK_DISLIKE
         await self.track(
@@ -114,6 +116,8 @@ class AnalyticsCollector:
             worker_id=worker_id,
             thread_id=thread_id,
             user_id=user_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
             data={
                 "target_type": target_type,
                 "target_id": target_id,

@@ -7,7 +7,6 @@ from dooers.features.analytics import (
     AnalyticsCollector,
     AnalyticsEvent,
     AnalyticsEventPayload,
-    FeedbackData,
     WorkerAnalytics,
 )
 from dooers.features.settings import (
@@ -100,7 +99,6 @@ __all__ = [
     "AnalyticsEventPayload",
     "AnalyticsBatch",
     "AnalyticsCollector",
-    "FeedbackData",
     "WorkerAnalytics",
     # Settings
     "SettingsFieldType",

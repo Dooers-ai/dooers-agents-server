@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from dooers.exceptions import HandlerError
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
@@ -133,7 +133,7 @@ class Router:
         ws: WebSocketProtocol,
         ack_id: str,
         ok: bool = True,
-        error: dict | None = None,
+        error: dict[str, str] | None = None,
     ) -> None:
         frame = S2C_Ack(
             id=_generate_id(),
@@ -155,7 +155,7 @@ class Router:
         message = serialize_frame(frame)
         await self._registry.broadcast_except(self._worker_id, ws, message)
 
-    async def _broadcast_to_worker_dict(self, worker_id: str, payload: dict) -> None:
+    async def _broadcast_to_worker_dict(self, worker_id: str, payload: dict[str, Any]) -> None:
         """Convert a dict payload from the pipeline into S2C frames and broadcast."""
         payload_type = payload.get("type")
 
@@ -599,7 +599,10 @@ class Router:
                 worker_id=self._worker_id,
                 user_id=user.user_id,
                 reason=frame.payload.reason,
+                classification=frame.payload.classification,
                 thread_id=thread_id,
+                organization_id=self._organization_id,
+                workspace_id=self._workspace_id,
             )
 
         ack = S2C_FeedbackAck(
@@ -739,25 +742,3 @@ class Router:
 
         await self._send_ack(ws, frame.id)
 
-    async def _track_event(
-        self,
-        event: str,
-        thread_id: str | None = None,
-        run_id: str | None = None,
-        event_id: str | None = None,
-        data: dict | None = None,
-    ) -> None:
-        """Track an analytics event if collector is enabled."""
-        if self._analytics_collector and self._worker_id:
-            user = self._user or User(user_id="")
-            await self._analytics_collector.track(
-                event=event,
-                worker_id=self._worker_id,
-                thread_id=thread_id,
-                user_id=user.user_id,
-                run_id=run_id,
-                event_id=event_id,
-                data=data,
-                organization_id=self._organization_id,
-                workspace_id=self._workspace_id,
-            )
