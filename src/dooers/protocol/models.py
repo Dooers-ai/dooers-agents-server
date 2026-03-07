@@ -116,6 +116,21 @@ WireS2C_ContentPart = Annotated[
     Field(discriminator="type"),
 ]
 
+_S2C_TYPE_MAP: dict[str, type] = {
+    "text": WireS2C_TextPart,
+    "audio": WireS2C_AudioPart,
+    "image": WireS2C_ImagePart,
+    "document": WireS2C_DocumentPart,
+}
+
+
+def deserialize_s2c_part(data: dict) -> WireS2C_ContentPart:
+    """Deserialize a dict into a typed WireS2C content part."""
+    cls = _S2C_TYPE_MAP.get(data.get("type", ""))
+    if cls is None:
+        raise ValueError(f"Unknown content part type: {data.get('type')!r}")
+    return cls(**data)
+
 
 class User(BaseModel):
     user_id: str

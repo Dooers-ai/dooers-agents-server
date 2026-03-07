@@ -123,6 +123,12 @@ class WorkerSend:
             data={"status": status, "error": error},
         )
 
+    def update_user_event(self, event_id: str, content: list[dict]) -> WorkerEvent:
+        return WorkerEvent(
+            send_type="event_update",
+            data={"event_id": event_id, "content": content},
+        )
+
     def update_thread(self, *, title: str | None = None) -> WorkerEvent:
         return WorkerEvent(
             send_type="thread_update",

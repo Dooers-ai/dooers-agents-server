@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dooers.features.analytics.models import AnalyticsEventPayload
-from dooers.protocol.models import Run, Thread, ThreadEvent, User, WireS2C_AudioPart, WireS2C_DocumentPart, WireS2C_ImagePart, WireS2C_TextPart
+from dooers.protocol.models import (
+    Run,
+    Thread,
+    ThreadEvent,
+    User,
+    deserialize_s2c_part,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -451,11 +457,14 @@ class CosmosPersistence:
             return
 
         # Determine match key: prefer user_id, fallback to user_email
-        if user.user_id:
-            match = lambda u: u.user_id == user.user_id
-        elif user.user_email:
-            match = lambda u: u.user_email == user.user_email
-        else:
+        def match(u: User) -> bool:
+            if user.user_id:
+                return u.user_id == user.user_id
+            if user.user_email:
+                return u.user_email == user.user_email
+            return False
+
+        if not user.user_id and not user.user_email:
             return  # No identifier to match on
 
         existing = next((u for u in thread.users if match(u)), None)
@@ -503,22 +512,52 @@ class CosmosPersistence:
         }
         await container.upsert_item(doc)
 
+    async def get_event(self, event_id: str) -> ThreadEvent | None:
+        container = self._get_container("events")
+        query = "SELECT * FROM c WHERE c.id = @id"
+        params = [{"name": "@id", "value": event_id}]
+
+        items = [item async for item in container.query_items(query, parameters=params)]
+        if not items:
+            return None
+        return self._row_to_event(items[0])
+
+    async def update_event(self, event: ThreadEvent) -> None:
+        worker_id = await self._get_worker_id(event.thread_id)
+        if not worker_id:
+            raise ValueError(f"Thread {event.thread_id} not found")
+
+        container = self._get_container("events")
+
+        # Read existing document to preserve all fields, then update content
+        try:
+            doc = await container.read_item(event.id, partition_key=worker_id)
+        except CosmosResourceNotFoundError:
+            return
+
+        content_json = None
+        if event.content:
+            content_json = [self._serialize_content_part(p) for p in event.content]
+        doc["content"] = content_json
+
+        await container.upsert_item(doc)
+
+    async def delete_event(self, event_id: str) -> None:
+        container = self._get_container("events")
+        query = "SELECT c.id, c.worker_id FROM c WHERE c.id = @id"
+        params = [{"name": "@id", "value": event_id}]
+
+        items = [item async for item in container.query_items(query, parameters=params)]
+        if items:
+            await container.delete_item(items[0]["id"], partition_key=items[0]["worker_id"])
+
     def _serialize_content_part(self, part) -> dict:
         if hasattr(part, "model_dump"):
             return part.model_dump()
         return dict(part)
 
     def _deserialize_content_part(self, data: dict):
-        part_type = data.get("type")
-        if part_type == "text":
-            return WireS2C_TextPart(**data)
-        elif part_type == "audio":
-            return WireS2C_AudioPart(**data)
-        elif part_type == "image":
-            return WireS2C_ImagePart(**data)
-        elif part_type == "document":
-            return WireS2C_DocumentPart(**data)
-        return data
+        return deserialize_s2c_part(data)
 
     async def get_settings(self, worker_id: str) -> dict[str, Any]:
         container = self._get_container("settings")

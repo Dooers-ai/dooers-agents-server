@@ -32,6 +32,7 @@ from dooers.protocol.models import (
     WireS2C_DocumentPart,
     WireS2C_ImagePart,
     WireS2C_TextPart,
+    deserialize_s2c_part,
 )
 
 if TYPE_CHECKING:
@@ -568,6 +569,23 @@ class HandlerPipeline:
                         workspace_id=context.workspace_id,
                     )
 
+                elif event.send_type == "event_update":
+                    target_event_id = event.data["event_id"]
+                    existing_event = await self._persistence.get_event(target_event_id)
+                    if not existing_event:
+                        logger.warning("[workers] event_update: event %s not found", target_event_id)
+                    else:
+                        existing_event.content = [deserialize_s2c_part(p) for p in event.data["content"]]
+                        await self._persistence.update_event(existing_event)
+                        await self._broadcast(
+                            context.worker_id,
+                            {
+                                "type": "event.append",
+                                "thread_id": existing_event.thread_id,
+                                "events": [existing_event],
+                            },
+                        )
+
                 elif event.send_type == "thread_update":
                     thread = await self._persistence.get_thread(thread_id)
                     if thread:
@@ -786,61 +804,101 @@ class HandlerPipeline:
                     raise UploadReferenceError(f"Upload reference '{ref_id}' not found or expired")
 
                 if part_type == "audio":
-                    handler_parts.append(AudioPart(
-                        data=entry.data, mime_type=entry.mime_type,
-                        duration=data.get("duration"), filename=entry.filename,
-                    ))
-                    storage_parts.append(WireS2C_AudioPart(
-                        mime_type=entry.mime_type, duration=data.get("duration"),
-                        filename=entry.filename,
-                    ))
+                    handler_parts.append(
+                        AudioPart(
+                            data=entry.data,
+                            mime_type=entry.mime_type,
+                            duration=data.get("duration"),
+                            filename=entry.filename,
+                        )
+                    )
+                    storage_parts.append(
+                        WireS2C_AudioPart(
+                            mime_type=entry.mime_type,
+                            duration=data.get("duration"),
+                            filename=entry.filename,
+                        )
+                    )
                 elif part_type == "image":
-                    handler_parts.append(ImagePart(
-                        data=entry.data, mime_type=entry.mime_type,
-                        filename=entry.filename,
-                    ))
-                    storage_parts.append(WireS2C_ImagePart(
-                        mime_type=entry.mime_type, filename=entry.filename,
-                    ))
+                    handler_parts.append(
+                        ImagePart(
+                            data=entry.data,
+                            mime_type=entry.mime_type,
+                            filename=entry.filename,
+                        )
+                    )
+                    storage_parts.append(
+                        WireS2C_ImagePart(
+                            mime_type=entry.mime_type,
+                            filename=entry.filename,
+                        )
+                    )
                 elif part_type == "document":
-                    handler_parts.append(DocumentPart(
-                        data=entry.data, mime_type=entry.mime_type,
-                        filename=entry.filename, size_bytes=entry.size_bytes,
-                    ))
-                    storage_parts.append(WireS2C_DocumentPart(
-                        mime_type=entry.mime_type, filename=entry.filename,
-                        size_bytes=entry.size_bytes,
-                    ))
+                    handler_parts.append(
+                        DocumentPart(
+                            data=entry.data,
+                            mime_type=entry.mime_type,
+                            filename=entry.filename,
+                            size_bytes=entry.size_bytes,
+                        )
+                    )
+                    storage_parts.append(
+                        WireS2C_DocumentPart(
+                            mime_type=entry.mime_type,
+                            filename=entry.filename,
+                            size_bytes=entry.size_bytes,
+                        )
+                    )
 
             elif part_type == "audio" and "data" in data:
                 # Dispatch path — bytes passed directly
-                handler_parts.append(AudioPart(
-                    data=data["data"], mime_type=data.get("mime_type", ""),
-                    duration=data.get("duration"), filename=data.get("filename"),
-                ))
-                storage_parts.append(WireS2C_AudioPart(
-                    mime_type=data.get("mime_type"), duration=data.get("duration"),
-                    filename=data.get("filename"),
-                ))
+                handler_parts.append(
+                    AudioPart(
+                        data=data["data"],
+                        mime_type=data.get("mime_type", ""),
+                        duration=data.get("duration"),
+                        filename=data.get("filename"),
+                    )
+                )
+                storage_parts.append(
+                    WireS2C_AudioPart(
+                        mime_type=data.get("mime_type"),
+                        duration=data.get("duration"),
+                        filename=data.get("filename"),
+                    )
+                )
 
             elif part_type == "image" and "data" in data:
-                handler_parts.append(ImagePart(
-                    data=data["data"], mime_type=data.get("mime_type", ""),
-                    filename=data.get("filename"),
-                ))
-                storage_parts.append(WireS2C_ImagePart(
-                    mime_type=data.get("mime_type"), filename=data.get("filename"),
-                ))
+                handler_parts.append(
+                    ImagePart(
+                        data=data["data"],
+                        mime_type=data.get("mime_type", ""),
+                        filename=data.get("filename"),
+                    )
+                )
+                storage_parts.append(
+                    WireS2C_ImagePart(
+                        mime_type=data.get("mime_type"),
+                        filename=data.get("filename"),
+                    )
+                )
 
             elif part_type == "document" and "data" in data:
-                handler_parts.append(DocumentPart(
-                    data=data["data"], mime_type=data.get("mime_type", ""),
-                    filename=data.get("filename", ""), size_bytes=data.get("size_bytes", 0),
-                ))
-                storage_parts.append(WireS2C_DocumentPart(
-                    mime_type=data.get("mime_type"), filename=data.get("filename"),
-                    size_bytes=data.get("size_bytes"),
-                ))
+                handler_parts.append(
+                    DocumentPart(
+                        data=data["data"],
+                        mime_type=data.get("mime_type", ""),
+                        filename=data.get("filename", ""),
+                        size_bytes=data.get("size_bytes", 0),
+                    )
+                )
+                storage_parts.append(
+                    WireS2C_DocumentPart(
+                        mime_type=data.get("mime_type"),
+                        filename=data.get("filename"),
+                        size_bytes=data.get("size_bytes"),
+                    )
+                )
 
             else:
                 raise ValueError(f"Unsupported content part type: {part_type!r}")

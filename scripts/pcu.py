@@ -44,7 +44,12 @@ def load_pyproject() -> dict:
 
 
 def parse_dependency(dep_string: str) -> tuple[str, str, str, str]:
-    """Parse a dependency string into (name, extras, operator, version)."""
+    """Parse a dependency string into (name, extras, operator, version).
+
+    Handles compound version constraints like `<1.0.0,>=0.114.2` by splitting
+    the package name from version specifiers first, then extracting the
+    lower-bound constraint as the pinned version.
+    """
     extras = ""
     name = dep_string.strip()
 
@@ -55,12 +60,33 @@ def parse_dependency(dep_string: str) -> tuple[str, str, str, str]:
         extras = name[bracket_start : bracket_end + 1]
         name = name[:bracket_start] + name[bracket_end + 1 :]
 
-    for op in [">=", "==", "~=", "<=", "!=", "<", ">"]:
-        if op in name:
-            parts = name.split(op, 1)
-            return parts[0].strip(), extras, op, parts[1].strip()
+    # separate package name from version specifiers at the first operator char
+    spec_start = -1
+    for i, ch in enumerate(name):
+        if ch in "<>=!~":
+            spec_start = i
+            break
 
-    return name.strip(), extras, "", ""
+    if spec_start == -1:
+        return name.strip(), extras, "", ""
+
+    pkg_name = name[:spec_start].strip()
+    version_spec = name[spec_start:]
+
+    # extract the lower-bound (>=, ==, ~=) as the "pinned" version
+    for constraint in version_spec.split(","):
+        constraint = constraint.strip()
+        for op in [">=", "==", "~="]:
+            if constraint.startswith(op):
+                return pkg_name, extras, op, constraint[len(op) :]
+
+    # fallback: use the first constraint found
+    for op in [">=", "==", "~=", "<=", "!=", "<", ">"]:
+        if version_spec.startswith(op):
+            ver = version_spec[len(op) :].split(",")[0].strip()
+            return pkg_name, extras, op, ver
+
+    return pkg_name, extras, "", ""
 
 
 def get_all_dependencies(pyproject: dict) -> list[dict]:
@@ -240,7 +266,11 @@ def cmd_check():
         # group separator
         if dep["group"] != current_group:
             current_group = dep["group"]
-            group_label = {"main": "dependencies", "dev": "optional-dependencies.dev", "dep-group": "dependency-groups.dev"}
+            group_label = {
+                "main": "dependencies",
+                "dev": "optional-dependencies.dev",
+                "dep-group": "dependency-groups.dev",
+            }
             print(f"\n  {DIM}[{group_label.get(current_group, current_group)}]{RESET}")
 
         name_display = dep["name"] + dep["extras"]

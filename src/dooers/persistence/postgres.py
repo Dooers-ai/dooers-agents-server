@@ -8,7 +8,13 @@ from typing import Any
 import asyncpg
 
 from dooers.features.analytics.models import AnalyticsEventPayload
-from dooers.protocol.models import Run, Thread, ThreadEvent, User, WireS2C_AudioPart, WireS2C_DocumentPart, WireS2C_ImagePart, WireS2C_TextPart
+from dooers.protocol.models import (
+    Run,
+    Thread,
+    ThreadEvent,
+    User,
+    deserialize_s2c_part,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -731,6 +737,22 @@ class PostgresPersistence:
             return None
         return self._row_to_event(row)
 
+    async def update_event(self, event: ThreadEvent) -> None:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}events"
+        content_json = None
+        if event.content:
+            content_json = json.dumps([self._serialize_content_part(p) for p in event.content])
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE {table} SET content = $1 WHERE id = $2",
+                content_json,
+                event.id,
+            )
+
     async def delete_event(self, event_id: str) -> None:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -824,16 +846,7 @@ class PostgresPersistence:
         return dict(part)
 
     def _deserialize_content_part(self, data: dict):
-        part_type = data.get("type")
-        if part_type == "text":
-            return WireS2C_TextPart(**data)
-        elif part_type == "audio":
-            return WireS2C_AudioPart(**data)
-        elif part_type == "image":
-            return WireS2C_ImagePart(**data)
-        elif part_type == "document":
-            return WireS2C_DocumentPart(**data)
-        return data
+        return deserialize_s2c_part(data)
 
     async def get_settings(self, worker_id: str) -> dict[str, Any]:
         """Get all stored values for a worker. Returns empty dict if none."""
