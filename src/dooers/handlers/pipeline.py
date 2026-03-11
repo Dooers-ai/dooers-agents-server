@@ -295,6 +295,17 @@ class HandlerPipeline:
                             "run": run,
                         },
                     )
+                    # Associate the user request event with this run (it was created with run_id=None in setup)
+                    result.user_event.run_id = current_run_id
+                    await self._persistence.update_event(result.user_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [result.user_event],
+                        },
+                    )
 
                 elif event.send_type == "run_end":
                     if current_run_id:

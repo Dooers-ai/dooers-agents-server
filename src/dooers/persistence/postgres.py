@@ -557,6 +557,36 @@ class PostgresPersistence:
                 event.created_at,
             )
 
+    async def update_event(self, event: ThreadEvent) -> None:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}events"
+        content_json = None
+        if event.content:
+            content_json = json.dumps([self._serialize_content_part(p) for p in event.content])
+
+        data_json = json.dumps(event.data) if event.data else None
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                UPDATE {table}
+                SET run_id = $1, type = $2, actor = $3, author = $4, user_id = $5, user_name = $6, user_email = $7, content = $8, data = $9
+                WHERE id = $10
+                """,
+                event.run_id,
+                event.type,
+                event.actor,
+                event.author,
+                event.user.user_id or None,
+                event.user.user_name,
+                event.user.user_email,
+                content_json,
+                data_json,
+                event.id,
+            )
+
     async def get_events(
         self,
         thread_id: str,

@@ -345,6 +345,33 @@ class CosmosPersistence:
         }
         await container.create_item(doc)
 
+    async def update_event(self, event: ThreadEvent) -> None:
+        worker_id = await self._get_worker_id(event.thread_id)
+        if not worker_id:
+            raise ValueError(f"Thread {event.thread_id} not found")
+
+        container = self._get_container("events")
+        content_json = None
+        if event.content:
+            content_json = [self._serialize_content_part(p) for p in event.content]
+
+        doc = {
+            "id": event.id,
+            "worker_id": worker_id,
+            "thread_id": event.thread_id,
+            "run_id": event.run_id,
+            "type": event.type,
+            "actor": event.actor,
+            "author": event.author,
+            "user_id": event.user.user_id or None,
+            "user_name": event.user.user_name,
+            "user_email": event.user.user_email,
+            "content": content_json,
+            "data": event.data,
+            "created_at": event.created_at.isoformat(),
+        }
+        await container.replace_item(item=event.id, body=doc, partition_key=worker_id)
+
     async def get_events(
         self,
         thread_id: str,
