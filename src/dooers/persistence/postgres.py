@@ -401,23 +401,19 @@ class PostgresPersistence:
             await conn.execute(f"DELETE FROM {runs_table} WHERE thread_id = $1", thread_id)
             await conn.execute(f"DELETE FROM {threads_table} WHERE id = $1", thread_id)
 
-    async def count_threads(
+    def _build_scope_conditions(
         self,
-        worker_id: str,
+        scope: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
-        scope: str = "member",
-        user_email: str | None = None,
+        user_email: str | None,
+        identity_ids: list[str] | None,
+        conditions: list[str],
+        params: list,
+        idx: int,
     ) -> int:
-        if not self._pool:
-            raise RuntimeError("Not connected")
-
-        table = f"{self._prefix}threads"
-        conditions: list[str] = ["worker_id = $1"]
-        params: list[Any] = [worker_id]
-        idx = 2
-
+        """Append scope-based WHERE conditions for thread queries. Returns updated idx."""
         if scope == "organization":
             conditions.append(f"organization_id = ${idx}")
             params.append(organization_id)
@@ -436,7 +432,23 @@ class PostgresPersistence:
             conditions.append(f"workspace_id = ${idx}")
             params.append(workspace_id)
             idx += 1
-            if user_id:
+            if identity_ids:
+                # OR'd containment checks use the GIN index on users column
+                or_parts: list[str] = []
+                for uid in identity_ids:
+                    or_parts.append(f"users @> ${idx}::jsonb")
+                    params.append(json.dumps([{"user_id": uid}]))
+                    idx += 1
+                # Also check thread users' stored identity_ids for any match
+                or_parts.append(f"""EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(users) AS u,
+                    jsonb_array_elements_text(COALESCE(u->'identity_ids', '[]'::jsonb)) AS iid
+                    WHERE iid = ANY(${idx}::text[])
+                )""")
+                params.append(identity_ids)
+                idx += 1
+                conditions.append(f"({' OR '.join(or_parts)})")
+            elif user_id:
                 conditions.append(f"users @> ${idx}::jsonb")
                 params.append(json.dumps([{"user_id": user_id}]))
                 idx += 1
@@ -445,6 +457,30 @@ class PostgresPersistence:
                 params.append(json.dumps([{"user_email": user_email}]))
                 idx += 1
         # scope == "admin" — no additional filters
+        return idx
+
+    async def count_threads(
+        self,
+        worker_id: str,
+        organization_id: str,
+        workspace_id: str,
+        user_id: str | None,
+        scope: str = "member",
+        user_email: str | None = None,
+        identity_ids: list[str] | None = None,
+    ) -> int:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}threads"
+        conditions: list[str] = ["worker_id = $1"]
+        params: list[Any] = [worker_id]
+        idx = 2
+
+        idx = self._build_scope_conditions(
+            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
+            conditions, params, idx,
+        )
 
         where = " AND ".join(conditions)
         query = f"SELECT COUNT(*) FROM {table} WHERE {where}"
@@ -462,6 +498,7 @@ class PostgresPersistence:
         limit: int,
         scope: str = "member",
         user_email: str | None = None,
+        identity_ids: list[str] | None = None,
     ) -> list[Thread]:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -471,33 +508,10 @@ class PostgresPersistence:
         params: list[Any] = [worker_id]
         idx = 2
 
-        if scope == "organization":
-            conditions.append(f"organization_id = ${idx}")
-            params.append(organization_id)
-            idx += 1
-        elif scope == "workspace":
-            conditions.append(f"organization_id = ${idx}")
-            params.append(organization_id)
-            idx += 1
-            conditions.append(f"workspace_id = ${idx}")
-            params.append(workspace_id)
-            idx += 1
-        elif scope == "member":
-            conditions.append(f"organization_id = ${idx}")
-            params.append(organization_id)
-            idx += 1
-            conditions.append(f"workspace_id = ${idx}")
-            params.append(workspace_id)
-            idx += 1
-            if user_id:
-                conditions.append(f"users @> ${idx}::jsonb")
-                params.append(json.dumps([{"user_id": user_id}]))
-                idx += 1
-            elif user_email:
-                conditions.append(f"users @> ${idx}::jsonb")
-                params.append(json.dumps([{"user_email": user_email}]))
-                idx += 1
-        # scope == "admin" — no additional filters
+        idx = self._build_scope_conditions(
+            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
+            conditions, params, idx,
+        )
 
         if cursor:
             if "|" in cursor:

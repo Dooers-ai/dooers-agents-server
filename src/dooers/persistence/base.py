@@ -30,6 +30,7 @@ class Persistence(Protocol):
         limit: int,
         scope: str = "member",
         user_email: str | None = None,
+        identity_ids: list[str] | None = None,
     ) -> list[Thread]: ...
     async def count_threads(
         self,
@@ -39,6 +40,7 @@ class Persistence(Protocol):
         user_id: str | None,
         scope: str = "member",
         user_email: str | None = None,
+        identity_ids: list[str] | None = None,
     ) -> int: ...
     async def delete_thread(self, thread_id: str) -> None: ...
     async def create_event(self, event: ThreadEvent) -> None: ...

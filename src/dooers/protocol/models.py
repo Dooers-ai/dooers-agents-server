@@ -136,6 +136,7 @@ class User(BaseModel):
     user_id: str
     user_name: str | None = None
     user_email: str | None = None
+    identity_ids: list[str] = []
     system_role: str = "user"
     organization_role: str = "member"
     workspace_role: str = "member"

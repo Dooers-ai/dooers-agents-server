@@ -202,20 +202,18 @@ class CosmosPersistence:
 
         self._thread_worker_cache.pop(thread_id, None)
 
-    async def count_threads(
+    def _build_scope_conditions(
         self,
-        worker_id: str,
+        scope: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
-        scope: str = "member",
-        user_email: str | None = None,
-    ) -> int:
-        container = self._get_container("threads")
-
-        conditions = ["c.worker_id = @worker_id"]
-        params = [{"name": "@worker_id", "value": worker_id}]
-
+        user_email: str | None,
+        identity_ids: list[str] | None,
+        conditions: list[str],
+        params: list[dict[str, str]],
+    ) -> None:
+        """Append scope-based WHERE conditions for thread queries."""
         if scope == "organization":
             conditions.append("c.organization_id = @organization_id")
             params.append({"name": "@organization_id", "value": organization_id})
@@ -229,13 +227,42 @@ class CosmosPersistence:
             params.append({"name": "@organization_id", "value": organization_id})
             conditions.append("c.workspace_id = @workspace_id")
             params.append({"name": "@workspace_id", "value": workspace_id})
-            if user_id:
+            if identity_ids:
+                conditions.append(
+                    "EXISTS(SELECT VALUE u FROM u IN c.users "
+                    "WHERE ARRAY_CONTAINS(@all_ids, u.user_id) "
+                    "OR (IS_DEFINED(u.identity_ids) AND EXISTS("
+                    "SELECT VALUE iid FROM iid IN u.identity_ids "
+                    "WHERE ARRAY_CONTAINS(@all_ids, iid))))"
+                )
+                params.append({"name": "@all_ids", "value": identity_ids})
+            elif user_id:
                 conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
                 params.append({"name": "@user_id", "value": user_id})
             elif user_email:
                 conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_email = @user_email)")
                 params.append({"name": "@user_email", "value": user_email})
         # scope == "admin" — no additional filters
+
+    async def count_threads(
+        self,
+        worker_id: str,
+        organization_id: str,
+        workspace_id: str,
+        user_id: str | None,
+        scope: str = "member",
+        user_email: str | None = None,
+        identity_ids: list[str] | None = None,
+    ) -> int:
+        container = self._get_container("threads")
+
+        conditions = ["c.worker_id = @worker_id"]
+        params = [{"name": "@worker_id", "value": worker_id}]
+
+        self._build_scope_conditions(
+            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
+            conditions, params,
+        )
 
         where = " AND ".join(conditions)
         query = f"SELECT VALUE COUNT(1) FROM c WHERE {where}"
@@ -260,32 +287,17 @@ class CosmosPersistence:
         limit: int,
         scope: str = "member",
         user_email: str | None = None,
+        identity_ids: list[str] | None = None,
     ) -> list[Thread]:
         container = self._get_container("threads")
 
         conditions = ["c.worker_id = @worker_id"]
         params = [{"name": "@worker_id", "value": worker_id}]
 
-        if scope == "organization":
-            conditions.append("c.organization_id = @organization_id")
-            params.append({"name": "@organization_id", "value": organization_id})
-        elif scope == "workspace":
-            conditions.append("c.organization_id = @organization_id")
-            params.append({"name": "@organization_id", "value": organization_id})
-            conditions.append("c.workspace_id = @workspace_id")
-            params.append({"name": "@workspace_id", "value": workspace_id})
-        elif scope == "member":
-            conditions.append("c.organization_id = @organization_id")
-            params.append({"name": "@organization_id", "value": organization_id})
-            conditions.append("c.workspace_id = @workspace_id")
-            params.append({"name": "@workspace_id", "value": workspace_id})
-            if user_id:
-                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
-                params.append({"name": "@user_id", "value": user_id})
-            elif user_email:
-                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_email = @user_email)")
-                params.append({"name": "@user_email", "value": user_email})
-        # scope == "admin" — no additional filters
+        self._build_scope_conditions(
+            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
+            conditions, params,
+        )
 
         if cursor:
             if "|" in cursor:

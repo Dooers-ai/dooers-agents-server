@@ -266,6 +266,8 @@ class Router:
 
         user = self._user or User(user_id="")
         scope = resolve_scope(user)
+        # Build complete identity set for thread filtering
+        all_identity_ids = [uid for uid in [user.user_id, *(user.identity_ids or [])] if uid]
         limit = frame.payload.limit or 30
         threads = await self._persistence.list_threads(
             worker_id=self._worker_id,
@@ -276,6 +278,7 @@ class Router:
             limit=limit + 1,
             scope=scope,
             user_email=user.user_email,
+            identity_ids=all_identity_ids or None,
         )
         has_more = len(threads) > limit
         if has_more:
@@ -291,6 +294,7 @@ class Router:
                 user_id=user.user_id,
                 scope=scope,
                 user_email=user.user_email,
+                identity_ids=all_identity_ids or None,
             )
 
         last = threads[-1] if has_more else None

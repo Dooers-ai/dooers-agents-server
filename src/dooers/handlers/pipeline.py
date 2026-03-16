@@ -216,12 +216,15 @@ class HandlerPipeline:
             },
         )
 
+        # Determine content type for c2s analytics (consistent with s2c tracking)
+        c2s_content_type = storage_parts[0].type if storage_parts else "text"
         await self._track_event(
             context.worker_id,
             AnalyticsEvent.MESSAGE_C2S.value,
             thread_id=thread_id,
             user_id=context.user.user_id,
             event_id=user_event_id,
+            data={"type": c2s_content_type},
             organization_id=context.organization_id,
             workspace_id=context.workspace_id,
         )
