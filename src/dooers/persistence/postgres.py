@@ -762,8 +762,14 @@ class PostgresPersistence:
 
         async with self._pool.acquire() as conn:
             await conn.execute(
-                f"UPDATE {table} SET content = $1 WHERE id = $2",
+                f"""
+                UPDATE {table}
+                SET content = $1, run_id = $2, author = $3
+                WHERE id = $4
+                """,
                 content_json,
+                event.run_id,
+                event.author,
                 event.id,
             )
 

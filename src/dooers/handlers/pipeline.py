@@ -56,6 +56,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _user_author_display(user: User) -> str | None:
+    """Display name for persisted user message events (Cosmos/Postgres `author` field)."""
+    if user.user_name and str(user.user_name).strip():
+        return str(user.user_name).strip()
+    if user.user_email and str(user.user_email).strip():
+        return str(user.user_email).strip()
+    if user.user_id and str(user.user_id).strip():
+        return str(user.user_id).strip()
+    return None
+
+
 Handler = Callable[
     [WorkerIncoming, WorkerSend, WorkerMemory, WorkerAnalytics, WorkerSettings],
     AsyncGenerator[WorkerEvent, None],
@@ -199,6 +210,7 @@ class HandlerPipeline:
             run_id=None,
             type="message",
             actor="user",
+            author=_user_author_display(context.user),
             user=context.user,
             content=storage_parts,
             data=context.data,
@@ -214,19 +226,6 @@ class HandlerPipeline:
                 "thread_id": thread_id,
                 "events": [user_event],
             },
-        )
-
-        # Determine content type for c2s analytics (consistent with s2c tracking)
-        c2s_content_type = storage_parts[0].type if storage_parts else "text"
-        await self._track_event(
-            context.worker_id,
-            AnalyticsEvent.MESSAGE_C2S.value,
-            thread_id=thread_id,
-            user_id=context.user.user_id,
-            event_id=user_event_id,
-            data={"type": c2s_content_type},
-            organization_id=context.organization_id,
-            workspace_id=context.workspace_id,
         )
 
         return PipelineResult(
@@ -245,6 +244,9 @@ class HandlerPipeline:
         thread = result.thread
 
         handler_content = result.handler_content or []
+        c2s_content_type = (
+            getattr(handler_content[0], "type", "text") if handler_content else "text"
+        )
         message = self._extract_message(handler_content)
         worker_context = WorkerContext(
             thread_id=thread_id,
@@ -297,6 +299,28 @@ class HandlerPipeline:
                             "type": "run.upsert",
                             "run": run,
                         },
+                    )
+
+                    result.user_event.run_id = current_run_id
+                    await self._persistence.update_event(result.user_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [result.user_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.MESSAGE_C2S.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=result.user_event.id,
+                        data={"type": c2s_content_type},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
                     )
 
                 elif event.send_type == "run_end":
@@ -609,7 +633,33 @@ class HandlerPipeline:
 
                 yield event
 
+            if result.user_event.run_id is None:
+                await self._track_event(
+                    context.worker_id,
+                    AnalyticsEvent.MESSAGE_C2S.value,
+                    thread_id=thread_id,
+                    user_id=context.user.user_id,
+                    run_id=None,
+                    event_id=result.user_event.id,
+                    data={"type": c2s_content_type},
+                    organization_id=context.organization_id,
+                    workspace_id=context.workspace_id,
+                )
+
         except Exception as e:
+            if result.user_event.run_id is None:
+                await self._track_event(
+                    context.worker_id,
+                    AnalyticsEvent.MESSAGE_C2S.value,
+                    thread_id=thread_id,
+                    user_id=context.user.user_id,
+                    run_id=None,
+                    event_id=result.user_event.id,
+                    data={"type": c2s_content_type},
+                    organization_id=context.organization_id,
+                    workspace_id=context.workspace_id,
+                )
+
             logger.error("[workers] handler error: %s", e, exc_info=True)
 
             await self._track_event(
