@@ -140,6 +140,11 @@ class C2S_EventList(BaseModel):
 
 class SettingsSubscribePayload(BaseModel):
     worker_id: str
+    audience: Literal["creator", "user"] = "user"
+    """Which settings surface to load: studio/creator vs runtime user."""
+
+    agent_owner_user_id: str | None = None
+    """Platform agent owner (from GET /agents). Required for creator audience when not org admin/manager."""
 
 
 class SettingsUnsubscribePayload(BaseModel):

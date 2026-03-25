@@ -16,6 +16,14 @@ class SettingsFieldType(StrEnum):
     IMAGE = "image"
 
 
+class SettingsFieldVisibility(StrEnum):
+    """Who may receive this field over WebSocket (internal is handler-only)."""
+
+    INTERNAL = "internal"
+    CREATOR = "creator"
+    USER = "user"
+
+
 class SettingsSelectOption(BaseModel):
     value: str
     label: str
@@ -28,7 +36,7 @@ class SettingsField(BaseModel):
     required: bool = False
     readonly: bool = False
     value: Any = None
-    is_internal: bool = False
+    visibility: SettingsFieldVisibility = SettingsFieldVisibility.USER
 
     placeholder: str | None = None
     options: list[SettingsSelectOption] | None = None
@@ -45,7 +53,7 @@ class SettingsFieldGroup(BaseModel):
     label: str
     fields: list[SettingsField]
     collapsible: Literal["open", "closed"] | None = None
-    is_internal: bool = False
+    visibility: SettingsFieldVisibility = SettingsFieldVisibility.USER
 
 
 def _collect_all_fields(items: list["SettingsField | SettingsFieldGroup"]) -> list[SettingsField]:
@@ -83,16 +91,31 @@ class SettingsSchema(BaseModel):
     def get_defaults(self) -> dict[str, Any]:
         return {f.id: f.value for f in _collect_all_fields(self.fields)}
 
-    def get_public_fields(self) -> list["SettingsField | SettingsFieldGroup"]:
+    def get_fields_for_audience(
+        self, audience: Literal["creator", "user"]
+    ) -> list["SettingsField | SettingsFieldGroup"]:
+        """Fields visible to the given WebSocket subscription audience (never internal)."""
+
+        def _field_visible(f: SettingsField) -> bool:
+            if f.visibility == SettingsFieldVisibility.INTERNAL:
+                return False
+            if audience == "creator":
+                return f.visibility == SettingsFieldVisibility.CREATOR
+            return f.visibility == SettingsFieldVisibility.USER
+
         result: list[SettingsField | SettingsFieldGroup] = []
         for item in self.fields:
             if isinstance(item, SettingsFieldGroup):
-                if item.is_internal:
+                if item.visibility == SettingsFieldVisibility.INTERNAL:
                     continue
-                public_children = [f for f in item.fields if not f.is_internal]
+                public_children = [f for f in item.fields if _field_visible(f)]
                 if public_children:
                     group_copy = item.model_copy(update={"fields": public_children})
                     result.append(group_copy)
-            elif not item.is_internal:
+            elif _field_visible(item):
                 result.append(item)
         return result
+
+    def get_public_fields(self) -> list["SettingsField | SettingsFieldGroup"]:
+        """Deprecated: use get_fields_for_audience('user'). Kept for backward compatibility."""
+        return self.get_fields_for_audience("user")

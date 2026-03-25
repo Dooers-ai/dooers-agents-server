@@ -46,6 +46,7 @@ from dooers.protocol.frames import (
 from dooers.protocol.models import User
 from dooers.protocol.parser import serialize_frame
 from dooers.registry import ConnectionRegistry
+from dooers.features.settings.models import SettingsFieldVisibility
 
 if TYPE_CHECKING:
     from dooers.features.analytics.collector import AnalyticsCollector
@@ -80,6 +81,15 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _can_access_creator_settings(user: User, *, agent_owner_user_id: str | None) -> bool:
+    """Creator-level settings: org owner/manager, or the platform agent owner user."""
+    if user.organization_role in ("owner", "manager"):
+        return True
+    if agent_owner_user_id and user.user_id == agent_owner_user_id:
+        return True
+    return False
+
+
 class Router:
     def __init__(
         self,
@@ -93,6 +103,7 @@ class Router:
         assistant_name: str = "Assistant",
         analytics_subscriptions: dict[str, set[str]] | None = None,
         settings_subscriptions: dict[str, set[str]] | None = None,
+        settings_ws_context: dict[str, dict[str, Any]] | None = None,
         upload_store: UploadStore | None = None,
     ):
         self._persistence = persistence
@@ -106,6 +117,7 @@ class Router:
         self._assistant_name = assistant_name
         self._analytics_subscriptions = analytics_subscriptions if analytics_subscriptions is not None else {}
         self._settings_subscriptions = settings_subscriptions if settings_subscriptions is not None else {}
+        self._settings_ws_context = settings_ws_context if settings_ws_context is not None else {}
 
         self._ws: WebSocketProtocol | None = None
         self._ws_id: str = _generate_id()
@@ -235,6 +247,8 @@ class Router:
                 self._settings_subscriptions[self._worker_id].discard(self._ws_id)
                 if not self._settings_subscriptions[self._worker_id]:
                     del self._settings_subscriptions[self._worker_id]
+
+        self._settings_ws_context.pop(self._ws_id, None)
 
         if self._ws_id in self._subscriptions:
             del self._subscriptions[self._ws_id]
@@ -654,9 +668,32 @@ class Router:
             )
             return
 
+        audience = frame.payload.audience
+        if audience == "creator":
+            if not self._user or not _can_access_creator_settings(
+                self._user,
+                agent_owner_user_id=frame.payload.agent_owner_user_id,
+            ):
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={
+                        "code": "FORBIDDEN",
+                        "message": "Creator-level settings require org admin or agent owner",
+                    },
+                )
+                return
+
         if worker_id not in self._settings_subscriptions:
             self._settings_subscriptions[worker_id] = set()
         self._settings_subscriptions[worker_id].add(self._ws_id)
+
+        self._settings_ws_context[self._ws_id] = {
+            "worker_id": worker_id,
+            "audience": audience,
+            "ws": ws,
+        }
 
         if self._settings_broadcaster:
             values = await self._persistence.get_settings(worker_id)
@@ -665,6 +702,7 @@ class Router:
                 ws=ws,
                 schema=self._settings_schema,
                 values=values,
+                audience=audience,
             )
 
         await self._send_ack(ws, frame.id)
@@ -679,6 +717,8 @@ class Router:
             self._settings_subscriptions[worker_id].discard(self._ws_id)
             if not self._settings_subscriptions[worker_id]:
                 del self._settings_subscriptions[worker_id]
+
+        self._settings_ws_context.pop(self._ws_id, None)
 
         await self._send_ack(ws, frame.id)
 
@@ -727,12 +767,37 @@ class Router:
             )
             return
 
-        if field.is_internal:
+        if field.visibility == SettingsFieldVisibility.INTERNAL:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
                 error={"code": "INTERNAL", "message": f"Field '{field_id}' is internal"},
+            )
+            return
+
+        ctx = self._settings_ws_context.get(self._ws_id)
+        effective_audience = ctx.get("audience", "user") if ctx else "user"
+        if field.visibility == SettingsFieldVisibility.CREATOR and effective_audience != "creator":
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={
+                    "code": "FORBIDDEN",
+                    "message": "Subscribe with audience=creator before patching creator settings",
+                },
+            )
+            return
+        if field.visibility == SettingsFieldVisibility.USER and effective_audience != "user":
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={
+                    "code": "FORBIDDEN",
+                    "message": "Subscribe with audience=user before patching user settings",
+                },
             )
             return
 

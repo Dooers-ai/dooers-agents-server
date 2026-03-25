@@ -14,6 +14,7 @@ from dooers.features.settings import (
     SettingsField,
     SettingsFieldGroup,
     SettingsFieldType,
+    SettingsFieldVisibility,
     SettingsSchema,
     SettingsSelectOption,
     WorkerSettings,
@@ -102,6 +103,7 @@ __all__ = [
     "WorkerAnalytics",
     # Settings
     "SettingsFieldType",
+    "SettingsFieldVisibility",
     "SettingsField",
     "SettingsFieldGroup",
     "SettingsSelectOption",

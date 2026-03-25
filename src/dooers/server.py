@@ -49,6 +49,7 @@ class WorkerServer:
 
         self._analytics_subscriptions: dict[str, set[str]] = {}  # worker_id -> set of ws_ids
         self._settings_subscriptions: dict[str, set[str]] = {}  # worker_id -> set of ws_ids
+        self._settings_ws_context: dict[str, dict[str, Any]] = {}  # ws_id -> { worker_id, audience, ws }
 
         self._broadcast: BroadcastManager | None = None
 
@@ -135,6 +136,7 @@ class WorkerServer:
         self._settings_broadcaster = SettingsBroadcaster(
             registry=self._registry,
             subscriptions=self._settings_subscriptions,
+            ws_context=self._settings_ws_context,
         )
 
         self._upload_store = UploadStore(
@@ -166,6 +168,7 @@ class WorkerServer:
             assistant_name=self._config.assistant_name,
             analytics_subscriptions=self._analytics_subscriptions,
             settings_subscriptions=self._settings_subscriptions,
+            settings_ws_context=self._settings_ws_context,
             upload_store=self._upload_store,
         )
 

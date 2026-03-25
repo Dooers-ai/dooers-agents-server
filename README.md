@@ -309,6 +309,8 @@ await analytics.track("custom.event")
 
 ## Settings Schema
 
+**Full reference:** [docs/agent-settings.md](docs/agent-settings.md) (field parameters, internal vs public fields, frontend rendering, WebSocket frames).
+
 Define configurable settings for your worker.
 
 ```python
@@ -319,6 +321,7 @@ from dooers import (
     SettingsField,
     SettingsFieldGroup,
     SettingsFieldType,
+    SettingsFieldVisibility,
     SettingsSelectOption,
 )
 
@@ -338,6 +341,7 @@ schema = SettingsSchema(
             id="advanced",
             label="Advanced Settings",
             collapsible="closed",
+            visibility=SettingsFieldVisibility.USER,
             fields=[
                 SettingsField(
                     id="temperature",
@@ -353,7 +357,7 @@ schema = SettingsSchema(
             id="api_key",
             type=SettingsFieldType.PASSWORD,
             label="API Key",
-            is_internal=True,  # Hidden from frontend, backend-only
+            visibility=SettingsFieldVisibility.INTERNAL,  # handler-only; not sent over WebSocket
         ),
     ]
 )
@@ -386,14 +390,20 @@ SettingsFieldGroup(
     id="group_id",
     label="Group Label",
     collapsible="open",    # "open" | "closed" | None (not collapsible)
-    is_internal=False,     # Hide entire group from frontend
+    visibility=SettingsFieldVisibility.USER,
     fields=[...],
 )
 ```
 
+### Field visibility (`SettingsFieldVisibility`)
+
+- **`INTERNAL`** — Not sent over WebSocket; only via `settings.get()` / `get_all()` / `set()` in the handler.
+- **`CREATOR`** — Studio / builder UI: subscribe with `audience=creator` (org admin/manager or agent owner). Patches require that subscription.
+- **`USER`** — Default runtime config: subscribe with `audience=user` (default). WebSocket `settings.subscribe` payload supports `audience` and `agent_owner_user_id` (for creator access).
+
 ### Internal Fields
 
-Fields with `is_internal=True` are:
+Fields with `visibility=INTERNAL` are:
 - Hidden from frontend settings snapshots
 - Rejected if a WebSocket client attempts to patch them
 - Suppressed from broadcast patch notifications

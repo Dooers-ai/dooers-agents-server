@@ -1,5 +1,12 @@
 from .broadcaster import SettingsBroadcaster
-from .models import SettingsField, SettingsFieldGroup, SettingsFieldType, SettingsSchema, SettingsSelectOption
+from .models import (
+    SettingsField,
+    SettingsFieldGroup,
+    SettingsFieldType,
+    SettingsFieldVisibility,
+    SettingsSchema,
+    SettingsSelectOption,
+)
 from .worker_settings import WorkerSettings
 
 __all__ = [
@@ -7,6 +14,7 @@ __all__ = [
     "SettingsField",
     "SettingsFieldGroup",
     "SettingsFieldType",
+    "SettingsFieldVisibility",
     "SettingsSchema",
     "SettingsSelectOption",
     "WorkerSettings",
