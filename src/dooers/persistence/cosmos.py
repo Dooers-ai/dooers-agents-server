@@ -551,6 +551,8 @@ class CosmosPersistence:
         if event.content:
             content_json = [self._serialize_content_part(p) for p in event.content]
         doc["content"] = content_json
+        doc["run_id"] = event.run_id
+        doc["author"] = event.author
 
         await container.upsert_item(doc)
 
