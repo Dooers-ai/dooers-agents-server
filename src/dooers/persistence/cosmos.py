@@ -260,8 +260,14 @@ class CosmosPersistence:
         params = [{"name": "@worker_id", "value": worker_id}]
 
         self._build_scope_conditions(
-            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
-            conditions, params,
+            scope,
+            organization_id,
+            workspace_id,
+            user_id,
+            user_email,
+            identity_ids,
+            conditions,
+            params,
         )
 
         where = " AND ".join(conditions)
@@ -295,8 +301,14 @@ class CosmosPersistence:
         params = [{"name": "@worker_id", "value": worker_id}]
 
         self._build_scope_conditions(
-            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
-            conditions, params,
+            scope,
+            organization_id,
+            workspace_id,
+            user_id,
+            user_email,
+            identity_ids,
+            conditions,
+            params,
         )
 
         if cursor:

@@ -134,3 +134,168 @@ class WorkerSend:
             send_type="thread_update",
             data={"title": title},
         )
+
+    # --- Form elements ---
+
+    @staticmethod
+    def form_text(
+        name: str,
+        *,
+        label: str = "",
+        order: int = 0,
+        required: bool = False,
+        disabled: bool = False,
+        placeholder: str | None = None,
+        default: str | None = None,
+        input_type: Literal["text", "password", "email", "number"] = "text",
+    ) -> dict:
+        return {
+            "type": "text_input",
+            "name": name,
+            "label": label,
+            "order": order,
+            "required": required,
+            "disabled": disabled,
+            "placeholder": placeholder,
+            "default": default,
+            "input_type": input_type,
+        }
+
+    @staticmethod
+    def form_textarea(
+        name: str,
+        *,
+        label: str = "",
+        order: int = 0,
+        required: bool = False,
+        disabled: bool = False,
+        placeholder: str | None = None,
+        default: str | None = None,
+        rows: int | None = None,
+    ) -> dict:
+        return {
+            "type": "textarea_input",
+            "name": name,
+            "label": label,
+            "order": order,
+            "required": required,
+            "disabled": disabled,
+            "placeholder": placeholder,
+            "default": default,
+            "rows": rows,
+        }
+
+    @staticmethod
+    def form_select(
+        name: str,
+        *,
+        label: str = "",
+        options: list[dict] | None = None,
+        order: int = 0,
+        required: bool = False,
+        disabled: bool = False,
+        default: str | None = None,
+        placeholder: str | None = None,
+    ) -> dict:
+        return {
+            "type": "select_input",
+            "name": name,
+            "label": label,
+            "options": options or [],
+            "order": order,
+            "required": required,
+            "disabled": disabled,
+            "default": default,
+            "placeholder": placeholder,
+        }
+
+    @staticmethod
+    def form_radio(
+        name: str,
+        *,
+        label: str = "",
+        options: list[dict] | None = None,
+        order: int = 0,
+        required: bool = False,
+        disabled: bool = False,
+        default: str | None = None,
+        variant: Literal["native", "button"] = "native",
+    ) -> dict:
+        return {
+            "type": "radio_input",
+            "name": name,
+            "label": label,
+            "options": options or [],
+            "order": order,
+            "required": required,
+            "disabled": disabled,
+            "default": default,
+            "variant": variant,
+        }
+
+    @staticmethod
+    def form_checkbox(
+        name: str,
+        *,
+        label: str = "",
+        options: list[dict] | None = None,
+        order: int = 0,
+        required: bool = False,
+        disabled: bool = False,
+        default: list[str] | None = None,
+        variant: Literal["native", "button"] = "native",
+    ) -> dict:
+        return {
+            "type": "checkbox_input",
+            "name": name,
+            "label": label,
+            "options": options or [],
+            "order": order,
+            "required": required,
+            "disabled": disabled,
+            "default": default,
+            "variant": variant,
+        }
+
+    @staticmethod
+    def form_file(
+        name: str,
+        *,
+        label: str = "",
+        upload_url: str = "",
+        order: int = 0,
+        required: bool = False,
+        disabled: bool = False,
+        accept: str | None = None,
+        multiple: bool = False,
+    ) -> dict:
+        return {
+            "type": "file_input",
+            "name": name,
+            "label": label,
+            "upload_url": upload_url,
+            "order": order,
+            "required": required,
+            "disabled": disabled,
+            "accept": accept,
+            "multiple": multiple,
+        }
+
+    def form(
+        self,
+        message: str,
+        elements: list[dict],
+        submit_label: str = "Send",
+        cancel_label: str = "Cancel",
+        size: Literal["small", "medium", "large"] = "medium",
+    ) -> WorkerEvent:
+        return WorkerEvent(
+            send_type="form",
+            data={
+                "message": message,
+                "elements": elements,
+                "submit_label": submit_label,
+                "cancel_label": cancel_label,
+                "size": size,
+            },
+        )

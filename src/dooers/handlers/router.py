@@ -440,6 +440,7 @@ class Router:
             content=content_parts,
             data=frame.payload.event.data,
             client_event_id=frame.payload.client_event_id,
+            event_type=frame.payload.event.type,
         )
 
         try:

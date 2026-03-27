@@ -40,9 +40,9 @@ class ThreadUnsubscribePayload(BaseModel):
 
 
 class EventCreateEventPayload(BaseModel):
-    type: Literal["message"]
+    type: Literal["message", "form.response"]
     actor: Literal["user"]
-    content: list[WireC2S_ContentPart]
+    content: list[WireC2S_ContentPart] = []
     data: dict | None = None
 
 

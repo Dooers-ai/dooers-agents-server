@@ -30,6 +30,12 @@ from dooers.protocol.models import (
     WireS2C_AudioPart,
     WireS2C_ContentPart,
     WireS2C_DocumentPart,
+    WireS2C_FormCheckboxElement,
+    WireS2C_FormFileElement,
+    WireS2C_FormRadioElement,
+    WireS2C_FormSelectElement,
+    WireS2C_FormTextareaElement,
+    WireS2C_FormTextElement,
     WireS2C_ImagePart,
     WireS2C_TextPart,
     deserialize_s2c_part,
@@ -86,6 +92,7 @@ class HandlerContext:
     content: list[WireC2S_ContentPart | dict[str, Any]] | None = None
     data: dict[str, Any] | None = None
     client_event_id: str | None = None
+    event_type: str = "message"
 
     def __post_init__(self):
         if self.user is None:
@@ -208,11 +215,11 @@ class HandlerPipeline:
             id=user_event_id,
             thread_id=thread_id,
             run_id=None,
-            type="message",
+            type=context.event_type,
             actor="user",
             author=_user_author_display(context.user),
             user=context.user,
-            content=storage_parts,
+            content=storage_parts if context.event_type != "form.response" else None,
             data=context.data,
             created_at=now,
             client_event_id=context.client_event_id,
@@ -244,9 +251,7 @@ class HandlerPipeline:
         thread = result.thread
 
         handler_content = result.handler_content or []
-        c2s_content_type = (
-            getattr(handler_content[0], "type", "text") if handler_content else "text"
-        )
+        c2s_content_type = getattr(handler_content[0], "type", "text") if handler_content else "text"
         message = self._extract_message(handler_content)
         worker_context = WorkerContext(
             thread_id=thread_id,
@@ -262,6 +267,13 @@ class HandlerPipeline:
             content=handler_content,
             context=worker_context,
         )
+
+        # Populate form response fields if this is a form.response event
+        if result.user_event.type == "form.response" and context.data:
+            incoming.form_data = context.data.get("values")
+            incoming.form_cancelled = context.data.get("cancelled", False)
+            incoming.form_event_id = context.data.get("form_event_id")
+
         send = WorkerSend()
         memory = WorkerMemory(thread_id=thread_id, persistence=self._persistence)
 
@@ -491,6 +503,65 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "document"},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
+                    )
+
+                elif event.send_type == "form":
+                    event_id = _generate_id()
+                    elements_raw = event.data.get("elements", [])
+                    form_element_models = {
+                        "text_input": WireS2C_FormTextElement,
+                        "textarea_input": WireS2C_FormTextareaElement,
+                        "select_input": WireS2C_FormSelectElement,
+                        "radio_input": WireS2C_FormRadioElement,
+                        "checkbox_input": WireS2C_FormCheckboxElement,
+                        "file_input": WireS2C_FormFileElement,
+                    }
+                    validated_elements = []
+                    for el in elements_raw:
+                        el_type = el.get("type", "")
+                        model_cls = form_element_models.get(el_type)
+                        if model_cls:
+                            validated_elements.append(model_cls(**el).model_dump(exclude_unset=True))
+                        else:
+                            logger.warning("Unknown form element type: %s", el_type)
+                            validated_elements.append(el)
+
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="form",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        content=None,
+                        data={
+                            "message": event.data.get("message", ""),
+                            "elements": validated_elements,
+                            "submit_label": event.data.get("submit_label", "Send"),
+                            "cancel_label": event.data.get("cancel_label", "Cancel"),
+                            "size": event.data.get("size", "medium"),
+                        },
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.worker_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.worker_id,
+                        AnalyticsEvent.MESSAGE_S2C.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"type": "form"},
                         organization_id=context.organization_id,
                         workspace_id=context.workspace_id,
                     )

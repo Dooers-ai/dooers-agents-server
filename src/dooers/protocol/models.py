@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 Actor = Literal["user", "assistant", "system", "tool"]
-EventType = Literal["message", "run.started", "run.finished", "tool.call", "tool.result", "tool.transaction"]
+EventType = Literal["message", "run.started", "run.finished", "tool.call", "tool.result", "tool.transaction", "form", "form.response"]
 RunStatus = Literal["running", "succeeded", "failed", "canceled"]
 
 
@@ -115,6 +115,97 @@ WireS2C_ContentPart = Annotated[
     WireS2C_TextPart | WireS2C_AudioPart | WireS2C_ImagePart | WireS2C_DocumentPart,
     Field(discriminator="type"),
 ]
+
+# --- Wire S2C form elements (content parts for form events) ---
+
+
+class FormOption(BaseModel):
+    value: str
+    label: str
+
+
+class WireS2C_FormTextElement(BaseModel):
+    type: Literal["text_input"] = "text_input"
+    name: str
+    label: str
+    order: int = 0
+    required: bool = False
+    disabled: bool = False
+    placeholder: str | None = None
+    default: str | None = None
+    input_type: Literal["text", "password", "email", "number"] = "text"
+
+
+class WireS2C_FormTextareaElement(BaseModel):
+    type: Literal["textarea_input"] = "textarea_input"
+    name: str
+    label: str
+    order: int = 0
+    required: bool = False
+    disabled: bool = False
+    placeholder: str | None = None
+    default: str | None = None
+    rows: int | None = None
+
+
+class WireS2C_FormSelectElement(BaseModel):
+    type: Literal["select_input"] = "select_input"
+    name: str
+    label: str
+    options: list[FormOption]
+    order: int = 0
+    required: bool = False
+    disabled: bool = False
+    default: str | None = None
+    placeholder: str | None = None
+
+
+class WireS2C_FormRadioElement(BaseModel):
+    type: Literal["radio_input"] = "radio_input"
+    name: str
+    label: str
+    options: list[FormOption]
+    order: int = 0
+    required: bool = False
+    disabled: bool = False
+    default: str | None = None
+    variant: Literal["native", "button"] = "native"
+
+
+class WireS2C_FormCheckboxElement(BaseModel):
+    type: Literal["checkbox_input"] = "checkbox_input"
+    name: str
+    label: str
+    options: list[FormOption]
+    order: int = 0
+    required: bool = False
+    disabled: bool = False
+    default: list[str] | None = None
+    variant: Literal["native", "button"] = "native"
+
+
+class WireS2C_FormFileElement(BaseModel):
+    type: Literal["file_input"] = "file_input"
+    name: str
+    label: str
+    upload_url: str
+    order: int = 0
+    required: bool = False
+    disabled: bool = False
+    accept: str | None = None
+    multiple: bool = False
+
+
+WireS2C_FormElement = Annotated[
+    WireS2C_FormTextElement
+    | WireS2C_FormTextareaElement
+    | WireS2C_FormSelectElement
+    | WireS2C_FormRadioElement
+    | WireS2C_FormCheckboxElement
+    | WireS2C_FormFileElement,
+    Field(discriminator="type"),
+]
+
 
 _S2C_TYPE_MAP: dict[str, type] = {
     "text": WireS2C_TextPart,

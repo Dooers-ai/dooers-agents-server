@@ -478,8 +478,15 @@ class PostgresPersistence:
         idx = 2
 
         idx = self._build_scope_conditions(
-            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
-            conditions, params, idx,
+            scope,
+            organization_id,
+            workspace_id,
+            user_id,
+            user_email,
+            identity_ids,
+            conditions,
+            params,
+            idx,
         )
 
         where = " AND ".join(conditions)
@@ -509,8 +516,15 @@ class PostgresPersistence:
         idx = 2
 
         idx = self._build_scope_conditions(
-            scope, organization_id, workspace_id, user_id, user_email, identity_ids,
-            conditions, params, idx,
+            scope,
+            organization_id,
+            workspace_id,
+            user_id,
+            user_email,
+            identity_ids,
+            conditions,
+            params,
+            idx,
         )
 
         if cursor:
