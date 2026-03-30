@@ -2,7 +2,7 @@
 
 External webhook flow:
 - Phone → customer lookup → resolve org/workspace context
-- Find or create thread per phone/worker
+- Find or create thread per phone/agent
 - Dispatch handler with explicit context
 - Stream events back, forward text replies to WhatsApp
 """
@@ -11,15 +11,15 @@ import logging
 
 from fastapi import FastAPI, Request, WebSocket
 
-from dooers import WorkerConfig, WorkerServer
+from dooers import AgentConfig, AgentServer
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-worker_server = WorkerServer(
-    WorkerConfig(
+agent_server = AgentServer(
+    AgentConfig(
         database_type="sqlite",
-        database_name="worker.db",
+        database_name="agent.db",
         assistant_name="WhatsApp Bot",
     )
 )
@@ -61,8 +61,8 @@ async def whatsapp_handler(incoming, send, memory, analytics, settings):
 # --- Webhook endpoint (dispatch) ---
 
 
-@app.post("/webhook/{worker_id}")
-async def webhook(worker_id: str, request: Request):
+@app.post("/webhook/{agent_id}")
+async def webhook(agent_id: str, request: Request):
     body = await request.json()
     phone = body.get("phone", "")
     text = body.get("text", "")
@@ -78,11 +78,11 @@ async def webhook(worker_id: str, request: Request):
     workspace_id = customer["workspace_id"]
     customer_name = customer.get("name", phone)
 
-    # Find existing thread for this phone/worker
-    repo = await worker_server.repository()
+    # Find existing thread for this phone/agent
+    repo = await agent_server.repository()
     threads = await repo.list_threads(
         filter={
-            "worker_id": worker_id,
+            "agent_id": agent_id,
             "organization_id": organization_id,
             "workspace_id": workspace_id,
             "user_id": phone,
@@ -92,9 +92,9 @@ async def webhook(worker_id: str, request: Request):
     thread_id = threads[0].id if threads else None
 
     # Dispatch handler with explicit context
-    stream = await worker_server.dispatch(
+    stream = await agent_server.dispatch(
         handler=whatsapp_handler,
-        worker_id=worker_id,
+        agent_id=agent_id,
         organization_id=organization_id,
         workspace_id=workspace_id,
         message=text,
@@ -118,14 +118,14 @@ async def webhook(worker_id: str, request: Request):
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
     await websocket.accept()
-    await worker_server.handle(websocket, whatsapp_handler)
+    await agent_server.handle(websocket, whatsapp_handler)
 
 
 @app.on_event("startup")
 async def startup():
-    await worker_server.ensure_initialized()
+    await agent_server.ensure_initialized()
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    await worker_server.close()
+    await agent_server.close()

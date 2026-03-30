@@ -39,7 +39,7 @@ class BroadcastManager:
 
     async def send_event(
         self,
-        worker_id: str,
+        agent_id: str,
         thread_id: str,
         content: list[ContentPart],
         actor: Actor = "system",
@@ -48,8 +48,8 @@ class BroadcastManager:
         thread = await self._persistence.get_thread(thread_id)
         if not thread:
             raise ValueError(f"Thread {thread_id} not found")
-        if thread.worker_id != worker_id:
-            raise PermissionError(f"Thread {thread_id} belongs to different worker")
+        if thread.agent_id != agent_id:
+            raise PermissionError(f"Thread {thread_id} belongs to different agent")
 
         now = _now()
 
@@ -76,28 +76,28 @@ class BroadcastManager:
             payload=EventAppendPayload(thread_id=thread_id, events=[event]),
         )
         message = serialize_frame(frame)
-        count = await self._registry.broadcast(worker_id, message)
+        count = await self._registry.broadcast(agent_id, message)
 
         return event, count
 
     async def send_thread_update(
         self,
-        worker_id: str,
+        agent_id: str,
         thread: Thread,
     ) -> int:
-        if thread.worker_id != worker_id:
-            raise PermissionError(f"Thread {thread.id} belongs to different worker")
+        if thread.agent_id != agent_id:
+            raise PermissionError(f"Thread {thread.id} belongs to different agent")
 
         frame = S2C_ThreadUpsert(
             id=_generate_id(),
             payload=ThreadUpsertPayload(thread=thread),
         )
         message = serialize_frame(frame)
-        return await self._registry.broadcast(worker_id, message)
+        return await self._registry.broadcast(agent_id, message)
 
     async def create_thread_and_broadcast(
         self,
-        worker_id: str,
+        agent_id: str,
         user: User | None = None,
         organization_id: str = "",
         workspace_id: str = "",
@@ -107,7 +107,7 @@ class BroadcastManager:
         owner = user or User(user_id="")
         thread = Thread(
             id=_generate_id(),
-            worker_id=worker_id,
+            agent_id=agent_id,
             organization_id=organization_id,
             workspace_id=workspace_id,
             owner=owner,
@@ -125,6 +125,6 @@ class BroadcastManager:
             payload=ThreadUpsertPayload(thread=thread),
         )
         message = serialize_frame(frame)
-        count = await self._registry.broadcast(worker_id, message)
+        count = await self._registry.broadcast(agent_id, message)
 
         return thread, count

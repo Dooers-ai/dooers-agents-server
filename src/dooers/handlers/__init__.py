@@ -1,20 +1,20 @@
-from dooers.features.analytics.worker_analytics import WorkerAnalytics
-from dooers.features.settings.worker_settings import WorkerSettings
-from dooers.handlers.context import WorkerContext
-from dooers.handlers.incoming import WorkerIncoming
-from dooers.handlers.memory import WorkerMemory
+from dooers.features.analytics.agent_analytics import AgentAnalytics
+from dooers.features.settings.agent_settings import AgentSettings
+from dooers.handlers.context import AgentContext
+from dooers.handlers.incoming import AgentIncoming
+from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import HandlerContext, HandlerPipeline, PipelineResult
 from dooers.handlers.router import Router
-from dooers.handlers.send import WorkerEvent, WorkerSend
+from dooers.handlers.send import AgentEvent, AgentSend
 
 __all__ = [
-    "WorkerContext",
-    "WorkerIncoming",
-    "WorkerSend",
-    "WorkerEvent",
-    "WorkerMemory",
-    "WorkerAnalytics",
-    "WorkerSettings",
+    "AgentContext",
+    "AgentIncoming",
+    "AgentSend",
+    "AgentEvent",
+    "AgentMemory",
+    "AgentAnalytics",
+    "AgentSettings",
     "HandlerPipeline",
     "HandlerContext",
     "PipelineResult",

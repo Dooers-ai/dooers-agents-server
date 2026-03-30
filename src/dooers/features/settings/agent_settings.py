@@ -8,15 +8,15 @@ if TYPE_CHECKING:
     from .models import SettingsSchema
 
 
-class WorkerSettings:
+class AgentSettings:
     def __init__(
         self,
-        worker_id: str,
+        agent_id: str,
         schema: SettingsSchema,
         persistence: Persistence,
         broadcaster: SettingsBroadcaster,
     ) -> None:
-        self._worker_id = worker_id
+        self._agent_id = agent_id
         self._schema = schema
         self._persistence = persistence
         self._broadcaster = broadcaster
@@ -26,12 +26,12 @@ class WorkerSettings:
         if not field:
             raise KeyError(f"Unknown field: {field_id}")
 
-        values = await self._persistence.get_settings(self._worker_id)
+        values = await self._persistence.get_settings(self._agent_id)
         return values.get(field_id, field.value)
 
     async def get_all(self, *, exclude: list[str] | None = None) -> dict[str, Any]:
         defaults = self._schema.get_defaults()
-        stored = await self._persistence.get_settings(self._worker_id)
+        stored = await self._persistence.get_settings(self._agent_id)
         merged = {**defaults, **stored}
         if exclude:
             for key in exclude:
@@ -40,8 +40,8 @@ class WorkerSettings:
 
     async def set(self, field_id: str, value: Any) -> None:
         self._validate_field(field_id, value)
-        await self._persistence.update_setting(self._worker_id, field_id, value)
-        await self._broadcaster.broadcast_patch(self._worker_id, field_id, value, schema=self._schema)
+        await self._persistence.update_setting(self._agent_id, field_id, value)
+        await self._broadcaster.broadcast_patch(self._agent_id, field_id, value, schema=self._schema)
 
     def _validate_field(self, field_id: str, value: Any) -> None:
         field = self._schema.get_field(field_id)

@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from dooers.features.settings.models import SettingsSchema
     from dooers.upload_store import UploadStore
 
-logger = logging.getLogger("workers")
+logger = logging.getLogger("agents")
 
 
 class WebSocketProtocol(Protocol):
@@ -109,7 +109,7 @@ class Router:
 
         self._ws: WebSocketProtocol | None = None
         self._ws_id: str = _generate_id()
-        self._worker_id: str | None = None
+        self._agent_id: str | None = None
         self._user: User | None = None
         self._organization_id: str = ""
         self._workspace_id: str = ""
@@ -117,7 +117,7 @@ class Router:
 
         self._pipeline = HandlerPipeline(
             persistence=persistence,
-            broadcast_callback=self._broadcast_to_worker_dict,
+            broadcast_callback=self._broadcast_to_agent_dict,
             analytics_collector=analytics_collector,
             settings_broadcaster=settings_broadcaster,
             settings_schema=settings_schema,
@@ -141,21 +141,21 @@ class Router:
         )
         await self._send(ws, frame)
 
-    async def _broadcast_to_worker(self, frame: ServerToClient) -> None:
-        """Broadcast a frame to all connections for the current worker."""
-        if not self._worker_id:
+    async def _broadcast_to_agent(self, frame: ServerToClient) -> None:
+        """Broadcast a frame to all connections for the current agent."""
+        if not self._agent_id:
             return
         message = serialize_frame(frame)
-        await self._registry.broadcast(self._worker_id, message)
+        await self._registry.broadcast(self._agent_id, message)
 
-    async def _broadcast_to_worker_except_self(self, ws: WebSocketProtocol, frame: ServerToClient) -> None:
-        """Broadcast a frame to all connections for the current worker except this one."""
-        if not self._worker_id:
+    async def _broadcast_to_agent_except_self(self, ws: WebSocketProtocol, frame: ServerToClient) -> None:
+        """Broadcast a frame to all connections for the current agent except this one."""
+        if not self._agent_id:
             return
         message = serialize_frame(frame)
-        await self._registry.broadcast_except(self._worker_id, ws, message)
+        await self._registry.broadcast_except(self._agent_id, ws, message)
 
-    async def _broadcast_to_worker_dict(self, worker_id: str, payload: dict[str, Any]) -> None:
+    async def _broadcast_to_agent_dict(self, agent_id: str, payload: dict[str, Any]) -> None:
         """Convert a dict payload from the pipeline into S2C frames and broadcast."""
         payload_type = payload.get("type")
 
@@ -181,7 +181,7 @@ class Router:
             return
 
         message = serialize_frame(frame)
-        await self._registry.broadcast(worker_id, message)
+        await self._registry.broadcast(agent_id, message)
 
     async def route(self, ws: WebSocketProtocol, frame: ClientToServer) -> None:
         self._ws = ws
@@ -217,30 +217,30 @@ class Router:
 
     async def cleanup(self) -> None:
         logger.info(
-            "[workers] router cleanup: ws=%s, worker=%s, had_analytics_sub=%s",
+            "[agents] router cleanup: ws=%s, agent=%s, had_analytics_sub=%s",
             self._ws_id,
-            self._worker_id,
-            self._ws_id in self._analytics_subscriptions.get(self._worker_id or "", set()),
+            self._agent_id,
+            self._ws_id in self._analytics_subscriptions.get(self._agent_id or "", set()),
         )
-        if self._worker_id:
-            await self._registry.unregister(self._worker_id, self._ws)
+        if self._agent_id:
+            await self._registry.unregister(self._agent_id, self._ws)
 
-            if self._worker_id in self._analytics_subscriptions:
-                self._analytics_subscriptions[self._worker_id].discard(self._ws_id)
-                if not self._analytics_subscriptions[self._worker_id]:
-                    logger.info("[workers] analytics subscriptions emptied for worker %s — deleting key", self._worker_id)
-                    del self._analytics_subscriptions[self._worker_id]
+            if self._agent_id in self._analytics_subscriptions:
+                self._analytics_subscriptions[self._agent_id].discard(self._ws_id)
+                if not self._analytics_subscriptions[self._agent_id]:
+                    logger.info("[agents] analytics subscriptions emptied for agent %s — deleting key", self._agent_id)
+                    del self._analytics_subscriptions[self._agent_id]
 
-            if self._worker_id in self._settings_subscriptions:
-                self._settings_subscriptions[self._worker_id].discard(self._ws_id)
-                if not self._settings_subscriptions[self._worker_id]:
-                    del self._settings_subscriptions[self._worker_id]
+            if self._agent_id in self._settings_subscriptions:
+                self._settings_subscriptions[self._agent_id].discard(self._ws_id)
+                if not self._settings_subscriptions[self._agent_id]:
+                    del self._settings_subscriptions[self._agent_id]
 
         if self._ws_id in self._subscriptions:
             del self._subscriptions[self._ws_id]
 
     async def _handle_connect(self, ws: WebSocketProtocol, frame: C2S_Connect) -> None:
-        self._worker_id = frame.payload.worker_id
+        self._agent_id = frame.payload.agent_id
         self._organization_id = frame.payload.organization_id
         self._workspace_id = frame.payload.workspace_id
         # NOTE: Roles are currently trusted from the client. A future iteration should
@@ -248,14 +248,14 @@ class Router:
         self._user = frame.payload.user
         self._ws = ws
 
-        await self._registry.register(self._worker_id, ws)
+        await self._registry.register(self._agent_id, ws)
 
         self._subscriptions[self._ws_id] = set()
 
         await self._send_ack(ws, frame.id)
 
     async def _handle_thread_list(self, ws: WebSocketProtocol, frame: C2S_ThreadList) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -270,7 +270,7 @@ class Router:
         all_identity_ids = [uid for uid in [user.user_id, *(user.identity_ids or [])] if uid]
         limit = frame.payload.limit or 30
         threads = await self._persistence.list_threads(
-            worker_id=self._worker_id,
+            agent_id=self._agent_id,
             organization_id=self._organization_id,
             workspace_id=self._workspace_id,
             user_id=user.user_id,
@@ -288,7 +288,7 @@ class Router:
             total_count = 0
         else:
             total_count = await self._persistence.count_threads(
-                worker_id=self._worker_id,
+                agent_id=self._agent_id,
                 organization_id=self._organization_id,
                 workspace_id=self._workspace_id,
                 user_id=user.user_id,
@@ -314,7 +314,7 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_ThreadSubscribe,
     ) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -335,12 +335,12 @@ class Router:
             )
             return
 
-        if thread.worker_id != self._worker_id:
+        if thread.agent_id != self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Thread belongs to different worker"},
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
             )
             return
 
@@ -371,7 +371,7 @@ class Router:
         await self._send_ack(ws, frame.id)
 
     async def _handle_thread_delete(self, ws: WebSocketProtocol, frame: C2S_ThreadDelete) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -392,12 +392,12 @@ class Router:
             )
             return
 
-        if thread.worker_id != self._worker_id:
+        if thread.agent_id != self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Thread belongs to different worker"},
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
             )
             return
 
@@ -411,12 +411,12 @@ class Router:
             id=_generate_id(),
             payload=ThreadDeletedPayload(thread_id=thread_id),
         )
-        await self._broadcast_to_worker(deleted_frame)
+        await self._broadcast_to_agent(deleted_frame)
 
         await self._send_ack(ws, frame.id)
 
     async def _handle_event_create(self, ws: WebSocketProtocol, frame: C2S_EventCreate) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -431,7 +431,7 @@ class Router:
 
         context = HandlerContext(
             handler=self._handler,
-            worker_id=self._worker_id,
+            agent_id=self._agent_id,
             message="",
             organization_id=self._organization_id,
             workspace_id=self._workspace_id,
@@ -466,7 +466,7 @@ class Router:
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Thread belongs to different worker"},
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
             )
             return
 
@@ -487,7 +487,7 @@ class Router:
             pass  # Pipeline already handled cleanup (error event, run failure, broadcast)
 
     async def _handle_event_list(self, ws: WebSocketProtocol, frame: C2S_EventList) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -529,7 +529,7 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_AnalyticsSubscribe,
     ) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -538,25 +538,25 @@ class Router:
             )
             return
 
-        worker_id = frame.payload.worker_id
-        if worker_id != self._worker_id:
+        agent_id = frame.payload.agent_id
+        if agent_id != self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Cannot subscribe to other worker's analytics"},
+                error={"code": "FORBIDDEN", "message": "Cannot subscribe to other agent's analytics"},
             )
             return
 
-        if worker_id not in self._analytics_subscriptions:
-            self._analytics_subscriptions[worker_id] = set()
-        self._analytics_subscriptions[worker_id].add(self._ws_id)
+        if agent_id not in self._analytics_subscriptions:
+            self._analytics_subscriptions[agent_id] = set()
+        self._analytics_subscriptions[agent_id].add(self._ws_id)
 
         logger.info(
-            "[workers] analytics subscribed: ws=%s, worker=%s, total_subscribers=%d",
+            "[agents] analytics subscribed: ws=%s, agent=%s, total_subscribers=%d",
             self._ws_id,
-            worker_id,
-            len(self._analytics_subscriptions[worker_id]),
+            agent_id,
+            len(self._analytics_subscriptions[agent_id]),
         )
 
         await self._send_ack(ws, frame.id)
@@ -566,16 +566,16 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_AnalyticsUnsubscribe,
     ) -> None:
-        worker_id = frame.payload.worker_id
+        agent_id = frame.payload.agent_id
         logger.info(
-            "[workers] analytics unsubscribed: ws=%s, worker=%s",
+            "[agents] analytics unsubscribed: ws=%s, agent=%s",
             self._ws_id,
-            worker_id,
+            agent_id,
         )
-        if worker_id in self._analytics_subscriptions:
-            self._analytics_subscriptions[worker_id].discard(self._ws_id)
-            if not self._analytics_subscriptions[worker_id]:
-                del self._analytics_subscriptions[worker_id]
+        if agent_id in self._analytics_subscriptions:
+            self._analytics_subscriptions[agent_id].discard(self._ws_id)
+            if not self._analytics_subscriptions[agent_id]:
+                del self._analytics_subscriptions[agent_id]
 
         await self._send_ack(ws, frame.id)
 
@@ -584,7 +584,7 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_Feedback,
     ) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -601,7 +601,7 @@ class Router:
                 feedback_type=frame.payload.feedback,
                 target_type=frame.payload.target_type,
                 target_id=frame.payload.target_id,
-                worker_id=self._worker_id,
+                agent_id=self._agent_id,
                 user_id=user.user_id,
                 reason=frame.payload.reason,
                 classification=frame.payload.classification,
@@ -626,7 +626,7 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_SettingsSubscribe,
     ) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -635,13 +635,13 @@ class Router:
             )
             return
 
-        worker_id = frame.payload.worker_id
-        if worker_id != self._worker_id:
+        agent_id = frame.payload.agent_id
+        if agent_id != self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Cannot subscribe to other worker's settings"},
+                error={"code": "FORBIDDEN", "message": "Cannot subscribe to other agent's settings"},
             )
             return
 
@@ -654,14 +654,14 @@ class Router:
             )
             return
 
-        if worker_id not in self._settings_subscriptions:
-            self._settings_subscriptions[worker_id] = set()
-        self._settings_subscriptions[worker_id].add(self._ws_id)
+        if agent_id not in self._settings_subscriptions:
+            self._settings_subscriptions[agent_id] = set()
+        self._settings_subscriptions[agent_id].add(self._ws_id)
 
         if self._settings_broadcaster:
-            values = await self._persistence.get_settings(worker_id)
+            values = await self._persistence.get_settings(agent_id)
             await self._settings_broadcaster.broadcast_snapshot_to_ws(
-                worker_id=worker_id,
+                agent_id=agent_id,
                 ws=ws,
                 schema=self._settings_schema,
                 values=values,
@@ -674,11 +674,11 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_SettingsUnsubscribe,
     ) -> None:
-        worker_id = frame.payload.worker_id
-        if worker_id in self._settings_subscriptions:
-            self._settings_subscriptions[worker_id].discard(self._ws_id)
-            if not self._settings_subscriptions[worker_id]:
-                del self._settings_subscriptions[worker_id]
+        agent_id = frame.payload.agent_id
+        if agent_id in self._settings_subscriptions:
+            self._settings_subscriptions[agent_id].discard(self._ws_id)
+            if not self._settings_subscriptions[agent_id]:
+                del self._settings_subscriptions[agent_id]
 
         await self._send_ack(ws, frame.id)
 
@@ -687,7 +687,7 @@ class Router:
         ws: WebSocketProtocol,
         frame: C2S_SettingsPatch,
     ) -> None:
-        if not self._worker_id:
+        if not self._agent_id:
             await self._send_ack(
                 ws,
                 frame.id,
@@ -736,11 +736,11 @@ class Router:
             )
             return
 
-        await self._persistence.update_setting(self._worker_id, field_id, value)
+        await self._persistence.update_setting(self._agent_id, field_id, value)
 
         if self._settings_broadcaster:
             await self._settings_broadcaster.broadcast_patch(
-                worker_id=self._worker_id,
+                agent_id=self._agent_id,
                 field_id=field_id,
                 value=value,
             )

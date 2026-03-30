@@ -8,8 +8,8 @@ from dooers import (
     SettingsFieldType,
     SettingsSchema,
     SettingsSelectOption,
-    WorkerConfig,
-    WorkerServer,
+    AgentConfig,
+    AgentServer,
 )
 
 app = FastAPI()
@@ -45,10 +45,10 @@ settings_schema = SettingsSchema(
     ]
 )
 
-worker_server = WorkerServer(
-    WorkerConfig(
+agent_server = AgentServer(
+    AgentConfig(
         database_type="sqlite",
-        database_name="worker.db",
+        database_name="agent.db",
         settings_schema=settings_schema,
     )
 )
@@ -94,9 +94,9 @@ async def anthropic_agent(incoming, send, memory, analytics, settings):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    await worker_server.handle(websocket, anthropic_agent)
+    await agent_server.handle(websocket, anthropic_agent)
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    await worker_server.close()
+    await agent_server.close()

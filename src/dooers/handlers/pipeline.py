@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 from dooers.exceptions import HandlerError
 from dooers.features.analytics.models import AnalyticsEvent
-from dooers.features.analytics.worker_analytics import WorkerAnalytics
-from dooers.features.settings.worker_settings import WorkerSettings
-from dooers.handlers.context import WorkerContext
-from dooers.handlers.incoming import WorkerIncoming
-from dooers.handlers.memory import WorkerMemory
-from dooers.handlers.send import WorkerEvent, WorkerSend
+from dooers.features.analytics.agent_analytics import AgentAnalytics
+from dooers.features.settings.agent_settings import AgentSettings
+from dooers.handlers.context import AgentContext
+from dooers.handlers.incoming import AgentIncoming
+from dooers.handlers.memory import AgentMemory
+from dooers.handlers.send import AgentEvent, AgentSend
 from dooers.persistence.base import Persistence
 from dooers.protocol.models import (
     AudioPart,
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from dooers.features.settings.models import SettingsSchema
     from dooers.upload_store import UploadStore
 
-logger = logging.getLogger("workers")
+logger = logging.getLogger("agents")
 
 
 class UploadReferenceError(ValueError):
@@ -74,15 +74,15 @@ def _user_author_display(user: User) -> str | None:
 
 
 Handler = Callable[
-    [WorkerIncoming, WorkerSend, WorkerMemory, WorkerAnalytics, WorkerSettings],
-    AsyncGenerator[WorkerEvent, None],
+    [AgentIncoming, AgentSend, AgentMemory, AgentAnalytics, AgentSettings],
+    AsyncGenerator[AgentEvent, None],
 ]
 
 
 @dataclass
 class HandlerContext:
     handler: Handler
-    worker_id: str
+    agent_id: str
     message: str
     organization_id: str = ""
     workspace_id: str = ""
@@ -135,7 +135,7 @@ class HandlerPipeline:
             thread_id = _generate_id()
             thread = Thread(
                 id=thread_id,
-                worker_id=context.worker_id,
+                agent_id=context.agent_id,
                 organization_id=context.organization_id,
                 workspace_id=context.workspace_id,
                 owner=context.user,
@@ -149,7 +149,7 @@ class HandlerPipeline:
             is_new_thread = True
 
             await self._broadcast(
-                context.worker_id,
+                context.agent_id,
                 {
                     "type": "thread.upsert",
                     "thread": thread,
@@ -157,7 +157,7 @@ class HandlerPipeline:
             )
 
             await self._track_event(
-                context.worker_id,
+                context.agent_id,
                 AnalyticsEvent.THREAD_CREATED.value,
                 thread_id=thread_id,
                 user_id=context.user.user_id,
@@ -167,13 +167,13 @@ class HandlerPipeline:
         else:
             thread = await self._persistence.get_thread(thread_id)
             if thread:
-                if thread.worker_id != context.worker_id:
-                    raise PermissionError(f"Thread {thread_id} belongs to different worker")
+                if thread.agent_id != context.agent_id:
+                    raise PermissionError(f"Thread {thread_id} belongs to different agent")
             else:
                 # Auto-create thread for deterministic IDs (e.g., dispatch with pre-computed thread_id)
                 thread = Thread(
                     id=thread_id,
-                    worker_id=context.worker_id,
+                    agent_id=context.agent_id,
                     organization_id=context.organization_id,
                     workspace_id=context.workspace_id,
                     owner=context.user,
@@ -187,7 +187,7 @@ class HandlerPipeline:
                 is_new_thread = True
 
                 await self._broadcast(
-                    context.worker_id,
+                    context.agent_id,
                     {
                         "type": "thread.upsert",
                         "thread": thread,
@@ -195,7 +195,7 @@ class HandlerPipeline:
                 )
 
                 await self._track_event(
-                    context.worker_id,
+                    context.agent_id,
                     AnalyticsEvent.THREAD_CREATED.value,
                     thread_id=thread_id,
                     user_id=context.user.user_id,
@@ -227,7 +227,7 @@ class HandlerPipeline:
         await self._persistence.create_event(user_event)
 
         await self._broadcast(
-            context.worker_id,
+            context.agent_id,
             {
                 "type": "event.append",
                 "thread_id": thread_id,
@@ -246,14 +246,14 @@ class HandlerPipeline:
         self,
         context: HandlerContext,
         result: PipelineResult,
-    ) -> AsyncGenerator[WorkerEvent, None]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         thread_id = result.thread.id
         thread = result.thread
 
         handler_content = result.handler_content or []
         c2s_content_type = getattr(handler_content[0], "type", "text") if handler_content else "text"
         message = self._extract_message(handler_content)
-        worker_context = WorkerContext(
+        agent_context = AgentContext(
             thread_id=thread_id,
             event_id=result.user_event.id,
             organization_id=context.organization_id,
@@ -262,10 +262,10 @@ class HandlerPipeline:
             thread_title=thread.title,
             thread_created_at=thread.created_at,
         )
-        incoming = WorkerIncoming(
+        incoming = AgentIncoming(
             message=message,
             content=handler_content,
-            context=worker_context,
+            context=agent_context,
         )
 
         # Populate form response fields if this is a form.response event
@@ -274,18 +274,18 @@ class HandlerPipeline:
             incoming.form_cancelled = context.data.get("cancelled", False)
             incoming.form_event_id = context.data.get("form_event_id")
 
-        send = WorkerSend()
-        memory = WorkerMemory(thread_id=thread_id, persistence=self._persistence)
+        send = AgentSend()
+        memory = AgentMemory(thread_id=thread_id, persistence=self._persistence)
 
         analytics = self._create_analytics(
-            worker_id=context.worker_id,
+            agent_id=context.agent_id,
             thread_id=thread_id,
             user_id=context.user.user_id,
             organization_id=context.organization_id,
             workspace_id=context.workspace_id,
         )
 
-        settings = self._create_settings(worker_id=context.worker_id)
+        settings = self._create_settings(agent_id=context.agent_id)
 
         current_run_id: str | None = None
         current_agent_id: str | None = None
@@ -306,7 +306,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_run(run)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "run.upsert",
                             "run": run,
@@ -316,7 +316,7 @@ class HandlerPipeline:
                     result.user_event.run_id = current_run_id
                     await self._persistence.update_event(result.user_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -324,7 +324,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.MESSAGE_C2S.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -348,7 +348,7 @@ class HandlerPipeline:
                         )
                         await self._persistence.update_run(run)
                         await self._broadcast(
-                            context.worker_id,
+                            context.agent_id,
                             {
                                 "type": "run.upsert",
                                 "run": run,
@@ -371,7 +371,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -379,7 +379,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.MESSAGE_S2C.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -410,7 +410,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -418,7 +418,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.MESSAGE_S2C.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -449,7 +449,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -457,7 +457,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.MESSAGE_S2C.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -488,7 +488,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -496,7 +496,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.MESSAGE_S2C.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -547,7 +547,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -555,7 +555,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.MESSAGE_S2C.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -584,7 +584,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -592,7 +592,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.TOOL_CALLED.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -621,7 +621,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -648,7 +648,7 @@ class HandlerPipeline:
                     )
                     await self._persistence.create_event(thread_event)
                     await self._broadcast(
-                        context.worker_id,
+                        context.agent_id,
                         {
                             "type": "event.append",
                             "thread_id": thread_id,
@@ -656,7 +656,7 @@ class HandlerPipeline:
                         },
                     )
                     await self._track_event(
-                        context.worker_id,
+                        context.agent_id,
                         AnalyticsEvent.TOOL_CALLED.value,
                         thread_id=thread_id,
                         user_id=context.user.user_id,
@@ -671,12 +671,12 @@ class HandlerPipeline:
                     target_event_id = event.data["event_id"]
                     existing_event = await self._persistence.get_event(target_event_id)
                     if not existing_event:
-                        logger.warning("[workers] event_update: event %s not found", target_event_id)
+                        logger.warning("[agents] event_update: event %s not found", target_event_id)
                     else:
                         existing_event.content = [deserialize_s2c_part(p) for p in event.data["content"]]
                         await self._persistence.update_event(existing_event)
                         await self._broadcast(
-                            context.worker_id,
+                            context.agent_id,
                             {
                                 "type": "event.append",
                                 "thread_id": existing_event.thread_id,
@@ -692,7 +692,7 @@ class HandlerPipeline:
                         thread.updated_at = event_now
                         await self._persistence.update_thread(thread)
                         await self._broadcast(
-                            context.worker_id,
+                            context.agent_id,
                             {
                                 "type": "thread.upsert",
                                 "thread": thread,
@@ -706,7 +706,7 @@ class HandlerPipeline:
 
             if result.user_event.run_id is None:
                 await self._track_event(
-                    context.worker_id,
+                    context.agent_id,
                     AnalyticsEvent.MESSAGE_C2S.value,
                     thread_id=thread_id,
                     user_id=context.user.user_id,
@@ -720,7 +720,7 @@ class HandlerPipeline:
         except Exception as e:
             if result.user_event.run_id is None:
                 await self._track_event(
-                    context.worker_id,
+                    context.agent_id,
                     AnalyticsEvent.MESSAGE_C2S.value,
                     thread_id=thread_id,
                     user_id=context.user.user_id,
@@ -731,10 +731,10 @@ class HandlerPipeline:
                     workspace_id=context.workspace_id,
                 )
 
-            logger.error("[workers] handler error: %s", e, exc_info=True)
+            logger.error("[agents] handler error: %s", e, exc_info=True)
 
             await self._track_event(
-                context.worker_id,
+                context.agent_id,
                 AnalyticsEvent.ERROR_OCCURRED.value,
                 thread_id=thread_id,
                 user_id=context.user.user_id,
@@ -758,7 +758,7 @@ class HandlerPipeline:
                 )
                 await self._persistence.update_run(run)
                 await self._broadcast(
-                    context.worker_id,
+                    context.agent_id,
                     {
                         "type": "run.upsert",
                         "run": run,
@@ -776,7 +776,7 @@ class HandlerPipeline:
             )
             await self._persistence.create_event(error_event)
             await self._broadcast(
-                context.worker_id,
+                context.agent_id,
                 {
                     "type": "event.append",
                     "thread_id": thread_id,
@@ -787,13 +787,13 @@ class HandlerPipeline:
 
             raise HandlerError(str(e), original=e) from e
 
-    async def _broadcast(self, worker_id: str, payload: dict[str, Any]) -> None:
+    async def _broadcast(self, agent_id: str, payload: dict[str, Any]) -> None:
         if self._broadcast_callback:
-            await self._broadcast_callback(worker_id, payload)
+            await self._broadcast_callback(agent_id, payload)
 
     async def _track_event(
         self,
-        worker_id: str,
+        agent_id: str,
         event: str,
         *,
         thread_id: str | None = None,
@@ -807,7 +807,7 @@ class HandlerPipeline:
         if self._analytics_collector:
             await self._analytics_collector.track(
                 event=event,
-                worker_id=worker_id,
+                agent_id=agent_id,
                 thread_id=thread_id,
                 user_id=user_id,
                 run_id=run_id,
@@ -826,15 +826,15 @@ class HandlerPipeline:
 
     def _create_analytics(
         self,
-        worker_id: str,
+        agent_id: str,
         thread_id: str,
         user_id: str | None,
         organization_id: str | None,
         workspace_id: str | None,
-    ) -> WorkerAnalytics:
+    ) -> AgentAnalytics:
         if self._analytics_collector:
-            return WorkerAnalytics(
-                worker_id=worker_id,
+            return AgentAnalytics(
+                agent_id=agent_id,
                 thread_id=thread_id,
                 user_id=user_id,
                 run_id=None,
@@ -850,8 +850,8 @@ class HandlerPipeline:
             async def feedback(self, **kwargs) -> None:
                 pass
 
-        return WorkerAnalytics(
-            worker_id=worker_id,
+        return AgentAnalytics(
+            agent_id=agent_id,
             thread_id=thread_id,
             user_id=user_id,
             run_id=None,
@@ -860,10 +860,10 @@ class HandlerPipeline:
             workspace_id=workspace_id,
         )
 
-    def _create_settings(self, worker_id: str) -> WorkerSettings:
+    def _create_settings(self, agent_id: str) -> AgentSettings:
         if self._settings_schema and self._settings_broadcaster:
-            return WorkerSettings(
-                worker_id=worker_id,
+            return AgentSettings(
+                agent_id=agent_id,
                 schema=self._settings_schema,
                 persistence=self._persistence,
                 broadcaster=self._settings_broadcaster,
@@ -879,17 +879,17 @@ class HandlerPipeline:
                 pass
 
         class NoopPersistence:
-            async def get_settings(self, worker_id: str) -> dict:
+            async def get_settings(self, agent_id: str) -> dict:
                 return {}
 
-            async def update_setting(self, worker_id: str, field_id: str, value) -> None:
+            async def update_setting(self, agent_id: str, field_id: str, value) -> None:
                 pass
 
-            async def set_settings(self, worker_id: str, values: dict) -> None:
+            async def set_settings(self, agent_id: str, values: dict) -> None:
                 pass
 
-        return WorkerSettings(
-            worker_id=worker_id,
+        return AgentSettings(
+            agent_id=agent_id,
             schema=SettingsSchema(fields=[]),
             persistence=NoopPersistence(),  # type: ignore
             broadcaster=NoopBroadcaster(),  # type: ignore

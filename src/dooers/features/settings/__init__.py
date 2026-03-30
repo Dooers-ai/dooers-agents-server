@@ -1,6 +1,6 @@
 from .broadcaster import SettingsBroadcaster
 from .models import SettingsField, SettingsFieldGroup, SettingsFieldType, SettingsSchema, SettingsSelectOption
-from .worker_settings import WorkerSettings
+from .agent_settings import AgentSettings
 
 __all__ = [
     "SettingsBroadcaster",
@@ -9,5 +9,5 @@ __all__ = [
     "SettingsFieldType",
     "SettingsSchema",
     "SettingsSelectOption",
-    "WorkerSettings",
+    "AgentSettings",
 ]

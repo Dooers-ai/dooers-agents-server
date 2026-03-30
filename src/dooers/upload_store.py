@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-logger = logging.getLogger("workers")
+logger = logging.getLogger("agents")
 
 DEFAULT_MAX_SIZE = 25 * 1024 * 1024  # 25MB
 DEFAULT_TTL = 300  # 5 minutes

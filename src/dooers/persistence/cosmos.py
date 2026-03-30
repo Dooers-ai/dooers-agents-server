@@ -34,16 +34,16 @@ class CosmosPersistence:
         endpoint: str,
         key: str,
         database: str,
-        table_prefix: str = "worker_",
+        table_prefix: str = "agent_",
     ):
         if not COSMOS_AVAILABLE:
-            raise ImportError("Azure Cosmos DB SDK not installed. Install with: pip install workers[cosmos]")
+            raise ImportError("Azure Cosmos DB SDK not installed. Install with: pip install agents[cosmos]")
 
         if not endpoint or not key or not database:
             raise ValueError(
                 "Cosmos DB requires endpoint, key, and database configuration. "
-                "Set WORKER_DATABASE_HOST (endpoint), WORKER_DATABASE_KEY, and WORKER_DATABASE_NAME "
-                "environment variables or pass them to WorkerConfig."
+                "Set AGENT_DATABASE_HOST (endpoint), AGENT_DATABASE_KEY, and AGENT_DATABASE_NAME "
+                "environment variables or pass them to AgentConfig."
             )
 
         self._endpoint = endpoint
@@ -53,18 +53,18 @@ class CosmosPersistence:
         self._client: CosmosClient | None = None
         self._database = None
         self._containers: dict[str, Any] = {}
-        # Cache thread_id -> worker_id to avoid cross-partition queries
-        self._thread_worker_cache: dict[str, str] = {}
+        # Cache thread_id -> agent_id to avoid cross-partition queries
+        self._thread_agent_cache: dict[str, str] = {}
 
     async def connect(self) -> None:
         logger.info(
-            "[workers] connecting to cosmos db at %s (database=%s)",
+            "[agents] connecting to cosmos db at %s (database=%s)",
             self._endpoint,
             self._database_name,
         )
         self._client = CosmosClient(self._endpoint, credential=self._key)
         self._database = self._client.get_database_client(self._database_name)
-        logger.info("[workers] successfully connected to cosmos db")
+        logger.info("[agents] successfully connected to cosmos db")
 
     async def disconnect(self) -> None:
         if self._client:
@@ -88,13 +88,13 @@ class CosmosPersistence:
             try:
                 container = await self._database.create_container_if_not_exists(
                     id=container_name,
-                    partition_key=PartitionKey(path="/worker_id"),
+                    partition_key=PartitionKey(path="/agent_id"),
                 )
                 self._containers[container_name] = container
-                logger.info("[workers] cosmos container ready: %s", container_name)
+                logger.info("[agents] cosmos container ready: %s", container_name)
             except Exception as e:
                 logger.error(
-                    "[workers] failed to create cosmos container %s: %s",
+                    "[agents] failed to create cosmos container %s: %s",
                     container_name,
                     e,
                 )
@@ -108,21 +108,21 @@ class CosmosPersistence:
             self._containers[container_name] = self._database.get_container_client(container_name)
         return self._containers[container_name]
 
-    async def _get_worker_id(self, thread_id: str) -> str | None:
-        if thread_id in self._thread_worker_cache:
-            return self._thread_worker_cache[thread_id]
+    async def _get_agent_id(self, thread_id: str) -> str | None:
+        if thread_id in self._thread_agent_cache:
+            return self._thread_agent_cache[thread_id]
 
         thread = await self.get_thread(thread_id)
         if thread:
-            self._thread_worker_cache[thread_id] = thread.worker_id
-            return thread.worker_id
+            self._thread_agent_cache[thread_id] = thread.agent_id
+            return thread.agent_id
         return None
 
     async def create_thread(self, thread: Thread) -> None:
         container = self._get_container("threads")
         doc = {
             "id": thread.id,
-            "worker_id": thread.worker_id,
+            "agent_id": thread.agent_id,
             "organization_id": thread.organization_id,
             "workspace_id": thread.workspace_id,
             "owner": thread.owner.model_dump(),
@@ -133,19 +133,19 @@ class CosmosPersistence:
             "last_event_at": thread.last_event_at.isoformat(),
         }
         await container.create_item(doc)
-        # Cache the worker_id
-        self._thread_worker_cache[thread.id] = thread.worker_id
+        # Cache the agent_id
+        self._thread_agent_cache[thread.id] = thread.agent_id
 
     async def get_thread(self, thread_id: str) -> Thread | None:
         # Try cache first for point read optimization
-        if thread_id in self._thread_worker_cache:
-            worker_id = self._thread_worker_cache[thread_id]
+        if thread_id in self._thread_agent_cache:
+            agent_id = self._thread_agent_cache[thread_id]
             container = self._get_container("threads")
             try:
-                row = await container.read_item(thread_id, partition_key=worker_id)
+                row = await container.read_item(thread_id, partition_key=agent_id)
                 return self._row_to_thread(row)
             except CosmosResourceNotFoundError:
-                del self._thread_worker_cache[thread_id]
+                del self._thread_agent_cache[thread_id]
 
         container = self._get_container("threads")
         query = "SELECT * FROM c WHERE c.id = @id"
@@ -157,14 +157,14 @@ class CosmosPersistence:
             return None
 
         row = items[0]
-        self._thread_worker_cache[thread_id] = row["worker_id"]
+        self._thread_agent_cache[thread_id] = row["agent_id"]
         return self._row_to_thread(row)
 
     async def update_thread(self, thread: Thread) -> None:
         container = self._get_container("threads")
         doc = {
             "id": thread.id,
-            "worker_id": thread.worker_id,
+            "agent_id": thread.agent_id,
             "organization_id": thread.organization_id,
             "workspace_id": thread.workspace_id,
             "owner": thread.owner.model_dump(),
@@ -181,26 +181,26 @@ class CosmosPersistence:
         if not thread:
             return
 
-        worker_id = thread.worker_id
+        agent_id = thread.agent_id
 
         events_container = self._get_container("events")
-        query = "SELECT c.id FROM c WHERE c.thread_id = @thread_id AND c.worker_id = @worker_id"
+        query = "SELECT c.id FROM c WHERE c.thread_id = @thread_id AND c.agent_id = @agent_id"
         params = [
             {"name": "@thread_id", "value": thread_id},
-            {"name": "@worker_id", "value": worker_id},
+            {"name": "@agent_id", "value": agent_id},
         ]
         async for item in events_container.query_items(query, parameters=params):
-            await events_container.delete_item(item["id"], partition_key=worker_id)
+            await events_container.delete_item(item["id"], partition_key=agent_id)
 
         runs_container = self._get_container("runs")
-        query = "SELECT c.id FROM c WHERE c.thread_id = @thread_id AND c.worker_id = @worker_id"
+        query = "SELECT c.id FROM c WHERE c.thread_id = @thread_id AND c.agent_id = @agent_id"
         async for item in runs_container.query_items(query, parameters=params):
-            await runs_container.delete_item(item["id"], partition_key=worker_id)
+            await runs_container.delete_item(item["id"], partition_key=agent_id)
 
         threads_container = self._get_container("threads")
-        await threads_container.delete_item(thread_id, partition_key=worker_id)
+        await threads_container.delete_item(thread_id, partition_key=agent_id)
 
-        self._thread_worker_cache.pop(thread_id, None)
+        self._thread_agent_cache.pop(thread_id, None)
 
     def _build_scope_conditions(
         self,
@@ -246,7 +246,7 @@ class CosmosPersistence:
 
     async def count_threads(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
@@ -256,8 +256,8 @@ class CosmosPersistence:
     ) -> int:
         container = self._get_container("threads")
 
-        conditions = ["c.worker_id = @worker_id"]
-        params = [{"name": "@worker_id", "value": worker_id}]
+        conditions = ["c.agent_id = @agent_id"]
+        params = [{"name": "@agent_id", "value": agent_id}]
 
         self._build_scope_conditions(
             scope,
@@ -278,14 +278,14 @@ class CosmosPersistence:
             async for item in container.query_items(
                 query,
                 parameters=params,
-                partition_key=worker_id,
+                partition_key=agent_id,
             )
         ]
         return items[0] if items else 0
 
     async def list_threads(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
@@ -297,8 +297,8 @@ class CosmosPersistence:
     ) -> list[Thread]:
         container = self._get_container("threads")
 
-        conditions = ["c.worker_id = @worker_id"]
-        params = [{"name": "@worker_id", "value": worker_id}]
+        conditions = ["c.agent_id = @agent_id"]
+        params = [{"name": "@agent_id", "value": agent_id}]
 
         self._build_scope_conditions(
             scope,
@@ -336,15 +336,15 @@ class CosmosPersistence:
             async for item in container.query_items(
                 query,
                 parameters=params,
-                partition_key=worker_id,
+                partition_key=agent_id,
             )
         ]
 
         return [self._row_to_thread(row) for row in items]
 
     async def create_event(self, event: ThreadEvent) -> None:
-        worker_id = await self._get_worker_id(event.thread_id)
-        if not worker_id:
+        agent_id = await self._get_agent_id(event.thread_id)
+        if not agent_id:
             raise ValueError(f"Thread {event.thread_id} not found")
 
         container = self._get_container("events")
@@ -354,7 +354,7 @@ class CosmosPersistence:
 
         doc = {
             "id": event.id,
-            "worker_id": worker_id,
+            "agent_id": agent_id,
             "thread_id": event.thread_id,
             "run_id": event.run_id,
             "type": event.type,
@@ -379,8 +379,8 @@ class CosmosPersistence:
         order: str = "asc",
         filters: dict[str, str] | None = None,
     ) -> list[ThreadEvent]:
-        worker_id = await self._get_worker_id(thread_id)
-        if not worker_id:
+        agent_id = await self._get_agent_id(thread_id)
+        if not agent_id:
             return []
 
         from dooers.persistence.base import FILTERABLE_FIELDS
@@ -429,7 +429,7 @@ class CosmosPersistence:
             async for item in container.query_items(
                 query,
                 parameters=params,
-                partition_key=worker_id,
+                partition_key=agent_id,
             )
         ]
 
@@ -463,7 +463,7 @@ class CosmosPersistence:
 
         return Thread(
             id=row["id"],
-            worker_id=row["worker_id"],
+            agent_id=row["agent_id"],
             organization_id=row.get("organization_id") or "",
             workspace_id=row.get("workspace_id") or "",
             owner=User(**owner_data),
@@ -501,14 +501,14 @@ class CosmosPersistence:
         await self.update_thread(thread)
 
     async def create_run(self, run: Run) -> None:
-        worker_id = await self._get_worker_id(run.thread_id)
-        if not worker_id:
+        agent_id = await self._get_agent_id(run.thread_id)
+        if not agent_id:
             raise ValueError(f"Thread {run.thread_id} not found")
 
         container = self._get_container("runs")
         doc = {
             "id": run.id,
-            "worker_id": worker_id,
+            "agent_id": agent_id,
             "thread_id": run.thread_id,
             "agent_id": run.agent_id,
             "status": run.status,
@@ -519,14 +519,14 @@ class CosmosPersistence:
         await container.create_item(doc)
 
     async def update_run(self, run: Run) -> None:
-        worker_id = await self._get_worker_id(run.thread_id)
-        if not worker_id:
+        agent_id = await self._get_agent_id(run.thread_id)
+        if not agent_id:
             raise ValueError(f"Thread {run.thread_id} not found")
 
         container = self._get_container("runs")
         doc = {
             "id": run.id,
-            "worker_id": worker_id,
+            "agent_id": agent_id,
             "thread_id": run.thread_id,
             "agent_id": run.agent_id,
             "status": run.status,
@@ -547,15 +547,15 @@ class CosmosPersistence:
         return self._row_to_event(items[0])
 
     async def update_event(self, event: ThreadEvent) -> None:
-        worker_id = await self._get_worker_id(event.thread_id)
-        if not worker_id:
+        agent_id = await self._get_agent_id(event.thread_id)
+        if not agent_id:
             raise ValueError(f"Thread {event.thread_id} not found")
 
         container = self._get_container("events")
 
         # Read existing document to preserve all fields, then update content
         try:
-            doc = await container.read_item(event.id, partition_key=worker_id)
+            doc = await container.read_item(event.id, partition_key=agent_id)
         except CosmosResourceNotFoundError:
             return
 
@@ -570,12 +570,12 @@ class CosmosPersistence:
 
     async def delete_event(self, event_id: str) -> None:
         container = self._get_container("events")
-        query = "SELECT c.id, c.worker_id FROM c WHERE c.id = @id"
+        query = "SELECT c.id, c.agent_id FROM c WHERE c.id = @id"
         params = [{"name": "@id", "value": event_id}]
 
         items = [item async for item in container.query_items(query, parameters=params)]
         if items:
-            await container.delete_item(items[0]["id"], partition_key=items[0]["worker_id"])
+            await container.delete_item(items[0]["id"], partition_key=items[0]["agent_id"])
 
     def _serialize_content_part(self, part) -> dict:
         if hasattr(part, "model_dump"):
@@ -585,25 +585,25 @@ class CosmosPersistence:
     def _deserialize_content_part(self, data: dict):
         return deserialize_s2c_part(data)
 
-    async def get_settings(self, worker_id: str) -> dict[str, Any]:
+    async def get_settings(self, agent_id: str) -> dict[str, Any]:
         container = self._get_container("settings")
 
         try:
-            item = await container.read_item(worker_id, partition_key=worker_id)
+            item = await container.read_item(agent_id, partition_key=agent_id)
             return item.get("values", {})
         except CosmosResourceNotFoundError:
             return {}
 
-    async def update_setting(self, worker_id: str, field_id: str, value: Any) -> datetime:
+    async def update_setting(self, agent_id: str, field_id: str, value: Any) -> datetime:
         container = self._get_container("settings")
         now = datetime.now(UTC)
 
-        current_values = await self.get_settings(worker_id)
+        current_values = await self.get_settings(agent_id)
         current_values[field_id] = value
 
         doc = {
-            "id": worker_id,
-            "worker_id": worker_id,
+            "id": agent_id,
+            "agent_id": agent_id,
             "values": current_values,
             "updated_at": now.isoformat(),
         }
@@ -611,13 +611,13 @@ class CosmosPersistence:
         await container.upsert_item(doc)
         return now
 
-    async def set_settings(self, worker_id: str, values: dict[str, Any]) -> datetime:
+    async def set_settings(self, agent_id: str, values: dict[str, Any]) -> datetime:
         container = self._get_container("settings")
         now = datetime.now(UTC)
 
         doc = {
-            "id": worker_id,
-            "worker_id": worker_id,
+            "id": agent_id,
+            "agent_id": agent_id,
             "values": values,
             "updated_at": now.isoformat(),
         }
@@ -633,7 +633,7 @@ class CosmosPersistence:
         for ev in events:
             doc = {
                 "id": str(uuid.uuid4()),
-                "worker_id": ev.worker_id,
+                "agent_id": ev.agent_id,
                 "event": ev.event,
                 "timestamp": ev.timestamp.isoformat(),
                 "thread_id": ev.thread_id,

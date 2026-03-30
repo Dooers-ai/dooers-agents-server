@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 HistoryFormat = Literal["openai", "anthropic", "google", "cohere", "voyage"]
 
 
-class WorkerMemory:
+class AgentMemory:
     def __init__(self, thread_id: str, persistence: "Persistence"):
         self._thread_id = thread_id
         self._persistence = persistence

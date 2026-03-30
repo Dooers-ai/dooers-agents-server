@@ -17,14 +17,14 @@ class SettingsBroadcaster:
     def __init__(
         self,
         registry: ConnectionRegistry,
-        subscriptions: dict[str, set[str]],  # worker_id -> set of ws_ids
+        subscriptions: dict[str, set[str]],  # agent_id -> set of ws_ids
     ) -> None:
         self._registry = registry
         self._subscriptions = subscriptions
 
     async def broadcast_snapshot_to_ws(
         self,
-        worker_id: str,
+        agent_id: str,
         ws: WebSocketProtocol,
         schema: SettingsSchema,
         values: dict[str, Any],
@@ -51,7 +51,7 @@ class SettingsBroadcaster:
         message = S2C_SettingsSnapshot(
             id=str(uuid4()),
             payload=SettingsSnapshotPayload(
-                worker_id=worker_id,
+                agent_id=agent_id,
                 fields=items_with_values,
                 updated_at=datetime.now(UTC),
             ),
@@ -60,11 +60,11 @@ class SettingsBroadcaster:
         try:
             await ws.send_text(message.model_dump_json())
         except Exception:
-            logger.warning("[workers] failed to send settings snapshot")
+            logger.warning("[agents] failed to send settings snapshot")
 
     async def broadcast_patch(
         self,
-        worker_id: str,
+        agent_id: str,
         field_id: str,
         value: Any,
         exclude_ws: WebSocketProtocol | None = None,
@@ -77,14 +77,14 @@ class SettingsBroadcaster:
             if field and field.is_internal:
                 return
 
-        subscriber_ws_ids = self._subscriptions.get(worker_id, set())
+        subscriber_ws_ids = self._subscriptions.get(agent_id, set())
         if not subscriber_ws_ids:
             return
 
         message = S2C_SettingsPatch(
             id=str(uuid4()),
             payload=SettingsPatchBroadcastPayload(
-                worker_id=worker_id,
+                agent_id=agent_id,
                 field_id=field_id,
                 value=value,
                 updated_at=datetime.now(UTC),
@@ -92,7 +92,7 @@ class SettingsBroadcaster:
         )
         message_json = message.model_dump_json()
 
-        connections = self._registry.get_connections(worker_id)
+        connections = self._registry.get_connections(agent_id)
         for ws in connections:
             if ws is not exclude_ws:
                 try:

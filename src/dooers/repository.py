@@ -34,7 +34,7 @@ class Repository:
     ) -> list[Thread]:
         f = filter or {}
         return await self._persistence.list_threads(
-            worker_id=f.get("worker_id", ""),
+            agent_id=f.get("agent_id", ""),
             organization_id=f.get("organization_id", ""),
             workspace_id=f.get("workspace_id", ""),
             user_id=f.get("user_id"),
@@ -48,7 +48,7 @@ class Repository:
 
     async def create_thread(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str = "",
         workspace_id: str = "",
         user: User | None = None,
@@ -58,7 +58,7 @@ class Repository:
         owner = user or User(user_id="")
         thread = Thread(
             id=_generate_id(),
-            worker_id=worker_id,
+            agent_id=agent_id,
             organization_id=organization_id,
             workspace_id=workspace_id,
             owner=owner,
@@ -156,7 +156,7 @@ class Repository:
         f = filter or {}
         return await self._persistence.list_runs(
             thread_id=f.get("thread_id"),
-            worker_id=f.get("worker_id"),
+            agent_id=f.get("agent_id"),
             status=f.get("status"),
             limit=limit,
         )
@@ -166,8 +166,8 @@ class Repository:
 
     # -- Settings --
 
-    async def get_settings(self, worker_id: str) -> dict:
-        return await self._persistence.get_settings(worker_id)
+    async def get_settings(self, agent_id: str) -> dict:
+        return await self._persistence.get_settings(agent_id)
 
-    async def update_settings(self, worker_id: str, values: dict) -> None:
-        await self._persistence.set_settings(worker_id, values)
+    async def update_settings(self, agent_id: str, values: dict) -> None:
+        await self._persistence.set_settings(agent_id, values)

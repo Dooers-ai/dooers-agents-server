@@ -4,14 +4,14 @@ from typing import Literal
 
 
 @dataclass
-class WorkerEvent:
+class AgentEvent:
     send_type: str
     data: dict
 
 
-class WorkerSend:
-    def text(self, text: str, author: str | None = None) -> WorkerEvent:
-        return WorkerEvent(
+class AgentSend:
+    def text(self, text: str, author: str | None = None) -> AgentEvent:
+        return AgentEvent(
             send_type="text",
             data={"text": text, "author": author},
         )
@@ -22,8 +22,8 @@ class WorkerSend:
         mime_type: str | None = None,
         alt: str | None = None,
         author: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="image",
             data={"url": url, "mime_type": mime_type, "alt": alt, "author": author},
         )
@@ -34,8 +34,8 @@ class WorkerSend:
         filename: str,
         mime_type: str,
         author: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="document",
             data={"url": url, "filename": filename, "mime_type": mime_type, "author": author},
         )
@@ -46,8 +46,8 @@ class WorkerSend:
         mime_type: str,
         duration: float | None = None,
         author: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="audio",
             data={"url": url, "mime_type": mime_type, "duration": duration, "author": author},
         )
@@ -58,8 +58,8 @@ class WorkerSend:
         args: dict,
         display_name: str | None = None,
         id: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="tool_call",
             data={
                 "id": id or str(uuid.uuid4()),
@@ -76,8 +76,8 @@ class WorkerSend:
         args: dict | None = None,
         display_name: str | None = None,
         id: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="tool_result",
             data={
                 "id": id or str(uuid.uuid4()),
@@ -95,8 +95,8 @@ class WorkerSend:
         result: dict,
         display_name: str | None = None,
         id: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="tool_transaction",
             data={
                 "id": id or str(uuid.uuid4()),
@@ -107,8 +107,8 @@ class WorkerSend:
             },
         )
 
-    def run_start(self, agent_id: str | None = None) -> WorkerEvent:
-        return WorkerEvent(
+    def run_start(self, agent_id: str | None = None) -> AgentEvent:
+        return AgentEvent(
             send_type="run_start",
             data={"agent_id": agent_id},
         )
@@ -117,20 +117,20 @@ class WorkerSend:
         self,
         status: Literal["succeeded", "failed"] = "succeeded",
         error: str | None = None,
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="run_end",
             data={"status": status, "error": error},
         )
 
-    def update_user_event(self, event_id: str, content: list[dict]) -> WorkerEvent:
-        return WorkerEvent(
+    def update_user_event(self, event_id: str, content: list[dict]) -> AgentEvent:
+        return AgentEvent(
             send_type="event_update",
             data={"event_id": event_id, "content": content},
         )
 
-    def update_thread(self, *, title: str | None = None) -> WorkerEvent:
-        return WorkerEvent(
+    def update_thread(self, *, title: str | None = None) -> AgentEvent:
+        return AgentEvent(
             send_type="thread_update",
             data={"title": title},
         )
@@ -288,8 +288,8 @@ class WorkerSend:
         submit_label: str = "Send",
         cancel_label: str = "Cancel",
         size: Literal["small", "medium", "large"] = "medium",
-    ) -> WorkerEvent:
-        return WorkerEvent(
+    ) -> AgentEvent:
+        return AgentEvent(
             send_type="form",
             data={
                 "message": message,

@@ -17,7 +17,7 @@ class WSFrame(BaseModel, Generic[T]):
 
 
 class ConnectPayload(BaseModel):
-    worker_id: str
+    agent_id: str
     organization_id: str = ""
     workspace_id: str = ""
     user: User = User(user_id="")
@@ -93,11 +93,11 @@ class C2S_EventCreate(BaseModel):
 
 
 class AnalyticsSubscribePayload(BaseModel):
-    worker_id: str
+    agent_id: str
 
 
 class AnalyticsUnsubscribePayload(BaseModel):
-    worker_id: str
+    agent_id: str
 
 
 class FeedbackPayload(BaseModel):
@@ -139,11 +139,11 @@ class C2S_EventList(BaseModel):
 
 
 class SettingsSubscribePayload(BaseModel):
-    worker_id: str
+    agent_id: str
 
 
 class SettingsUnsubscribePayload(BaseModel):
-    worker_id: str
+    agent_id: str
 
 
 class SettingsPatchPayload(BaseModel):
@@ -297,7 +297,7 @@ class S2C_FeedbackAck(BaseModel):
 
 
 class SettingsSnapshotPayload(BaseModel):
-    worker_id: str
+    agent_id: str
     fields: list[SettingsField | SettingsFieldGroup]
     updated_at: datetime
 
@@ -309,7 +309,7 @@ class S2C_SettingsSnapshot(BaseModel):
 
 
 class SettingsPatchBroadcastPayload(BaseModel):
-    worker_id: str
+    agent_id: str
     field_id: str
     value: Any
     updated_at: datetime

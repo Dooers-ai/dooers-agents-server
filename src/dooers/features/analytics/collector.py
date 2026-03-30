@@ -66,7 +66,7 @@ class AnalyticsCollector:
     async def track(
         self,
         event: str,
-        worker_id: str,
+        agent_id: str,
         thread_id: str | None = None,
         user_id: str | None = None,
         run_id: str | None = None,
@@ -79,7 +79,7 @@ class AnalyticsCollector:
         payload = AnalyticsEventPayload(
             event=event,
             timestamp=now,
-            worker_id=worker_id,
+            agent_id=agent_id,
             thread_id=thread_id,
             user_id=user_id,
             run_id=run_id,
@@ -90,7 +90,7 @@ class AnalyticsCollector:
             created_at=now,
         )
 
-        await self._broadcast(worker_id, payload)
+        await self._broadcast(agent_id, payload)
 
         async with self._lock:
             self._buffer.append(payload)
@@ -102,7 +102,7 @@ class AnalyticsCollector:
         feedback_type: str,
         target_type: str,
         target_id: str,
-        worker_id: str,
+        agent_id: str,
         thread_id: str | None = None,
         user_id: str | None = None,
         reason: str | None = None,
@@ -113,7 +113,7 @@ class AnalyticsCollector:
         event = AnalyticsEvent.FEEDBACK_LIKE if feedback_type == "like" else AnalyticsEvent.FEEDBACK_DISLIKE
         await self.track(
             event=event.value,
-            worker_id=worker_id,
+            agent_id=agent_id,
             thread_id=thread_id,
             user_id=user_id,
             organization_id=organization_id,
@@ -126,14 +126,14 @@ class AnalyticsCollector:
             },
         )
 
-    async def _broadcast(self, worker_id: str, payload: AnalyticsEventPayload) -> None:
+    async def _broadcast(self, agent_id: str, payload: AnalyticsEventPayload) -> None:
         from dooers.protocol.frames import S2C_AnalyticsEvent
 
-        subscriber_ws_ids = self._subscriptions.get(worker_id, set())
+        subscriber_ws_ids = self._subscriptions.get(agent_id, set())
         if not subscriber_ws_ids:
             logger.debug(
-                "[workers] analytics broadcast skipped — no subscribers for worker %s (subscriptions: %s)",
-                worker_id,
+                "[agents] analytics broadcast skipped — no subscribers for agent %s (subscriptions: %s)",
+                agent_id,
                 list(self._subscriptions.keys()),
             )
             return
@@ -144,11 +144,11 @@ class AnalyticsCollector:
         )
         message_json = message.model_dump_json()
 
-        connections = self._registry.get_connections(worker_id)
+        connections = self._registry.get_connections(agent_id)
         logger.debug(
-            "[workers] analytics broadcast: event=%s, worker=%s, subscribers=%d, connections=%d",
+            "[agents] analytics broadcast: event=%s, agent=%s, subscribers=%d, connections=%d",
             payload.event,
-            worker_id,
+            agent_id,
             len(subscriber_ws_ids),
             len(connections),
         )
@@ -158,8 +158,8 @@ class AnalyticsCollector:
                 await ws.send_text(message_json)
                 sent += 1
             except Exception as e:
-                logger.warning("[workers] failed to send analytics event to subscriber: %s", e)
-        logger.debug("[workers] analytics broadcast sent to %d/%d connections", sent, len(connections))
+                logger.warning("[agents] failed to send analytics event to subscriber: %s", e)
+        logger.debug("[agents] analytics broadcast sent to %d/%d connections", sent, len(connections))
 
     async def _flush(self) -> None:
         async with self._lock:
@@ -169,20 +169,20 @@ class AnalyticsCollector:
         if not self._buffer:
             return
 
-        events_by_worker: dict[str, list[AnalyticsEventPayload]] = {}
+        events_by_agent: dict[str, list[AnalyticsEventPayload]] = {}
         for event in self._buffer:
-            if event.worker_id not in events_by_worker:
-                events_by_worker[event.worker_id] = []
-            events_by_worker[event.worker_id].append(event)
+            if event.agent_id not in events_by_agent:
+                events_by_agent[event.agent_id] = []
+            events_by_agent[event.agent_id].append(event)
 
         self._buffer.clear()
 
-        all_events = [e for events in events_by_worker.values() for e in events]
+        all_events = [e for events in events_by_agent.values() for e in events]
 
-        for worker_id, events in events_by_worker.items():
+        for agent_id, events in events_by_agent.items():
             batch = AnalyticsBatch(
                 batch_id=str(uuid4()),
-                worker_id=worker_id,
+                agent_id=agent_id,
                 events=events,
                 sent_at=datetime.now(UTC),
             )
@@ -192,7 +192,7 @@ class AnalyticsCollector:
             try:
                 await self._persistence.insert_analytics_events(all_events)
             except Exception as e:
-                logger.warning("[workers] failed to persist analytics events: %s", e)
+                logger.warning("[agents] failed to persist analytics events: %s", e)
 
     async def _send_to_webhook(self, batch: AnalyticsBatch) -> None:
         if not self._http_client:
@@ -206,12 +206,12 @@ class AnalyticsCollector:
             )
             if response.status_code >= 400:
                 logger.warning(
-                    "[workers] analytics webhook returned %d: %s",
+                    "[agents] analytics webhook returned %d: %s",
                     response.status_code,
                     response.text[:200],
                 )
         except httpx.RequestError as e:
-            logger.warning("[workers] failed to send analytics batch: %s", e)
+            logger.warning("[agents] failed to send analytics batch: %s", e)
 
     async def _flush_loop(self) -> None:
         while self._running:
@@ -221,4 +221,4 @@ class AnalyticsCollector:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception("[workers] error in analytics flush loop: %s", e)
+                logger.exception("[agents] error in analytics flush loop: %s", e)

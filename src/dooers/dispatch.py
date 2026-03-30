@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from dooers.handlers.send import WorkerEvent
+from dooers.handlers.send import AgentEvent
 
 if TYPE_CHECKING:
     from dooers.handlers.pipeline import HandlerContext, HandlerPipeline, PipelineResult
@@ -39,11 +39,11 @@ class DispatchStream:
     def is_new_thread(self) -> bool:
         return self._result.is_new_thread
 
-    def __aiter__(self) -> AsyncGenerator[WorkerEvent, None]:
+    def __aiter__(self) -> AsyncGenerator[AgentEvent, None]:
         return self._pipeline.execute(self._context, self._result)
 
-    async def collect(self) -> list[WorkerEvent]:
-        events: list[WorkerEvent] = []
+    async def collect(self) -> list[AgentEvent]:
+        events: list[AgentEvent] = []
         async for event in self:
             events.append(event)
         return events

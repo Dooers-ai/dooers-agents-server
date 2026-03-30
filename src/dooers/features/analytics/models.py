@@ -25,7 +25,7 @@ class AnalyticsEventPayload(BaseModel):
 
     event: str  # AnalyticsEvent value or custom string
     timestamp: datetime
-    worker_id: str
+    agent_id: str
     thread_id: str | None = None
     user_id: str | None = None
     run_id: str | None = None
@@ -40,6 +40,6 @@ class AnalyticsBatch(BaseModel):
     """Batch of analytics events for webhook delivery."""
 
     batch_id: str
-    worker_id: str
+    agent_id: str
     events: list[AnalyticsEventPayload]
     sent_at: datetime

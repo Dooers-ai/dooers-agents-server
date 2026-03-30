@@ -17,7 +17,7 @@ WebSocket (real-time chat)          Everything else (REST, webhooks, cron)
 ─────────────────────────           ────────────────────────────────────────
 Client connects via WS              Your code calls dispatch()
   ↓                                   ↓
-worker_server.handle()              worker_server.dispatch()
+agent_server.handle()              agent_server.dispatch()
   ↓                                   ↓
 Context from WS frame               Context from your parameters
   ↓                                   ↓
@@ -35,14 +35,14 @@ The primary entry point. A WebSocket connection sends messages, and the handler 
 ```python
 from fastapi import FastAPI, WebSocket
 from openai import AsyncOpenAI
-from dooers import WorkerServer, WorkerConfig
+from dooers import AgentServer, AgentConfig
 
 app = FastAPI()
 openai = AsyncOpenAI()
 
-worker_server = WorkerServer(WorkerConfig(
+agent_server = AgentServer(AgentConfig(
     database_type="sqlite",
-    database_name="worker.db",
+    database_name="agent.db",
     assistant_name="My Assistant",
 ))
 
@@ -68,7 +68,7 @@ async def agent_handler(incoming, send, memory, analytics, settings):
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
     await websocket.accept()
-    await worker_server.handle(websocket, agent_handler)
+    await agent_server.handle(websocket, agent_handler)
 ```
 
 ## Quick Start — Dispatch
@@ -82,9 +82,9 @@ from dooers import User
 async def webhook(request: Request):
     body = await request.json()
 
-    stream = await worker_server.dispatch(
+    stream = await agent_server.dispatch(
         handler=agent_handler,       # Same handler as WebSocket
-        worker_id="worker-1",
+        agent_id="agent-1",
         organization_id="org-1",
         workspace_id="ws-1",
         message=body["text"],
@@ -210,9 +210,9 @@ Full signature for programmatic handler execution.
 ```python
 from dooers import User
 
-stream = await worker_server.dispatch(
+stream = await agent_server.dispatch(
     handler=my_handler,
-    worker_id="worker-1",
+    agent_id="agent-1",
     organization_id="org-1",
     workspace_id="ws-1",
     message="Hello from webhook",
@@ -249,7 +249,7 @@ events = await stream.collect()
 from dooers import DispatchError, HandlerError
 
 try:
-    stream = await worker_server.dispatch(...)
+    stream = await agent_server.dispatch(...)
 except DispatchError:
     # Setup failed (bad parameters, DB error)
     pass
@@ -268,12 +268,12 @@ except HandlerError as e:
 Direct database access for threads, events, runs, and settings.
 
 ```python
-repo = await worker_server.repository()
+repo = await agent_server.repository()
 
 # Threads
-threads = await repo.list_threads(filter={"worker_id": "w1", "organization_id": "org1"})
+threads = await repo.list_threads(filter={"agent_id": "w1", "organization_id": "org1"})
 thread = await repo.get_thread(thread_id)
-thread = await repo.create_thread(worker_id, organization_id, workspace_id, user_id, title?)
+thread = await repo.create_thread(agent_id, organization_id, workspace_id, user_id, title?)
 thread = await repo.update_thread(thread_id, title="New title")
 await repo.remove_thread(thread_id)
 
@@ -288,8 +288,8 @@ runs = await repo.list_runs(filter={"thread_id": "t1"})
 run = await repo.get_run(run_id)
 
 # Settings
-values = await repo.get_settings(worker_id)
-await repo.update_settings(worker_id, {"key": "value"})
+values = await repo.get_settings(agent_id)
+await repo.update_settings(agent_id, {"key": "value"})
 ```
 
 ## Standalone Utilities
@@ -297,24 +297,24 @@ await repo.update_settings(worker_id, {"key": "value"})
 Access memory, settings, and analytics outside of handlers.
 
 ```python
-memory = await worker_server.memory(thread_id)
+memory = await agent_server.memory(thread_id)
 history = await memory.get_history(limit=20, format="openai")
 
-settings = await worker_server.settings(worker_id)
+settings = await agent_server.settings(agent_id)
 value = await settings.get("model")
 
-analytics = await worker_server.analytics(worker_id, thread_id="t1")
+analytics = await agent_server.analytics(agent_id, thread_id="t1")
 await analytics.track("custom.event")
 ```
 
 ## Settings Schema
 
-Define configurable settings for your worker.
+Define configurable settings for your agent.
 
 ```python
 from dooers import (
-    WorkerConfig,
-    WorkerServer,
+    AgentConfig,
+    AgentServer,
     SettingsSchema,
     SettingsField,
     SettingsFieldGroup,
@@ -358,9 +358,9 @@ schema = SettingsSchema(
     ]
 )
 
-worker_server = WorkerServer(WorkerConfig(
+agent_server = AgentServer(AgentConfig(
     database_type="sqlite",
-    database_name="worker.db",
+    database_name="agent.db",
     settings_schema=schema,
 ))
 ```
@@ -406,7 +406,7 @@ Three database backends: PostgreSQL, SQLite, and Azure Cosmos DB.
 ### PostgreSQL (default)
 
 ```python
-worker_server = WorkerServer(WorkerConfig(
+agent_server = AgentServer(AgentConfig(
     database_type="postgres",
     database_host="localhost",
     database_port=5432,
@@ -414,7 +414,7 @@ worker_server = WorkerServer(WorkerConfig(
     database_name="mydb",
     database_password="secret",
     database_ssl=False,
-    database_table_prefix="worker_",
+    database_table_prefix="agent_",
     database_auto_migrate=True,
 ))
 ```
@@ -422,10 +422,10 @@ worker_server = WorkerServer(WorkerConfig(
 ### SQLite
 
 ```python
-worker_server = WorkerServer(WorkerConfig(
+agent_server = AgentServer(AgentConfig(
     database_type="sqlite",
-    database_name="worker.db",
-    database_table_prefix="worker_",
+    database_name="agent.db",
+    database_table_prefix="agent_",
     database_auto_migrate=True,
 ))
 ```
@@ -435,12 +435,12 @@ worker_server = WorkerServer(WorkerConfig(
 Requires the cosmos extra: `pip install dooers-agents-server[cosmos]`
 
 ```python
-worker_server = WorkerServer(WorkerConfig(
+agent_server = AgentServer(AgentConfig(
     database_type="cosmos",
     database_host="https://your-account.documents.azure.com:443/",
     database_name="your-database",
     database_key="your-cosmos-key",
-    database_table_prefix="worker_",
+    database_table_prefix="agent_",
     database_auto_migrate=True,
 ))
 ```
@@ -449,13 +449,13 @@ worker_server = WorkerServer(WorkerConfig(
 
 | Field | Environment Variable |
 |-------|---------------------|
-| `database_host` | `WORKER_DATABASE_HOST` |
-| `database_port` | `WORKER_DATABASE_PORT` |
-| `database_user` | `WORKER_DATABASE_USER` |
-| `database_name` | `WORKER_DATABASE_NAME` |
-| `database_password` | `WORKER_DATABASE_PASSWORD` |
-| `database_key` | `WORKER_DATABASE_KEY` |
-| `database_ssl` | `WORKER_DATABASE_SSL` |
+| `database_host` | `AGENT_DATABASE_HOST` |
+| `database_port` | `AGENT_DATABASE_PORT` |
+| `database_user` | `AGENT_DATABASE_USER` |
+| `database_name` | `AGENT_DATABASE_NAME` |
+| `database_password` | `AGENT_DATABASE_PASSWORD` |
+| `database_key` | `AGENT_DATABASE_KEY` |
+| `database_ssl` | `AGENT_DATABASE_SSL` |
 
 ## User Roles and Thread Scoping
 
@@ -490,7 +490,7 @@ Threads track participants automatically — each user who sends a message is ad
 Enable `private_threads` to restrict users to only their own threads:
 
 ```python
-worker_server = WorkerServer(WorkerConfig(
+agent_server = AgentServer(AgentConfig(
     database_type="postgres",
     database_name="mydb",
     private_threads=True,

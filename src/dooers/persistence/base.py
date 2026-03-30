@@ -22,7 +22,7 @@ class Persistence(Protocol):
     async def update_thread(self, thread: Thread) -> None: ...
     async def list_threads(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
@@ -34,7 +34,7 @@ class Persistence(Protocol):
     ) -> list[Thread]: ...
     async def count_threads(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
@@ -63,14 +63,14 @@ class Persistence(Protocol):
     async def list_runs(
         self,
         thread_id: str | None = None,
-        worker_id: str | None = None,
+        agent_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
     ) -> list[Run]: ...
     async def upsert_thread_participant(self, thread_id: str, user: User) -> None: ...
 
-    async def get_settings(self, worker_id: str) -> dict[str, Any]: ...
-    async def update_setting(self, worker_id: str, field_id: str, value: Any) -> datetime: ...
-    async def set_settings(self, worker_id: str, values: dict[str, Any]) -> datetime: ...
+    async def get_settings(self, agent_id: str) -> dict[str, Any]: ...
+    async def update_setting(self, agent_id: str, field_id: str, value: Any) -> datetime: ...
+    async def set_settings(self, agent_id: str, values: dict[str, Any]) -> datetime: ...
 
     async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None: ...

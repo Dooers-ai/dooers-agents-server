@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from .collector import AnalyticsCollector
 
 
-class WorkerAnalytics:
+class AgentAnalytics:
     """
     Handler API for analytics tracking.
 
@@ -16,7 +16,7 @@ class WorkerAnalytics:
 
     def __init__(
         self,
-        worker_id: str,
+        agent_id: str,
         thread_id: str,
         user_id: str | None,
         run_id: str | None,
@@ -24,7 +24,7 @@ class WorkerAnalytics:
         organization_id: str | None = None,
         workspace_id: str | None = None,
     ) -> None:
-        self._worker_id = worker_id
+        self._agent_id = agent_id
         self._thread_id = thread_id
         self._user_id = user_id
         self._run_id = run_id
@@ -42,7 +42,7 @@ class WorkerAnalytics:
         """
         await self._collector.track(
             event=event,
-            worker_id=self._worker_id,
+            agent_id=self._agent_id,
             thread_id=self._thread_id,
             user_id=self._user_id,
             run_id=self._run_id,
@@ -74,7 +74,7 @@ class WorkerAnalytics:
             feedback_type="like",
             target_type=target_type,
             target_id=target_id,
-            worker_id=self._worker_id,
+            agent_id=self._agent_id,
             thread_id=self._thread_id,
             user_id=self._user_id,
             reason=reason,
@@ -106,7 +106,7 @@ class WorkerAnalytics:
             feedback_type="dislike",
             target_type=target_type,
             target_id=target_id,
-            worker_id=self._worker_id,
+            agent_id=self._agent_id,
             thread_id=self._thread_id,
             user_id=self._user_id,
             reason=reason,

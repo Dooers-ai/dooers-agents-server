@@ -4,13 +4,13 @@ import uuid
 from agents import Agent, Runner, function_tool
 from fastapi import FastAPI, WebSocket
 
-from dooers import WorkerConfig, WorkerServer
+from dooers import AgentConfig, AgentServer
 
 app = FastAPI()
-worker_server = WorkerServer(
-    WorkerConfig(
+agent_server = AgentServer(
+    AgentConfig(
         database_type="sqlite",
-        database_name="worker.db",
+        database_name="agent.db",
         assistant_name="OpenAI Agent",
     )
 )
@@ -76,9 +76,9 @@ async def openai_agents_handler(incoming, send, memory, analytics, settings):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    await worker_server.handle(websocket, openai_agents_handler)
+    await agent_server.handle(websocket, openai_agents_handler)
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    await worker_server.close()
+    await agent_server.close()
