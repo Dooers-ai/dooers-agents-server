@@ -37,6 +37,8 @@ class SettingsField(BaseModel):
     readonly: bool = False
     value: Any = None
     visibility: SettingsFieldVisibility = SettingsFieldVisibility.USER
+    """If False, only creator audience may patch; user audience cannot change this field on a worker."""
+    user_editable: bool = True
 
     placeholder: str | None = None
     options: list[SettingsSelectOption] | None = None
@@ -100,7 +102,11 @@ class SettingsSchema(BaseModel):
             if f.visibility == SettingsFieldVisibility.INTERNAL:
                 return False
             if audience == "creator":
-                return f.visibility == SettingsFieldVisibility.CREATOR
+                # Studio: non-internal fields (both user- and creator-scoped).
+                return f.visibility in (
+                    SettingsFieldVisibility.CREATOR,
+                    SettingsFieldVisibility.USER,
+                )
             return f.visibility == SettingsFieldVisibility.USER
 
         result: list[SettingsField | SettingsFieldGroup] = []
@@ -119,3 +125,29 @@ class SettingsSchema(BaseModel):
     def get_public_fields(self) -> list["SettingsField | SettingsFieldGroup"]:
         """Deprecated: use get_fields_for_audience('user'). Kept for backward compatibility."""
         return self.get_fields_for_audience("user")
+
+    def to_public_http_dict(self, *, include_internal: bool = False) -> dict[str, Any]:
+
+        def field_ok(f: SettingsField) -> bool:
+            if f.visibility == SettingsFieldVisibility.INTERNAL and not include_internal:
+                return False
+            return True
+
+        def dump_field(f: SettingsField) -> dict[str, Any]:
+            return f.model_dump(mode="json")
+
+        items: list[dict[str, Any]] = []
+        for item in self.fields:
+            if isinstance(item, SettingsFieldGroup):
+                if item.visibility == SettingsFieldVisibility.INTERNAL and not include_internal:
+                    continue
+                children = [dump_field(f) for f in item.fields if field_ok(f)]
+                if not children:
+                    continue
+                g = item.model_dump(mode="json")
+                g["fields"] = children
+                items.append(g)
+            elif isinstance(item, SettingsField) and field_ok(item):
+                items.append(dump_field(item))
+
+        return {"version": self.version, "fields": items}

@@ -110,7 +110,7 @@ class SettingsBroadcaster:
                 aud = ctx.get("audience", "user")
                 if field_vis == SettingsFieldVisibility.CREATOR and aud != "creator":
                     continue
-                if field_vis == SettingsFieldVisibility.USER and aud != "user":
+                if field_vis == SettingsFieldVisibility.USER and aud not in ("user", "creator"):
                     continue
             ws = ctx.get("ws")
             if ws is None or ws is exclude_ws:

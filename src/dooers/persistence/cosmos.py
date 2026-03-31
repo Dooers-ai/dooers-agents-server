@@ -1,3 +1,4 @@
+import base64
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -601,12 +602,13 @@ class CosmosPersistence:
         current_values = await self.get_settings(worker_id)
         current_values[field_id] = value
 
-        doc = {
+        doc: dict[str, Any] = {
             "id": worker_id,
             "worker_id": worker_id,
             "values": current_values,
             "updated_at": now.isoformat(),
         }
+        await self._merge_settings_doc_seed_hash(container, worker_id, doc)
 
         await container.upsert_item(doc)
         return now
@@ -615,15 +617,56 @@ class CosmosPersistence:
         container = self._get_container("settings")
         now = datetime.now(UTC)
 
-        doc = {
+        doc: dict[str, Any] = {
             "id": worker_id,
             "worker_id": worker_id,
             "values": values,
             "updated_at": now.isoformat(),
         }
+        await self._merge_settings_doc_seed_hash(container, worker_id, doc)
 
         await container.upsert_item(doc)
         return now
+
+    async def _merge_settings_doc_seed_hash(self, container, worker_id: str, doc: dict[str, Any]) -> None:
+        """Keep existing seed_hash_b64 when rewriting the settings document."""
+        try:
+            existing = await container.read_item(worker_id, partition_key=worker_id)
+            h = existing.get("seed_hash_b64")
+            if h:
+                doc["seed_hash_b64"] = h
+        except CosmosResourceNotFoundError:
+            pass
+
+    async def get_worker_seed_hash_bytes(self, worker_id: str) -> bytes | None:
+        container = self._get_container("settings")
+        try:
+            item = await container.read_item(worker_id, partition_key=worker_id)
+            h = item.get("seed_hash_b64")
+            if not h:
+                return None
+            return base64.b64decode(h)
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def set_worker_seed_hash_bytes(self, worker_id: str, secret_hash: bytes) -> None:
+        container = self._get_container("settings")
+        now = datetime.now(UTC)
+        values: dict[str, Any] = {}
+        try:
+            item = await container.read_item(worker_id, partition_key=worker_id)
+            values = item.get("values") or {}
+        except CosmosResourceNotFoundError:
+            pass
+
+        doc = {
+            "id": worker_id,
+            "worker_id": worker_id,
+            "values": values,
+            "seed_hash_b64": base64.b64encode(secret_hash).decode("ascii"),
+            "updated_at": now.isoformat(),
+        }
+        await container.upsert_item(doc)
 
     async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None:
         if not events:

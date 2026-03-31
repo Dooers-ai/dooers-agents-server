@@ -41,6 +41,8 @@ class WorkerConfig:
     analytics_flush_interval: float | None = None
 
     settings_schema: "SettingsSchema | None" = None
+    # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
+    agent_seed_secret: str = field(default_factory=lambda: os.environ.get("AGENT_SEED_SECRET", "").strip())
 
     upload_max_size_bytes: int = 25 * 1024 * 1024  # 25MB
     upload_ttl_seconds: int = 300  # 5 minutes

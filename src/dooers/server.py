@@ -62,6 +62,10 @@ class WorkerServer:
         return self._registry
 
     @property
+    def settings_schema(self):
+        return self._config.settings_schema
+
+    @property
     def persistence(self) -> Persistence:
         if not self._persistence:
             raise RuntimeError("Server not initialized. Call handle() first or ensure_initialized().")
@@ -165,6 +169,7 @@ class WorkerServer:
             analytics_collector=self._analytics_collector,
             settings_broadcaster=self._settings_broadcaster,
             settings_schema=self._config.settings_schema,
+            agent_seed_secret=self._config.agent_seed_secret,
             assistant_name=self._config.assistant_name,
             analytics_subscriptions=self._analytics_subscriptions,
             settings_subscriptions=self._settings_subscriptions,

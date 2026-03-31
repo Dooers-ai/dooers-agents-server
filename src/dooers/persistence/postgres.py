@@ -271,6 +271,11 @@ class PostgresPersistence:
                     ON {settings_table}(worker_id)
             """)
 
+            await conn.execute(f"""
+                ALTER TABLE {settings_table}
+                ADD COLUMN IF NOT EXISTS seed_secret_hash BYTEA
+            """)
+
             analytics_table = f"{self._prefix}analytics_events"
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {analytics_table} (
@@ -954,6 +959,42 @@ class PostgresPersistence:
                 now,
             )
         return now
+
+    async def get_worker_seed_hash_bytes(self, worker_id: str) -> bytes | None:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}settings"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT seed_secret_hash FROM {table} WHERE worker_id = $1",
+                worker_id,
+            )
+        if row is None:
+            return None
+        return row["seed_secret_hash"]
+
+    async def set_worker_seed_hash_bytes(self, worker_id: str, secret_hash: bytes) -> None:
+        """Persist bcrypt hash on the same row as worker settings (does not touch `values` JSON)."""
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}settings"
+        now = datetime.now(UTC)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {table} (worker_id, values, seed_secret_hash, created_at, updated_at)
+                VALUES ($1, '{{}}'::jsonb, $2, $3, $4)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    seed_secret_hash = EXCLUDED.seed_secret_hash,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                worker_id,
+                secret_hash,
+                now,
+                now,
+            )
 
     async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None:
         if not self._pool or not events:

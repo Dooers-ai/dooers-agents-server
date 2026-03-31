@@ -174,6 +174,32 @@ class C2S_SettingsPatch(BaseModel):
     payload: SettingsPatchPayload
 
 
+class SettingsPublicSchemaC2SPayload(BaseModel):
+    """Empty payload; public template schema is returned out-of-band."""
+
+    pass
+
+
+class C2S_SettingsPublicSchema(BaseModel):
+    id: str
+    type: Literal["settings.public_schema"]
+    payload: SettingsPublicSchemaC2SPayload = Field(default_factory=SettingsPublicSchemaC2SPayload)
+
+
+class SettingsSeedPayload(BaseModel):
+    worker_id: str
+    values: dict[str, Any] = Field(default_factory=dict)
+    seed_secret: str
+    """When rotating the runtime key, set to the new secret after verifying `seed_secret` matches the old hash."""
+    next_seed_secret: str | None = None
+
+
+class C2S_SettingsSeed(BaseModel):
+    id: str
+    type: Literal["settings.seed"]
+    payload: SettingsSeedPayload
+
+
 ClientToServer = Annotated[
     C2S_Connect
     | C2S_ThreadList
@@ -187,7 +213,9 @@ ClientToServer = Annotated[
     | C2S_Feedback
     | C2S_SettingsSubscribe
     | C2S_SettingsUnsubscribe
-    | C2S_SettingsPatch,
+    | C2S_SettingsPatch
+    | C2S_SettingsPublicSchema
+    | C2S_SettingsSeed,
     Field(discriminator="type"),
 ]
 
@@ -326,6 +354,18 @@ class S2C_SettingsPatch(BaseModel):
     payload: SettingsPatchBroadcastPayload
 
 
+class SettingsPublicSchemaResultPayload(BaseModel):
+    """Same shape as the former HTTP GET /settings/schema body."""
+
+    schema: dict[str, Any]
+
+
+class S2C_SettingsPublicSchemaResult(BaseModel):
+    id: str
+    type: Literal["settings.public_schema.result"] = "settings.public_schema.result"
+    payload: SettingsPublicSchemaResultPayload
+
+
 ServerToClient = (
     S2C_Ack
     | S2C_ThreadListResult
@@ -339,4 +379,5 @@ ServerToClient = (
     | S2C_FeedbackAck
     | S2C_SettingsSnapshot
     | S2C_SettingsPatch
+    | S2C_SettingsPublicSchemaResult
 )

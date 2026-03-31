@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bcrypt
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +18,8 @@ from dooers.protocol.frames import (
     C2S_EventList,
     C2S_Feedback,
     C2S_SettingsPatch,
+    C2S_SettingsPublicSchema,
+    C2S_SettingsSeed,
     C2S_SettingsSubscribe,
     C2S_SettingsUnsubscribe,
     C2S_ThreadDelete,
@@ -33,6 +36,7 @@ from dooers.protocol.frames import (
     S2C_EventListResult,
     S2C_FeedbackAck,
     S2C_RunUpsert,
+    S2C_SettingsPublicSchemaResult,
     S2C_ThreadDeleted,
     S2C_ThreadListResult,
     S2C_ThreadSnapshot,
@@ -42,6 +46,7 @@ from dooers.protocol.frames import (
     ThreadListResultPayload,
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
+    SettingsPublicSchemaResultPayload,
 )
 from dooers.protocol.models import User
 from dooers.protocol.parser import serialize_frame
@@ -100,6 +105,7 @@ class Router:
         analytics_collector: AnalyticsCollector | None = None,
         settings_broadcaster: SettingsBroadcaster | None = None,
         settings_schema: SettingsSchema | None = None,
+        agent_seed_secret: str = "",
         assistant_name: str = "Assistant",
         analytics_subscriptions: dict[str, set[str]] | None = None,
         settings_subscriptions: dict[str, set[str]] | None = None,
@@ -114,6 +120,7 @@ class Router:
         self._analytics_collector = analytics_collector
         self._settings_broadcaster = settings_broadcaster
         self._settings_schema = settings_schema
+        self._agent_seed_secret = (agent_seed_secret or "").strip()
         self._assistant_name = assistant_name
         self._analytics_subscriptions = analytics_subscriptions if analytics_subscriptions is not None else {}
         self._settings_subscriptions = settings_subscriptions if settings_subscriptions is not None else {}
@@ -226,6 +233,10 @@ class Router:
                 await self._handle_settings_unsubscribe(ws, frame)
             case C2S_SettingsPatch():
                 await self._handle_settings_patch(ws, frame)
+            case C2S_SettingsPublicSchema():
+                await self._handle_settings_public_schema(ws, frame)
+            case C2S_SettingsSeed():
+                await self._handle_settings_seed(ws, frame)
 
     async def cleanup(self) -> None:
         logger.info(
@@ -789,14 +800,33 @@ class Router:
                 },
             )
             return
-        if field.visibility == SettingsFieldVisibility.USER and effective_audience != "user":
+        if field.visibility == SettingsFieldVisibility.USER and effective_audience not in (
+            "user",
+            "creator",
+        ):
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
                 error={
                     "code": "FORBIDDEN",
-                    "message": "Subscribe with audience=user before patching user settings",
+                    "message": "Subscribe with audience=user or audience=creator before patching user settings",
+                },
+            )
+            return
+
+        if (
+            field.visibility == SettingsFieldVisibility.USER
+            and effective_audience == "user"
+            and not field.user_editable
+        ):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={
+                    "code": "FORBIDDEN",
+                    "message": "This field is fixed at template level; only the agent owner or organization admin can change it",
                 },
             )
             return
@@ -809,5 +839,70 @@ class Router:
                 field_id=field_id,
                 value=value,
             )
+
+        await self._send_ack(ws, frame.id)
+
+    async def _handle_settings_public_schema(
+        self,
+        ws: WebSocketProtocol,
+        frame: C2S_SettingsPublicSchema,
+    ) -> None:
+        if not self._settings_schema:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_CONFIGURED", "message": "No settings schema configured"},
+            )
+            return
+        public = self._settings_schema.to_public_http_dict()
+        result = S2C_SettingsPublicSchemaResult(
+            id=frame.id,
+            payload=SettingsPublicSchemaResultPayload(schema=public),
+        )
+        await self._send(ws, result)
+
+    async def _handle_settings_seed(
+        self,
+        ws: WebSocketProtocol,
+        frame: C2S_SettingsSeed,
+    ) -> None:
+        """
+        Authorize seed using a bcrypt hash stored per worker_id in the runtime DB (not in core).
+        Core sends the creator's API key in `seed_secret`; on first success we persist a hash so
+        later seeds must match. Optional `next_seed_secret` rotates the stored hash after apply.
+        If AGENT_SEED_SECRET is set, it can still authorize (bootstrap / legacy).
+        """
+        worker_id = frame.payload.worker_id
+        incoming = frame.payload.seed_secret.encode("utf-8")
+
+        stored = await self._persistence.get_worker_seed_hash_bytes(worker_id)
+        bootstrap = (self._agent_seed_secret or "").strip()
+
+        authorized = False
+        if stored is not None:
+            if bcrypt.checkpw(incoming, stored):
+                authorized = True
+            elif bootstrap and frame.payload.seed_secret == bootstrap:
+                authorized = True
+        elif bootstrap:
+            authorized = frame.payload.seed_secret == bootstrap
+        else:
+            authorized = len(frame.payload.seed_secret) > 0
+
+        if not authorized:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Invalid seed_secret"},
+            )
+            return
+
+        await self._persistence.set_settings(worker_id, frame.payload.values)
+
+        to_store = frame.payload.next_seed_secret or frame.payload.seed_secret
+        new_hash = bcrypt.hashpw(to_store.encode("utf-8"), bcrypt.gensalt())
+        await self._persistence.set_worker_seed_hash_bytes(worker_id, new_hash)
 
         await self._send_ack(ws, frame.id)
