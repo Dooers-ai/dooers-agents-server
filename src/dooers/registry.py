@@ -17,31 +17,31 @@ class ConnectionRegistry:
         self._connections: dict[str, set[WebSocketProtocol]] = {}
         self._lock = asyncio.Lock()
 
-    async def register(self, worker_id: str, ws: WebSocketProtocol) -> None:
+    async def register(self, agent_id: str, ws: WebSocketProtocol) -> None:
         async with self._lock:
-            if worker_id not in self._connections:
-                self._connections[worker_id] = set()
-            self._connections[worker_id].add(ws)
+            if agent_id not in self._connections:
+                self._connections[agent_id] = set()
+            self._connections[agent_id].add(ws)
 
-    async def unregister(self, worker_id: str, ws: WebSocketProtocol) -> None:
+    async def unregister(self, agent_id: str, ws: WebSocketProtocol) -> None:
         async with self._lock:
-            if worker_id in self._connections:
-                self._connections[worker_id].discard(ws)
-                if not self._connections[worker_id]:
-                    del self._connections[worker_id]
+            if agent_id in self._connections:
+                self._connections[agent_id].discard(ws)
+                if not self._connections[agent_id]:
+                    del self._connections[agent_id]
 
-    def get_connections(self, worker_id: str) -> set[WebSocketProtocol]:
-        return self._connections.get(worker_id, set()).copy()
+    def get_connections(self, agent_id: str) -> set[WebSocketProtocol]:
+        return self._connections.get(agent_id, set()).copy()
 
-    def get_connection_count(self, worker_id: str) -> int:
-        return len(self._connections.get(worker_id, set()))
+    def get_connection_count(self, agent_id: str) -> int:
+        return len(self._connections.get(agent_id, set()))
 
     async def broadcast(
         self,
-        worker_id: str,
+        agent_id: str,
         message: str,
     ) -> int:
-        connections = self.get_connections(worker_id)
+        connections = self.get_connections(agent_id)
         if not connections:
             return 0
 
@@ -53,12 +53,12 @@ class ConnectionRegistry:
 
     async def broadcast_except(
         self,
-        worker_id: str,
+        agent_id: str,
         exclude: WebSocketProtocol,
         message: str,
     ) -> int:
 
-        connections = self.get_connections(worker_id)
+        connections = self.get_connections(agent_id)
         connections.discard(exclude)
         if not connections:
             return 0

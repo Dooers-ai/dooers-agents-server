@@ -14,6 +14,8 @@ class SettingsFieldType(StrEnum):
     EMAIL = "email"
     DATE = "date"
     IMAGE = "image"
+    FILE = "file"
+    FILE_MULTI = "file_multi"
 
 
 class SettingsFieldVisibility(StrEnum):
@@ -48,6 +50,8 @@ class SettingsField(BaseModel):
     src: str | None = None
     width: int | None = None
     height: int | None = None
+    upload_url: str | None = None
+    accept: str | None = None
 
 
 class SettingsFieldGroup(BaseModel):

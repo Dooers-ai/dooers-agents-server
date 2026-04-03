@@ -1,5 +1,5 @@
 from dooers.broadcast import BroadcastManager
-from dooers.config import WorkerConfig
+from dooers.config import AgentConfig
 from dooers.dispatch import DispatchStream
 from dooers.exceptions import DispatchError, HandlerError
 from dooers.features.analytics import (
@@ -7,7 +7,7 @@ from dooers.features.analytics import (
     AnalyticsCollector,
     AnalyticsEvent,
     AnalyticsEventPayload,
-    WorkerAnalytics,
+    AgentAnalytics,
 )
 from dooers.features.settings import (
     SettingsBroadcaster,
@@ -17,13 +17,13 @@ from dooers.features.settings import (
     SettingsFieldVisibility,
     SettingsSchema,
     SettingsSelectOption,
-    WorkerSettings,
+    AgentSettings,
 )
-from dooers.handlers.context import WorkerContext
-from dooers.handlers.incoming import WorkerIncoming
-from dooers.handlers.memory import WorkerMemory
+from dooers.handlers.context import AgentContext
+from dooers.handlers.incoming import AgentIncoming
+from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import Handler, UploadReferenceError
-from dooers.handlers.send import WorkerSend
+from dooers.handlers.send import AgentSend
 from dooers.persistence.base import Persistence
 from dooers.protocol.models import (
     Actor,
@@ -51,16 +51,16 @@ from dooers.protocol.models import (
 )
 from dooers.registry import ConnectionRegistry
 from dooers.repository import Repository
-from dooers.server import WorkerServer
+from dooers.server import AgentServer
 
 __all__ = [
     # Core
-    "WorkerConfig",
-    "WorkerServer",
-    "WorkerContext",
-    "WorkerIncoming",
-    "WorkerSend",
-    "WorkerMemory",
+    "AgentConfig",
+    "AgentServer",
+    "AgentContext",
+    "AgentIncoming",
+    "AgentSend",
+    "AgentMemory",
     "ConnectionRegistry",
     "BroadcastManager",
     "Persistence",
@@ -100,7 +100,7 @@ __all__ = [
     "AnalyticsEventPayload",
     "AnalyticsBatch",
     "AnalyticsCollector",
-    "WorkerAnalytics",
+    "AgentAnalytics",
     # Settings
     "SettingsFieldType",
     "SettingsFieldVisibility",
@@ -109,5 +109,5 @@ __all__ = [
     "SettingsSelectOption",
     "SettingsSchema",
     "SettingsBroadcaster",
-    "WorkerSettings",
+    "AgentSettings",
 ]

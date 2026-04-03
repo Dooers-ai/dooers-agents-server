@@ -1,9 +1,9 @@
-# Migration Guide: v0.7.0 - WorkerIncoming Refactor
+# Migration Guide: v0.7.0 - AgentIncoming Refactor
 
 ## Overview
 
 Version 0.7.0 introduces a clearer API with better naming and organization:
-- `WorkerOn` -> `WorkerIncoming` (incoming request/context)
+- `AgentOn` -> `AgentIncoming` (incoming request/context)
 - Context metadata now grouped under `incoming.context`
 - Handler parameter renamed from `on` to `incoming`
 
@@ -51,12 +51,12 @@ incoming.content          # content stays top-level
 
 **Before (v0.6.x):**
 ```python
-from dooers import WorkerOn
+from dooers import AgentOn
 ```
 
 **After (v0.7.0):**
 ```python
-from dooers import WorkerIncoming, WorkerContext
+from dooers import AgentIncoming, AgentContext
 ```
 
 ## Migration Checklist
@@ -64,5 +64,5 @@ from dooers import WorkerIncoming, WorkerContext
 - [ ] Update all handler definitions: `on` -> `incoming`
 - [ ] Update all context access: `on.field` -> `incoming.context.field`
 - [ ] Keep `on.message` / `on.content` as `incoming.message` / `incoming.content` (top-level, not under context)
-- [ ] Remove any imports of `WorkerOn` (removed in v0.7.0)
+- [ ] Remove any imports of `AgentOn` (removed in v0.7.0)
 - [ ] Test all handlers with new signature

@@ -17,7 +17,7 @@ class SettingsBroadcaster:
     def __init__(
         self,
         registry: ConnectionRegistry,
-        subscriptions: dict[str, set[str]],  # worker_id -> set of ws_ids
+        subscriptions: dict[str, set[str]],  # agent_id -> set of ws_ids
         ws_context: dict[str, dict[str, Any]],
     ) -> None:
         self._registry = registry
@@ -26,7 +26,7 @@ class SettingsBroadcaster:
 
     async def broadcast_snapshot_to_ws(
         self,
-        worker_id: str,
+        agent_id: str,
         ws: WebSocketProtocol,
         schema: SettingsSchema,
         values: dict[str, Any],
@@ -54,7 +54,7 @@ class SettingsBroadcaster:
         message = S2C_SettingsSnapshot(
             id=str(uuid4()),
             payload=SettingsSnapshotPayload(
-                worker_id=worker_id,
+                agent_id=agent_id,
                 fields=items_with_values,
                 updated_at=datetime.now(UTC),
             ),
@@ -63,11 +63,11 @@ class SettingsBroadcaster:
         try:
             await ws.send_text(message.model_dump_json())
         except Exception:
-            logger.warning("[workers] failed to send settings snapshot")
+            logger.warning("[agents] failed to send settings snapshot")
 
     async def broadcast_patch(
         self,
-        worker_id: str,
+        agent_id: str,
         field_id: str,
         value: Any,
         exclude_ws: WebSocketProtocol | None = None,
@@ -85,7 +85,7 @@ class SettingsBroadcaster:
         message = S2C_SettingsPatch(
             id=str(uuid4()),
             payload=SettingsPatchBroadcastPayload(
-                worker_id=worker_id,
+                agent_id=agent_id,
                 field_id=field_id,
                 value=value,
                 updated_at=datetime.now(UTC),
@@ -100,11 +100,11 @@ class SettingsBroadcaster:
                 field_vis = f.visibility
 
         sent = False
-        has_ctx_for_worker = any(
-            ctx.get("worker_id") == worker_id for ctx in self._ws_context.values()
+        has_ctx_for_agent = any(
+            ctx.get("agent_id") == agent_id for ctx in self._ws_context.values()
         )
         for _ws_id, ctx in list(self._ws_context.items()):
-            if ctx.get("worker_id") != worker_id:
+            if ctx.get("agent_id") != agent_id:
                 continue
             if field_vis is not None:
                 aud = ctx.get("audience", "user")
@@ -121,10 +121,10 @@ class SettingsBroadcaster:
             except Exception:
                 logger.warning("Failed to send settings patch to subscriber")
 
-        if sent or has_ctx_for_worker:
+        if sent or has_ctx_for_agent:
             return
 
-        connections = self._registry.get_connections(worker_id)
+        connections = self._registry.get_connections(agent_id)
         for ws in connections:
             if ws is not exclude_ws:
                 try:

@@ -1,12 +1,12 @@
 from fastapi import FastAPI, WebSocket
 
-from dooers import WorkerConfig, WorkerServer
+from dooers import AgentConfig, AgentServer
 
 app = FastAPI()
-worker_server = WorkerServer(
-    WorkerConfig(
+agent_server = AgentServer(
+    AgentConfig(
         database_type="sqlite",
-        database_name="worker.db",
+        database_name="agent.db",
         assistant_name="Echo Bot",
     )
 )
@@ -22,9 +22,9 @@ async def echo_agent(incoming, send, memory, analytics, settings):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    await worker_server.handle(websocket, echo_agent)
+    await agent_server.handle(websocket, echo_agent)
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    await worker_server.close()
+    await agent_server.close()

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**agents-server** is a Python SDK for building AI agent workers that communicate via WebSocket. It provides real-time message handling, conversation persistence, analytics tracking, and configurable settings for agent services deployed on the dooers.ai platform.
+**agents-server** is a Python SDK for building AI agent agents that communicate via WebSocket. It provides real-time message handling, conversation persistence, analytics tracking, and configurable settings for agent services deployed on the dooers.ai platform.
 
 ## Development Commands
 
@@ -33,8 +33,8 @@ poe pcu:upgrade         # Upgrade dependencies
 
 ```
 src/dooers/
-├── server.py           # WorkerServer: main entry point, manages connections
-├── config.py           # WorkerConfig: database and feature configuration
+├── server.py           # AgentServer: main entry point, manages connections
+├── config.py           # AgentConfig: database and feature configuration
 ├── dispatch.py         # DispatchStream: programmatic handler execution
 ├── repository.py       # Repository: direct DB access for threads/events
 ├── registry.py         # ConnectionRegistry: tracks active WebSocket connections
@@ -42,9 +42,9 @@ src/dooers/
 ├── handlers/
 │   ├── router.py       # Frame routing and agent handler execution
 │   ├── pipeline.py     # HandlerPipeline: shared setup/execute for WS and dispatch
-│   ├── on.py           # WorkerOn: incoming message context
-│   ├── send.py         # WorkerSend: factory for yielding response events
-│   └── memory.py       # WorkerMemory: conversation history access
+│   ├── on.py           # AgentOn: incoming message context
+│   ├── send.py         # AgentSend: factory for yielding response events
+│   └── memory.py       # AgentMemory: conversation history access
 ├── protocol/
 │   ├── models.py       # Thread, ThreadEvent, Run, ContentPart models
 │   ├── frames.py       # WebSocket frame definitions (C2S/S2C)
@@ -55,7 +55,7 @@ src/dooers/
 │   └── postgres.py     # PostgreSQL implementation (asyncpg)
 └── features/
     ├── analytics/      # Event tracking and feedback collection
-    └── settings/       # Configurable worker settings schema
+    └── settings/       # Configurable agent settings schema
 ```
 
 ### Handler Pattern
@@ -81,12 +81,12 @@ async def agent_handler(on, send, memory, analytics, settings):
 - **SQLite**: Default for development (`database_type="sqlite"`)
 - **PostgreSQL**: Production with SSL support, managed databases (AlloyDB, Cloud SQL)
 
-Database connection configured via environment variables: `WORKER_DATABASE_HOST`, `WORKER_DATABASE_PORT`, `WORKER_DATABASE_USER`, `WORKER_DATABASE_NAME`, `WORKER_DATABASE_PASSWORD`, `WORKER_DATABASE_SSL`
+Database connection configured via environment variables: `AGENT_DATABASE_HOST`, `AGENT_DATABASE_PORT`, `AGENT_DATABASE_USER`, `AGENT_DATABASE_NAME`, `AGENT_DATABASE_PASSWORD`, `AGENT_DATABASE_SSL`
 
 ## Key Patterns
 
 - All models use **Pydantic v2** for validation and serialization
 - Database operations use **SQLAlchemy 2.0** async patterns
 - WebSocket protocol is frame-based with typed payloads
-- Thread/event hierarchy: Worker → Thread → ThreadEvent (with optional Run grouping)
+- Thread/event hierarchy: Agent → Thread → ThreadEvent (with optional Run grouping)
 - Multi-format history: `memory.get_history(format="openai|anthropic|google|cohere|voyage")`

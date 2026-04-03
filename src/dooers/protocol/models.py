@@ -251,7 +251,7 @@ class ThreadEvent(BaseModel):
 
 class Thread(BaseModel):
     id: str
-    worker_id: str
+    agent_id: str
     organization_id: str = ""
     workspace_id: str = ""
     owner: User = User(user_id="")

@@ -8,18 +8,18 @@
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse
 
-from dooers import WorkerConfig, WorkerServer
+from dooers import AgentConfig, AgentServer
 
 app = FastAPI()
-worker_server = WorkerServer(
-    WorkerConfig(
+agent_server = AgentServer(
+    AgentConfig(
         database_type="sqlite",
-        database_name="worker.db",
+        database_name="agent.db",
         assistant_name="Multi Bot",
     )
 )
 
-WORKER_ID = "multi-worker"
+AGENT_ID = "multi-agent"
 ORG_ID = "org_demo"
 WS_ID = "ws_demo"
 
@@ -59,7 +59,7 @@ async def notify_handler(incoming, send, memory, analytics, settings):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    await worker_server.handle(websocket, chat_handler)
+    await agent_server.handle(websocket, chat_handler)
 
 
 # --- REST entry points (dispatch) ---
@@ -72,9 +72,9 @@ async def summarize(request: Request):
     if not thread_id:
         return JSONResponse({"error": "thread_id required"}, status_code=400)
 
-    stream = await worker_server.dispatch(
+    stream = await agent_server.dispatch(
         handler=summarize_handler,
-        worker_id=WORKER_ID,
+        agent_id=AGENT_ID,
         organization_id=ORG_ID,
         workspace_id=WS_ID,
         message="Summarize this conversation",
@@ -98,9 +98,9 @@ async def notify(request: Request):
     if not thread_id or not message:
         return JSONResponse({"error": "thread_id and message required"}, status_code=400)
 
-    stream = await worker_server.dispatch(
+    stream = await agent_server.dispatch(
         handler=notify_handler,
-        worker_id=WORKER_ID,
+        agent_id=AGENT_ID,
         organization_id=ORG_ID,
         workspace_id=WS_ID,
         message=message,
@@ -115,9 +115,9 @@ async def notify(request: Request):
 
 @app.on_event("startup")
 async def startup():
-    await worker_server.ensure_initialized()
+    await agent_server.ensure_initialized()
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    await worker_server.close()
+    await agent_server.close()

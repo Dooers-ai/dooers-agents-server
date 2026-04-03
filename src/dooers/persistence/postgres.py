@@ -51,7 +51,7 @@ class PostgresPersistence:
         database: str,
         password: str,
         ssl: bool | str = False,
-        table_prefix: str = "worker_",
+        table_prefix: str = "agent_",
     ):
         self._host = host
         self._port = port
@@ -66,7 +66,7 @@ class PostgresPersistence:
         ssl_param = _build_ssl_context(self._ssl)
         ssl_display = self._ssl if isinstance(self._ssl, str) else ("require" if self._ssl else "disabled")
         logger.info(
-            "[workers] connecting to postgresql at %s:%s/%s (user=%s, ssl=%s)",
+            "[agents] connecting to postgresql at %s:%s/%s (user=%s, ssl=%s)",
             self._host,
             self._port,
             self._database,
@@ -86,10 +86,10 @@ class PostgresPersistence:
                 timeout=30,
                 command_timeout=30,
             )
-            logger.info("[workers] successfully connected to postgresql")
+            logger.info("[agents] successfully connected to postgresql")
         except TimeoutError:
             logger.error(
-                "[workers] connection to postgresql timed out. host=%s, port=%s, db=%s, ssl=%s. ",
+                "[agents] connection to postgresql timed out. host=%s, port=%s, db=%s, ssl=%s. ",
                 self._host,
                 self._port,
                 self._database,
@@ -98,7 +98,7 @@ class PostgresPersistence:
             raise
         except OSError as e:
             logger.error(
-                "[workers] cannot reach postgresql at %s:%s - %s. ",
+                "[agents] cannot reach postgresql at %s:%s - %s. ",
                 self._host,
                 self._port,
                 e,
@@ -106,14 +106,14 @@ class PostgresPersistence:
             raise
         except asyncpg.InvalidPasswordError:
             logger.error(
-                "[workers] authentication failed for user '%s' on database '%s'. ",
+                "[agents] authentication failed for user '%s' on database '%s'. ",
                 self._user,
                 self._database,
             )
             raise
         except Exception as e:
             logger.error(
-                "[workers] failed to connect to postgresql at %s:%s/%s - %s: %s",
+                "[agents] failed to connect to postgresql at %s:%s/%s - %s: %s",
                 self._host,
                 self._port,
                 self._database,
@@ -138,7 +138,7 @@ class PostgresPersistence:
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {threads_table} (
                     id TEXT PRIMARY KEY,
-                    worker_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
                     organization_id TEXT NOT NULL DEFAULT '',
                     workspace_id TEXT NOT NULL DEFAULT '',
                     owner JSONB NOT NULL DEFAULT '{{}}',
@@ -217,8 +217,8 @@ class PostgresPersistence:
             """)
 
             await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self._prefix}threads_worker_id
-                    ON {threads_table}(worker_id)
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}threads_agent_id
+                    ON {threads_table}(agent_id)
             """)
 
             await conn.execute(f"""
@@ -242,8 +242,8 @@ class PostgresPersistence:
             """)
 
             await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self._prefix}threads_worker_last_event
-                    ON {threads_table}(worker_id, last_event_at DESC)
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}threads_agent_last_event
+                    ON {threads_table}(agent_id, last_event_at DESC)
             """)
 
             await conn.execute(f"""
@@ -259,7 +259,7 @@ class PostgresPersistence:
             settings_table = f"{self._prefix}settings"
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {settings_table} (
-                    worker_id TEXT PRIMARY KEY,
+                    agent_id TEXT PRIMARY KEY,
                     values JSONB NOT NULL DEFAULT '{{}}',
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -267,8 +267,8 @@ class PostgresPersistence:
             """)
 
             await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self._prefix}settings_worker
-                    ON {settings_table}(worker_id)
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}settings_agent
+                    ON {settings_table}(agent_id)
             """)
 
             await conn.execute(f"""
@@ -282,7 +282,7 @@ class PostgresPersistence:
                     id TEXT PRIMARY KEY,
                     event TEXT NOT NULL,
                     timestamp TIMESTAMPTZ NOT NULL,
-                    worker_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
                     thread_id TEXT,
                     user_id TEXT,
                     run_id TEXT,
@@ -294,8 +294,8 @@ class PostgresPersistence:
                 )
             """)
             await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self._prefix}analytics_events_worker_id
-                    ON {analytics_table}(worker_id)
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}analytics_events_agent_id
+                    ON {analytics_table}(agent_id)
             """)
             await conn.execute(f"""
                 CREATE INDEX IF NOT EXISTS idx_{self._prefix}analytics_events_timestamp
@@ -314,11 +314,11 @@ class PostgresPersistence:
             await conn.execute(
                 f"""
                 INSERT INTO {table}
-                    (id, worker_id, organization_id, workspace_id, owner, users, title, created_at, updated_at, last_event_at)
+                    (id, agent_id, organization_id, workspace_id, owner, users, title, created_at, updated_at, last_event_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
                 thread.id,
-                thread.worker_id,
+                thread.agent_id,
                 thread.organization_id,
                 thread.workspace_id,
                 owner_json,
@@ -356,7 +356,7 @@ class PostgresPersistence:
 
         return Thread(
             id=row["id"],
-            worker_id=row["worker_id"],
+            agent_id=row["agent_id"],
             organization_id=row["organization_id"] or "",
             workspace_id=row["workspace_id"] or "",
             owner=User(**owner_data),
@@ -466,7 +466,7 @@ class PostgresPersistence:
 
     async def count_threads(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
@@ -478,8 +478,8 @@ class PostgresPersistence:
             raise RuntimeError("Not connected")
 
         table = f"{self._prefix}threads"
-        conditions: list[str] = ["worker_id = $1"]
-        params: list[Any] = [worker_id]
+        conditions: list[str] = ["agent_id = $1"]
+        params: list[Any] = [agent_id]
         idx = 2
 
         idx = self._build_scope_conditions(
@@ -502,7 +502,7 @@ class PostgresPersistence:
 
     async def list_threads(
         self,
-        worker_id: str,
+        agent_id: str,
         organization_id: str,
         workspace_id: str,
         user_id: str | None,
@@ -516,8 +516,8 @@ class PostgresPersistence:
             raise RuntimeError("Not connected")
 
         table = f"{self._prefix}threads"
-        conditions: list[str] = ["worker_id = $1"]
-        params: list[Any] = [worker_id]
+        conditions: list[str] = ["agent_id = $1"]
+        params: list[Any] = [agent_id]
         idx = 2
 
         idx = self._build_scope_conditions(
@@ -825,7 +825,7 @@ class PostgresPersistence:
     async def list_runs(
         self,
         thread_id: str | None = None,
-        worker_id: str | None = None,
+        agent_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
     ) -> list[Run]:
@@ -842,9 +842,9 @@ class PostgresPersistence:
             conditions.append(f"r.thread_id = ${idx}")
             params.append(thread_id)
             idx += 1
-        if worker_id:
-            conditions.append(f"t.worker_id = ${idx}")
-            params.append(worker_id)
+        if agent_id:
+            conditions.append(f"t.agent_id = ${idx}")
+            params.append(agent_id)
             idx += 1
         if status:
             conditions.append(f"r.status = ${idx}")
@@ -854,7 +854,7 @@ class PostgresPersistence:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
 
-        join = f"JOIN {threads_table} t ON r.thread_id = t.id" if worker_id else ""
+        join = f"JOIN {threads_table} t ON r.thread_id = t.id" if agent_id else ""
         query = f"""
             SELECT r.* FROM {runs_table} r
             {join}
@@ -887,16 +887,16 @@ class PostgresPersistence:
     def _deserialize_content_part(self, data: dict):
         return deserialize_s2c_part(data)
 
-    async def get_settings(self, worker_id: str) -> dict[str, Any]:
-        """Get all stored values for a worker. Returns empty dict if none."""
+    async def get_settings(self, agent_id: str) -> dict[str, Any]:
+        """Get all stored values for a agent. Returns empty dict if none."""
         if not self._pool:
             raise RuntimeError("Not connected")
 
         table = f"{self._prefix}settings"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT values FROM {table} WHERE worker_id = $1",
-                worker_id,
+                f"SELECT values FROM {table} WHERE agent_id = $1",
+                agent_id,
             )
 
         if not row:
@@ -907,7 +907,7 @@ class PostgresPersistence:
             return json.loads(values)
         return values
 
-    async def update_setting(self, worker_id: str, field_id: str, value: Any) -> datetime:
+    async def update_setting(self, agent_id: str, field_id: str, value: Any) -> datetime:
         """Update a single field value. Returns updated_at timestamp."""
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -915,27 +915,27 @@ class PostgresPersistence:
         table = f"{self._prefix}settings"
         now = datetime.now(UTC)
 
-        current_values = await self.get_settings(worker_id)
+        current_values = await self.get_settings(agent_id)
         current_values[field_id] = value
         values_json = json.dumps(current_values)
 
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
-                INSERT INTO {table} (worker_id, values, created_at, updated_at)
+                INSERT INTO {table} (agent_id, values, created_at, updated_at)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT(worker_id) DO UPDATE SET
+                ON CONFLICT(agent_id) DO UPDATE SET
                     values = EXCLUDED.values,
                     updated_at = EXCLUDED.updated_at
                 """,
-                worker_id,
+                agent_id,
                 values_json,
                 now,
                 now,
             )
         return now
 
-    async def set_settings(self, worker_id: str, values: dict[str, Any]) -> datetime:
+    async def set_settings(self, agent_id: str, values: dict[str, Any]) -> datetime:
         """Replace all settings values. Returns updated_at timestamp."""
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -947,13 +947,13 @@ class PostgresPersistence:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
-                INSERT INTO {table} (worker_id, values, created_at, updated_at)
+                INSERT INTO {table} (agent_id, values, created_at, updated_at)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT(worker_id) DO UPDATE SET
+                ON CONFLICT(agent_id) DO UPDATE SET
                     values = EXCLUDED.values,
                     updated_at = EXCLUDED.updated_at
                 """,
-                worker_id,
+                agent_id,
                 values_json,
                 now,
                 now,
@@ -1008,14 +1008,14 @@ class PostgresPersistence:
                 await conn.execute(
                     f"""
                     INSERT INTO {table}
-                        (id, event, timestamp, worker_id, thread_id, user_id, run_id, event_id,
+                        (id, event, timestamp, agent_id, thread_id, user_id, run_id, event_id,
                          organization_id, workspace_id, data, created_at)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     """,
                     str(uuid.uuid4()),
                     ev.event,
                     ev.timestamp,
-                    ev.worker_id,
+                    ev.agent_id,
                     ev.thread_id,
                     ev.user_id,
                     ev.run_id,

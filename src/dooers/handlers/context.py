@@ -5,7 +5,7 @@ from dooers.protocol.models import User
 
 
 @dataclass
-class WorkerContext:
+class AgentContext:
     """Contextual metadata for the incoming message."""
 
     thread_id: str

@@ -5,13 +5,13 @@ import uuid
 from typing import Any
 
 from dooers.broadcast import BroadcastManager
-from dooers.config import WorkerConfig
+from dooers.config import AgentConfig
 from dooers.dispatch import DispatchStream
 from dooers.features.analytics.collector import AnalyticsCollector
-from dooers.features.analytics.worker_analytics import WorkerAnalytics
+from dooers.features.analytics.agent_analytics import AgentAnalytics
 from dooers.features.settings.broadcaster import SettingsBroadcaster
-from dooers.features.settings.worker_settings import WorkerSettings
-from dooers.handlers.memory import WorkerMemory
+from dooers.features.settings.agent_settings import AgentSettings
+from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.handlers.router import Handler, Router, WebSocketProtocol
 from dooers.persistence.base import Persistence
@@ -38,8 +38,8 @@ from dooers.upload_store import UploadStore
 logger = logging.getLogger(__name__)
 
 
-class WorkerServer:
-    def __init__(self, config: WorkerConfig):
+class AgentServer:
+    def __init__(self, config: AgentConfig):
         self._config = config
         self._persistence: Persistence | None = None
         self._initialized = False
@@ -47,9 +47,9 @@ class WorkerServer:
         self._registry = ConnectionRegistry()
         self._subscriptions: dict[str, set[str]] = {}  # ws_id -> set of thread_ids
 
-        self._analytics_subscriptions: dict[str, set[str]] = {}  # worker_id -> set of ws_ids
-        self._settings_subscriptions: dict[str, set[str]] = {}  # worker_id -> set of ws_ids
-        self._settings_ws_context: dict[str, dict[str, Any]] = {}  # ws_id -> { worker_id, audience, ws }
+        self._analytics_subscriptions: dict[str, set[str]] = {}  # agent_id -> set of ws_ids
+        self._settings_subscriptions: dict[str, set[str]] = {}  # agent_id -> set of ws_ids
+        self._settings_ws_context: dict[str, dict[str, Any]] = {}  # ws_id -> { agent_id, audience, ws }
 
         self._broadcast: BroadcastManager | None = None
 
@@ -185,14 +185,14 @@ class WorkerServer:
         except Exception as e:
             error_name = type(e).__name__
             if error_name not in ("WebSocketDisconnect", "ConnectionClosedOK", "ConnectionClosedError"):
-                logger.debug("[workers] websocket connection error: %s: %s", error_name, e)
+                logger.debug("[agents] websocket connection error: %s: %s", error_name, e)
         finally:
             await router.cleanup()
 
     async def dispatch(
         self,
         handler: Handler,
-        worker_id: str,
+        agent_id: str,
         message: str,
         user: User | None = None,
         organization_id: str = "",
@@ -205,7 +205,7 @@ class WorkerServer:
 
         pipeline = HandlerPipeline(
             persistence=persistence,
-            broadcast_callback=self._broadcast_dict_to_worker,
+            broadcast_callback=self._broadcast_dict_to_agent,
             analytics_collector=self._analytics_collector,
             settings_broadcaster=self._settings_broadcaster,
             settings_schema=self._config.settings_schema,
@@ -215,7 +215,7 @@ class WorkerServer:
 
         context = HandlerContext(
             handler=handler,
-            worker_id=worker_id,
+            agent_id=agent_id,
             message=message,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -238,15 +238,15 @@ class WorkerServer:
         persistence = await self._ensure_initialized()
         return Repository(persistence)
 
-    async def memory(self, thread_id: str) -> WorkerMemory:
+    async def memory(self, thread_id: str) -> AgentMemory:
         persistence = await self._ensure_initialized()
-        return WorkerMemory(thread_id=thread_id, persistence=persistence)
+        return AgentMemory(thread_id=thread_id, persistence=persistence)
 
-    async def settings(self, worker_id: str) -> WorkerSettings:
+    async def settings(self, agent_id: str) -> AgentSettings:
         persistence = await self._ensure_initialized()
         if self._config.settings_schema and self._settings_broadcaster:
-            return WorkerSettings(
-                worker_id=worker_id,
+            return AgentSettings(
+                agent_id=agent_id,
                 schema=self._config.settings_schema,
                 persistence=persistence,
                 broadcaster=self._settings_broadcaster,
@@ -262,17 +262,17 @@ class WorkerServer:
                 pass
 
         class _NoopPersistence:
-            async def get_settings(self, worker_id: str) -> dict:
+            async def get_settings(self, agent_id: str) -> dict:
                 return {}
 
-            async def update_setting(self, worker_id: str, field_id: str, value) -> None:
+            async def update_setting(self, agent_id: str, field_id: str, value) -> None:
                 pass
 
-            async def set_settings(self, worker_id: str, values: dict) -> None:
+            async def set_settings(self, agent_id: str, values: dict) -> None:
                 pass
 
-        return WorkerSettings(
-            worker_id=worker_id,
+        return AgentSettings(
+            agent_id=agent_id,
             schema=SettingsSchema(fields=[]),
             persistence=_NoopPersistence(),  # type: ignore
             broadcaster=_NoopBroadcaster(),  # type: ignore
@@ -280,17 +280,17 @@ class WorkerServer:
 
     async def analytics(
         self,
-        worker_id: str,
+        agent_id: str,
         thread_id: str | None = None,
         user_id: str | None = None,
         run_id: str | None = None,
         organization_id: str | None = None,
         workspace_id: str | None = None,
-    ) -> WorkerAnalytics:
+    ) -> AgentAnalytics:
         await self._ensure_initialized()
         if self._analytics_collector:
-            return WorkerAnalytics(
-                worker_id=worker_id,
+            return AgentAnalytics(
+                agent_id=agent_id,
                 thread_id=thread_id or "",
                 user_id=user_id,
                 run_id=run_id,
@@ -306,8 +306,8 @@ class WorkerServer:
             async def feedback(self, **kwargs) -> None:
                 pass
 
-        return WorkerAnalytics(
-            worker_id=worker_id,
+        return AgentAnalytics(
+            agent_id=agent_id,
             thread_id=thread_id or "",
             user_id=user_id,
             run_id=run_id,
@@ -316,7 +316,7 @@ class WorkerServer:
             workspace_id=workspace_id,
         )
 
-    async def _broadcast_dict_to_worker(self, worker_id: str, payload: dict[str, Any]) -> None:
+    async def _broadcast_dict_to_agent(self, agent_id: str, payload: dict[str, Any]) -> None:
         """Convert dict payload to S2C frame and broadcast via registry."""
         payload_type = payload.get("type")
 
@@ -342,7 +342,7 @@ class WorkerServer:
             return
 
         message = serialize_frame(frame)
-        await self._registry.broadcast(worker_id, message)
+        await self._registry.broadcast(agent_id, message)
 
     async def close(self) -> None:
         if self._upload_store:

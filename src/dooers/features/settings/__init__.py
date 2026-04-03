@@ -7,7 +7,7 @@ from .models import (
     SettingsSchema,
     SettingsSelectOption,
 )
-from .worker_settings import WorkerSettings
+from .agent_settings import AgentSettings
 
 __all__ = [
     "SettingsBroadcaster",
@@ -17,5 +17,5 @@ __all__ = [
     "SettingsFieldVisibility",
     "SettingsSchema",
     "SettingsSelectOption",
-    "WorkerSettings",
+    "AgentSettings",
 ]
