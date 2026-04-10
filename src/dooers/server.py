@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -58,6 +59,7 @@ class AgentServer:
         self._analytics_collector: AnalyticsCollector | None = None
         self._settings_broadcaster: SettingsBroadcaster | None = None
         self._auth_validator: AuthValidationClient | None = None
+        self._guest_cleanup_task: asyncio.Task | None = None
 
     @property
     def registry(self) -> ConnectionRegistry:
@@ -157,8 +159,53 @@ class AgentServer:
                 timeout=self._config.auth_validation_timeout,
             )
 
+        if self._config.guest_thread_cleanup_interval_seconds > 0:
+            self._guest_cleanup_task = asyncio.create_task(
+                self._run_guest_cleanup_loop(),
+                name="dooers-guest-thread-cleanup",
+            )
+
         self._initialized = True
         return self._persistence
+
+    async def _run_guest_cleanup_loop(self) -> None:
+        interval = self._config.guest_thread_cleanup_interval_seconds
+        ttl = self._config.guest_thread_ttl_seconds
+        persistence = self._persistence
+        if persistence is None:
+            return  # should never happen — loop is started after init
+        logger.info(
+            "[agents] guest thread cleanup task started (interval=%ds, ttl=%ds)",
+            interval,
+            ttl,
+        )
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    raise
+                try:
+                    count = await persistence.delete_idle_guest_threads(ttl)
+                    if count > 0:
+                        logger.info("[agents] deleted %d idle guest threads", count)
+                    else:
+                        logger.debug("[agents] deleted %d idle guest threads", count)
+                except asyncio.CancelledError:
+                    raise
+                except NotImplementedError as e:
+                    logger.warning(
+                        "[agents] guest thread cleanup unsupported by persistence backend: %s",
+                        e,
+                    )
+                    return
+                except Exception:
+                    logger.exception(
+                        "[agents] guest thread cleanup iteration failed (will retry)"
+                    )
+        except asyncio.CancelledError:
+            logger.debug("[agents] guest thread cleanup task cancelled")
+            raise
 
     async def ensure_initialized(self) -> None:
         await self._ensure_initialized()
@@ -354,6 +401,18 @@ class AgentServer:
         await self._registry.broadcast(agent_id, message)
 
     async def close(self) -> None:
+        if self._guest_cleanup_task:
+            self._guest_cleanup_task.cancel()
+            try:
+                await self._guest_cleanup_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "[agents] guest cleanup task errored during shutdown"
+                )
+            self._guest_cleanup_task = None
+
         if self._upload_store:
             await self._upload_store.stop()
             self._upload_store = None

@@ -406,6 +406,42 @@ class PostgresPersistence:
             await conn.execute(f"DELETE FROM {runs_table} WHERE thread_id = $1", thread_id)
             await conn.execute(f"DELETE FROM {threads_table} WHERE id = $1", thread_id)
 
+    async def delete_idle_guest_threads(self, max_idle_seconds: int) -> int:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        threads_table = f"{self._prefix}threads"
+        events_table = f"{self._prefix}events"
+        runs_table = f"{self._prefix}runs"
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id FROM {threads_table}
+                    WHERE owner->>'user_id' LIKE 'guest:%'
+                      AND last_event_at < NOW() - make_interval(secs => $1)
+                    FOR UPDATE SKIP LOCKED
+                    """,
+                    max_idle_seconds,
+                )
+                ids = [row["id"] for row in rows]
+                if not ids:
+                    return 0
+                await conn.execute(
+                    f"DELETE FROM {events_table} WHERE thread_id = ANY($1::text[])",
+                    ids,
+                )
+                await conn.execute(
+                    f"DELETE FROM {runs_table} WHERE thread_id = ANY($1::text[])",
+                    ids,
+                )
+                await conn.execute(
+                    f"DELETE FROM {threads_table} WHERE id = ANY($1::text[])",
+                    ids,
+                )
+                return len(ids)
+
     def _build_scope_conditions(
         self,
         scope: str,
