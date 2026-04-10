@@ -43,6 +43,11 @@ class AgentConfig:
     auth_validation_url: str | None = None
     auth_validation_timeout: float = 5.0
 
+    # Idle guest thread cleanup (threads whose owner.user_id starts with "guest:").
+    # Set guest_thread_cleanup_interval_seconds to 0 to disable.
+    guest_thread_ttl_seconds: int = 24 * 60 * 60
+    guest_thread_cleanup_interval_seconds: int = 60 * 60
+
     settings_schema: "SettingsSchema | None" = None
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
     agent_seed_secret: str = field(default_factory=lambda: os.environ.get("AGENT_SEED_SECRET", "").strip())
