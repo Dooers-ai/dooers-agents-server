@@ -171,6 +171,9 @@ class AgentServer:
     async def _run_guest_cleanup_loop(self) -> None:
         interval = self._config.guest_thread_cleanup_interval_seconds
         ttl = self._config.guest_thread_ttl_seconds
+        persistence = self._persistence
+        if persistence is None:
+            return  # should never happen — loop is started after init
         logger.info(
             "[agents] guest thread cleanup task started (interval=%ds, ttl=%ds)",
             interval,
@@ -183,8 +186,7 @@ class AgentServer:
                 except asyncio.CancelledError:
                     raise
                 try:
-                    assert self._persistence is not None
-                    count = await self._persistence.delete_idle_guest_threads(ttl)
+                    count = await persistence.delete_idle_guest_threads(ttl)
                     if count > 0:
                         logger.info("[agents] deleted %d idle guest threads", count)
                     else:

@@ -2,6 +2,11 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from dooers.settings import (
+    GUEST_THREAD_CLEANUP_INTERVAL_SECONDS,
+    GUEST_THREAD_TTL_SECONDS,
+)
+
 if TYPE_CHECKING:
     from dooers.features.settings.models import SettingsSchema
 
@@ -45,8 +50,8 @@ class AgentConfig:
 
     # Idle guest thread cleanup (threads whose owner.user_id starts with "guest:").
     # Set guest_thread_cleanup_interval_seconds to 0 to disable.
-    guest_thread_ttl_seconds: int = 24 * 60 * 60
-    guest_thread_cleanup_interval_seconds: int = 60 * 60
+    guest_thread_ttl_seconds: int = GUEST_THREAD_TTL_SECONDS
+    guest_thread_cleanup_interval_seconds: int = GUEST_THREAD_CLEANUP_INTERVAL_SECONDS
 
     settings_schema: "SettingsSchema | None" = None
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
