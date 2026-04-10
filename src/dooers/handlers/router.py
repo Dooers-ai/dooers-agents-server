@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import bcrypt
 import logging
 import time
 import uuid
 from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
+
+import bcrypt
 
 from dooers.exceptions import HandlerError
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
@@ -277,15 +278,60 @@ class Router:
         self._agent_id = frame.payload.agent_id
         self._organization_id = frame.payload.organization_id
         self._workspace_id = frame.payload.workspace_id
-        # NOTE: Roles are currently trusted from the client. A future iteration should
-        # validate them server-side using the auth_token (frame.payload.auth_token).
-        self._user = frame.payload.user
+        incoming_user = frame.payload.user
+
+        is_anonymous = not (incoming_user and incoming_user.user_id)
+
+        if is_anonymous:
+            if not self._auth_validation_url:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={
+                        "code": "ANONYMOUS_NOT_ALLOWED",
+                        "message": "Anonymous connections are not accepted on this server",
+                    },
+                )
+                return
+
+            from dooers.auth_validation import AuthValidationClient
+
+            client = AuthValidationClient(
+                url=self._auth_validation_url,
+                timeout=self._auth_validation_timeout,
+            )
+            result = await client.validate(
+                auth_token=frame.payload.auth_token,
+                agent_id=self._agent_id,
+                guest_user_id=(incoming_user.user_id if incoming_user else ""),
+                organization_id=self._organization_id,
+                workspace_id=self._workspace_id,
+            )
+            if not result.valid or result.user is None:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={
+                        "code": "CONNECTION_REJECTED",
+                        "message": result.reason or "rejected",
+                    },
+                )
+                return
+
+            self._user = result.user
+            self._rate_limits = result.rate_limits
+        else:
+            # Authenticated path unchanged — trust the frame.
+            # NOTE: Roles are currently trusted from the client. A future iteration should
+            # validate them server-side using the auth_token (frame.payload.auth_token).
+            self._user = incoming_user
+            self._rate_limits = {}
+
         self._ws = ws
-
         await self._registry.register(self._agent_id, ws)
-
         self._subscriptions[self._ws_id] = set()
-
         await self._send_ack(ws, frame.id)
 
     async def _handle_thread_list(self, ws: WebSocketProtocol, frame: C2S_ThreadList) -> None:
