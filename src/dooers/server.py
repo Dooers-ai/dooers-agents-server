@@ -197,11 +197,9 @@ class AgentServer:
                         e,
                     )
                     return
-                except Exception as e:
-                    logger.warning(
-                        "[agents] guest thread cleanup failed: %s: %s",
-                        type(e).__name__,
-                        e,
+                except Exception:
+                    logger.exception(
+                        "[agents] guest thread cleanup iteration failed (will retry)"
                     )
         except asyncio.CancelledError:
             logger.debug("[agents] guest thread cleanup task cancelled")
@@ -405,8 +403,12 @@ class AgentServer:
             self._guest_cleanup_task.cancel()
             try:
                 await self._guest_cleanup_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.exception(
+                    "[agents] guest cleanup task errored during shutdown"
+                )
             self._guest_cleanup_task = None
 
         if self._upload_store:
