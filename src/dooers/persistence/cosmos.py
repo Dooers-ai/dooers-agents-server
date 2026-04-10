@@ -177,6 +177,21 @@ class CosmosPersistence:
         }
         await container.upsert_item(doc)
 
+    async def delete_idle_guest_threads(self, max_idle_seconds: int) -> int:
+        # TODO: Cosmos DB lacks a clean cross-partition scan + filter by nested
+        # JSON property + relative timestamp. A full implementation would need
+        # to enumerate every thread container partition and filter client-side,
+        # which is expensive and not acceptable for a periodic background job.
+        # Callers that need guest thread TTL cleanup with Cosmos should
+        # implement it at the infrastructure level (e.g. Cosmos TTL on a
+        # dedicated guest container) or disable the cleanup task.
+        raise NotImplementedError(
+            "CosmosPersistence does not implement delete_idle_guest_threads; "
+            "disable the cleanup task by setting "
+            "AgentConfig.guest_thread_cleanup_interval_seconds=0, or handle "
+            "guest thread TTL via Cosmos container TTL instead."
+        )
+
     async def delete_thread(self, thread_id: str) -> None:
         thread = await self.get_thread(thread_id)
         if not thread:
