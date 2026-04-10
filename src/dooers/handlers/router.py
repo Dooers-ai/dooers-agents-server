@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import bcrypt
 import logging
+import time
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
+import bcrypt
+
+from dooers.auth_validation import AuthValidationClient
 from dooers.exceptions import HandlerError
+from dooers.features.settings.models import SettingsFieldVisibility
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.persistence.base import Persistence
 from dooers.protocol.frames import (
@@ -42,16 +47,15 @@ from dooers.protocol.frames import (
     S2C_ThreadSnapshot,
     S2C_ThreadUpsert,
     ServerToClient,
+    SettingsPublicSchemaResultPayload,
     ThreadDeletedPayload,
     ThreadListResultPayload,
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
-    SettingsPublicSchemaResultPayload,
 )
 from dooers.protocol.models import User
 from dooers.protocol.parser import serialize_frame
 from dooers.registry import ConnectionRegistry
-from dooers.features.settings.models import SettingsFieldVisibility
 
 if TYPE_CHECKING:
     from dooers.features.analytics.collector import AnalyticsCollector
@@ -111,6 +115,7 @@ class Router:
         settings_subscriptions: dict[str, set[str]] | None = None,
         settings_ws_context: dict[str, dict[str, Any]] | None = None,
         upload_store: UploadStore | None = None,
+        auth_validator: AuthValidationClient | None = None,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -126,6 +131,8 @@ class Router:
         self._settings_subscriptions = settings_subscriptions if settings_subscriptions is not None else {}
         self._settings_ws_context = settings_ws_context if settings_ws_context is not None else {}
 
+        self._auth_validator: AuthValidationClient | None = auth_validator
+
         self._ws: WebSocketProtocol | None = None
         self._ws_id: str = _generate_id()
         self._agent_id: str | None = None
@@ -133,6 +140,8 @@ class Router:
         self._organization_id: str = ""
         self._workspace_id: str = ""
         self._subscribed_threads: set[str] = set()
+        self._rate_limits: dict[str, Any] = {}
+        self._event_timestamps: deque[float] = deque()
 
         self._pipeline = HandlerPipeline(
             persistence=persistence,
@@ -260,23 +269,68 @@ class Router:
                     del self._settings_subscriptions[self._agent_id]
 
         self._settings_ws_context.pop(self._ws_id, None)
+        self._event_timestamps.clear()
 
         if self._ws_id in self._subscriptions:
             del self._subscriptions[self._ws_id]
 
     async def _handle_connect(self, ws: WebSocketProtocol, frame: C2S_Connect) -> None:
+        # Reset per-connection rate-limit state so a second C2S_Connect on the
+        # same session starts clean.
+        self._rate_limits = {}
+        self._event_timestamps.clear()
+
         self._agent_id = frame.payload.agent_id
         self._organization_id = frame.payload.organization_id
         self._workspace_id = frame.payload.workspace_id
-        # NOTE: Roles are currently trusted from the client. A future iteration should
-        # validate them server-side using the auth_token (frame.payload.auth_token).
-        self._user = frame.payload.user
+        incoming_user = frame.payload.user
+
+        is_anonymous = not (incoming_user and incoming_user.user_id)
+
+        if is_anonymous:
+            if self._auth_validator is None:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={
+                        "code": "ANONYMOUS_NOT_ALLOWED",
+                        "message": "Anonymous connections are not accepted on this server",
+                    },
+                )
+                return
+
+            result = await self._auth_validator.validate(
+                auth_token=frame.payload.auth_token,
+                agent_id=self._agent_id,
+                guest_user_id=(incoming_user.user_id if incoming_user else ""),
+                organization_id=self._organization_id,
+                workspace_id=self._workspace_id,
+            )
+            if not result.valid or result.user is None:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={
+                        "code": "CONNECTION_REJECTED",
+                        "message": result.reason or "rejected",
+                    },
+                )
+                return
+
+            self._user = result.user
+            self._rate_limits = result.rate_limits
+        else:
+            # Authenticated path unchanged — trust the frame.
+            # NOTE: Roles are currently trusted from the client. A future iteration should
+            # validate them server-side using the auth_token (frame.payload.auth_token).
+            self._user = incoming_user
+            self._rate_limits = {}
+
         self._ws = ws
-
         await self._registry.register(self._agent_id, ws)
-
         self._subscriptions[self._ws_id] = set()
-
         await self._send_ack(ws, frame.id)
 
     async def _handle_thread_list(self, ws: WebSocketProtocol, frame: C2S_ThreadList) -> None:
@@ -449,6 +503,22 @@ class Router:
                 error={"code": "NOT_CONNECTED", "message": "Must connect first"},
             )
             return
+
+        msgs_per_min = int(self._rate_limits.get("messagesPerMinute") or 0)
+        if msgs_per_min > 0:
+            now = time.monotonic()
+            cutoff = now - 60.0
+            while self._event_timestamps and self._event_timestamps[0] < cutoff:
+                self._event_timestamps.popleft()
+            if len(self._event_timestamps) >= msgs_per_min:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={"code": "RATE_LIMITED", "message": f"Limit {msgs_per_min}/min exceeded"},
+                )
+                return
+            self._event_timestamps.append(now)
 
         content_parts = list(frame.payload.event.content)
 

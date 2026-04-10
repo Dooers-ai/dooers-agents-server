@@ -73,4 +73,5 @@ pcu = "python scripts/pcu.py check"
 [dependency-groups]
 dev = [
     "poethepoet>=0.42.0",
+    "respx>=0.23.1",
 ]
