@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import bcrypt
 import logging
+import time
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -111,6 +113,8 @@ class Router:
         settings_subscriptions: dict[str, set[str]] | None = None,
         settings_ws_context: dict[str, dict[str, Any]] | None = None,
         upload_store: UploadStore | None = None,
+        auth_validation_url: str | None = None,
+        auth_validation_timeout: float = 5.0,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -126,6 +130,9 @@ class Router:
         self._settings_subscriptions = settings_subscriptions if settings_subscriptions is not None else {}
         self._settings_ws_context = settings_ws_context if settings_ws_context is not None else {}
 
+        self._auth_validation_url = auth_validation_url
+        self._auth_validation_timeout = auth_validation_timeout
+
         self._ws: WebSocketProtocol | None = None
         self._ws_id: str = _generate_id()
         self._agent_id: str | None = None
@@ -133,6 +140,8 @@ class Router:
         self._organization_id: str = ""
         self._workspace_id: str = ""
         self._subscribed_threads: set[str] = set()
+        self._rate_limits: dict[str, Any] = {}
+        self._event_timestamps: deque[float] = deque()
 
         self._pipeline = HandlerPipeline(
             persistence=persistence,

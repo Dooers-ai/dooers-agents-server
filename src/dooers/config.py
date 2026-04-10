@@ -40,6 +40,9 @@ class AgentConfig:
     analytics_batch_size: int | None = None
     analytics_flush_interval: float | None = None
 
+    auth_validation_url: str | None = None
+    auth_validation_timeout: float = 5.0
+
     settings_schema: "SettingsSchema | None" = None
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
     agent_seed_secret: str = field(default_factory=lambda: os.environ.get("AGENT_SEED_SECRET", "").strip())

@@ -175,6 +175,8 @@ class AgentServer:
             settings_subscriptions=self._settings_subscriptions,
             settings_ws_context=self._settings_ws_context,
             upload_store=self._upload_store,
+            auth_validation_url=self._config.auth_validation_url,
+            auth_validation_timeout=self._config.auth_validation_timeout,
         )
 
         try:
