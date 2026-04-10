@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+import pytest_asyncio
 import respx
 
+from dooers.auth_validation import AuthValidationClient
 from dooers.handlers.router import Router
 from dooers.protocol.frames import C2S_Connect, ConnectPayload
 from dooers.protocol.models import User
@@ -33,7 +35,16 @@ async def _noop_handler(on, send, memory, analytics, settings):  # pragma: no co
         yield  # keep it an async generator
 
 
-def _make_router(auth_validation_url: str | None) -> Router:
+@pytest_asyncio.fixture
+async def validator():
+    v = AuthValidationClient(url="https://core.test/validate", timeout=2.0)
+    try:
+        yield v
+    finally:
+        await v.close()
+
+
+def _make_router(auth_validator: AuthValidationClient | None) -> Router:
     persistence = AsyncMock()
     registry = ConnectionRegistry()
     subscriptions: dict[str, set[str]] = {}
@@ -42,8 +53,7 @@ def _make_router(auth_validation_url: str | None) -> Router:
         handler=_noop_handler,
         registry=registry,
         subscriptions=subscriptions,
-        auth_validation_url=auth_validation_url,
-        auth_validation_timeout=2.0,
+        auth_validator=auth_validator,
     )
 
 
@@ -68,7 +78,7 @@ def _last_ack(ws: FakeWebSocket) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_anonymous_without_url_is_refused():
-    router = _make_router(auth_validation_url=None)
+    router = _make_router(auth_validator=None)
     ws = FakeWebSocket()
     await router._handle_connect(ws, _make_connect_frame(user_id=""))
 
@@ -79,8 +89,8 @@ async def test_anonymous_without_url_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_anonymous_with_valid_webhook_is_accepted():
-    router = _make_router(auth_validation_url="https://core.test/validate")
+async def test_anonymous_with_valid_webhook_is_accepted(validator):
+    router = _make_router(auth_validator=validator)
     ws = FakeWebSocket()
 
     with respx.mock() as mock:
@@ -107,12 +117,15 @@ async def test_anonymous_with_valid_webhook_is_accepted():
     assert ack["payload"]["ok"] is True
     assert router._user is not None
     assert router._user.user_id == "guest:abc"
+    # Hard-coded guest roles — webhook cannot escalate.
+    assert router._user.organization_role == "member"
+    assert router._user.workspace_role == "member"
     assert router._rate_limits == {"messagesPerMinute": 15}
 
 
 @pytest.mark.asyncio
-async def test_anonymous_with_invalid_webhook_is_rejected():
-    router = _make_router(auth_validation_url="https://core.test/validate")
+async def test_anonymous_with_invalid_webhook_is_rejected(validator):
+    router = _make_router(auth_validator=validator)
     ws = FakeWebSocket()
 
     with respx.mock() as mock:
@@ -127,8 +140,8 @@ async def test_anonymous_with_invalid_webhook_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_anonymous_fails_closed_on_upstream_5xx():
-    router = _make_router(auth_validation_url="https://core.test/validate")
+async def test_anonymous_fails_closed_on_upstream_5xx(validator):
+    router = _make_router(auth_validator=validator)
     ws = FakeWebSocket()
 
     with respx.mock() as mock:
@@ -143,8 +156,8 @@ async def test_anonymous_fails_closed_on_upstream_5xx():
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_skips_webhook():
-    router = _make_router(auth_validation_url="https://core.test/validate")
+async def test_authenticated_user_skips_webhook(validator):
+    router = _make_router(auth_validator=validator)
     ws = FakeWebSocket()
 
     # No respx mock configured — if the router called the webhook, httpx would try
@@ -161,3 +174,10 @@ async def test_authenticated_user_skips_webhook():
     assert router._user.user_id == "user-123"
     assert router._rate_limits == {}
     assert route.call_count == 0
+
+    # Ensure full setup happened on the authenticated path.
+    assert router._agent_id == "agent-1"
+    assert router._ws_id in router._subscriptions
+
+    # upsert_thread_participant is only called on event.create, not on connect.
+    router._persistence.upsert_thread_participant.assert_not_called()
