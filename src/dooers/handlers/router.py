@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import bcrypt
 
 from dooers.exceptions import HandlerError
+from dooers.features.settings.models import SettingsFieldVisibility
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.persistence.base import Persistence
 from dooers.protocol.frames import (
@@ -45,16 +46,15 @@ from dooers.protocol.frames import (
     S2C_ThreadSnapshot,
     S2C_ThreadUpsert,
     ServerToClient,
+    SettingsPublicSchemaResultPayload,
     ThreadDeletedPayload,
     ThreadListResultPayload,
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
-    SettingsPublicSchemaResultPayload,
 )
 from dooers.protocol.models import User
 from dooers.protocol.parser import serialize_frame
 from dooers.registry import ConnectionRegistry
-from dooers.features.settings.models import SettingsFieldVisibility
 
 if TYPE_CHECKING:
     from dooers.features.analytics.collector import AnalyticsCollector
