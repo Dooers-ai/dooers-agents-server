@@ -421,6 +421,7 @@ class PostgresPersistence:
                     SELECT id FROM {threads_table}
                     WHERE owner->>'user_id' LIKE 'guest:%'
                       AND last_event_at < NOW() - make_interval(secs => $1)
+                    FOR UPDATE SKIP LOCKED
                     """,
                     max_idle_seconds,
                 )
