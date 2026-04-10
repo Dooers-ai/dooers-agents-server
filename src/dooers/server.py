@@ -4,6 +4,7 @@ import logging
 import uuid
 from typing import Any
 
+from dooers.auth_validation import AuthValidationClient
 from dooers.broadcast import BroadcastManager
 from dooers.config import AgentConfig
 from dooers.dispatch import DispatchStream
@@ -56,6 +57,7 @@ class AgentServer:
         self._upload_store: UploadStore | None = None
         self._analytics_collector: AnalyticsCollector | None = None
         self._settings_broadcaster: SettingsBroadcaster | None = None
+        self._auth_validator: AuthValidationClient | None = None
 
     @property
     def registry(self) -> ConnectionRegistry:
@@ -149,6 +151,12 @@ class AgentServer:
         )
         await self._upload_store.start()
 
+        if self._config.auth_validation_url:
+            self._auth_validator = AuthValidationClient(
+                url=self._config.auth_validation_url,
+                timeout=self._config.auth_validation_timeout,
+            )
+
         self._initialized = True
         return self._persistence
 
@@ -175,8 +183,7 @@ class AgentServer:
             settings_subscriptions=self._settings_subscriptions,
             settings_ws_context=self._settings_ws_context,
             upload_store=self._upload_store,
-            auth_validation_url=self._config.auth_validation_url,
-            auth_validation_timeout=self._config.auth_validation_timeout,
+            auth_validator=self._auth_validator,
         )
 
         try:
@@ -354,6 +361,10 @@ class AgentServer:
         if self._analytics_collector:
             await self._analytics_collector.stop()
             self._analytics_collector = None
+
+        if self._auth_validator:
+            await self._auth_validator.close()
+            self._auth_validator = None
 
         if self._persistence:
             await self._persistence.disconnect()

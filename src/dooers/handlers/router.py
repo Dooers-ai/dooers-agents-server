@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import bcrypt
 
+from dooers.auth_validation import AuthValidationClient
 from dooers.exceptions import HandlerError
 from dooers.features.settings.models import SettingsFieldVisibility
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
@@ -114,8 +115,7 @@ class Router:
         settings_subscriptions: dict[str, set[str]] | None = None,
         settings_ws_context: dict[str, dict[str, Any]] | None = None,
         upload_store: UploadStore | None = None,
-        auth_validation_url: str | None = None,
-        auth_validation_timeout: float = 5.0,
+        auth_validator: AuthValidationClient | None = None,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -131,8 +131,7 @@ class Router:
         self._settings_subscriptions = settings_subscriptions if settings_subscriptions is not None else {}
         self._settings_ws_context = settings_ws_context if settings_ws_context is not None else {}
 
-        self._auth_validation_url = auth_validation_url
-        self._auth_validation_timeout = auth_validation_timeout
+        self._auth_validator: AuthValidationClient | None = auth_validator
 
         self._ws: WebSocketProtocol | None = None
         self._ws_id: str = _generate_id()
@@ -270,11 +269,17 @@ class Router:
                     del self._settings_subscriptions[self._agent_id]
 
         self._settings_ws_context.pop(self._ws_id, None)
+        self._event_timestamps.clear()
 
         if self._ws_id in self._subscriptions:
             del self._subscriptions[self._ws_id]
 
     async def _handle_connect(self, ws: WebSocketProtocol, frame: C2S_Connect) -> None:
+        # Reset per-connection rate-limit state so a second C2S_Connect on the
+        # same session starts clean.
+        self._rate_limits = {}
+        self._event_timestamps.clear()
+
         self._agent_id = frame.payload.agent_id
         self._organization_id = frame.payload.organization_id
         self._workspace_id = frame.payload.workspace_id
@@ -283,7 +288,7 @@ class Router:
         is_anonymous = not (incoming_user and incoming_user.user_id)
 
         if is_anonymous:
-            if not self._auth_validation_url:
+            if self._auth_validator is None:
                 await self._send_ack(
                     ws,
                     frame.id,
@@ -295,13 +300,7 @@ class Router:
                 )
                 return
 
-            from dooers.auth_validation import AuthValidationClient
-
-            client = AuthValidationClient(
-                url=self._auth_validation_url,
-                timeout=self._auth_validation_timeout,
-            )
-            result = await client.validate(
+            result = await self._auth_validator.validate(
                 auth_token=frame.payload.auth_token,
                 agent_id=self._agent_id,
                 guest_user_id=(incoming_user.user_id if incoming_user else ""),
@@ -505,7 +504,7 @@ class Router:
             )
             return
 
-        msgs_per_min = int((self._rate_limits or {}).get("messagesPerMinute") or 0)
+        msgs_per_min = int(self._rate_limits.get("messagesPerMinute") or 0)
         if msgs_per_min > 0:
             now = time.monotonic()
             cutoff = now - 60.0

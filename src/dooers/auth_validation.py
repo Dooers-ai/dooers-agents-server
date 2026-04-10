@@ -8,7 +8,7 @@ import httpx
 
 from dooers.protocol.models import User
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("agents")
 
 
 @dataclass
@@ -24,6 +24,10 @@ class AuthValidationClient:
     def __init__(self, url: str, timeout: float = 5.0):
         self._url = url
         self._timeout = timeout
+        self._client = httpx.AsyncClient(timeout=timeout)
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     async def validate(
         self,
@@ -42,8 +46,7 @@ class AuthValidationClient:
             "workspaceId": workspace_id,
         }
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(self._url, json=payload)
+            response = await self._client.post(self._url, json=payload)
         except httpx.HTTPError as e:
             logger.warning("[auth-validation] transport error: %s", e)
             return AuthValidationResult(valid=False, reason="transport_error")
@@ -64,11 +67,15 @@ class AuthValidationClient:
             return AuthValidationResult(valid=False, reason=body.get("reason"))
 
         user_data = body.get("user") or {}
+        # Guests are always member-scope; the webhook cannot escalate.
         user = User(
             user_id=user_data.get("user_id", ""),
             user_name=user_data.get("user_name"),
             user_email=user_data.get("user_email"),
             identity_ids=user_data.get("identity_ids", []),
+            system_role="user",
+            organization_role="member",
+            workspace_role="member",
         )
         return AuthValidationResult(
             valid=True,
