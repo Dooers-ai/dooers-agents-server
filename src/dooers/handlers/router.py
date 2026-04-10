@@ -505,6 +505,22 @@ class Router:
             )
             return
 
+        msgs_per_min = int((self._rate_limits or {}).get("messagesPerMinute") or 0)
+        if msgs_per_min > 0:
+            now = time.monotonic()
+            cutoff = now - 60.0
+            while self._event_timestamps and self._event_timestamps[0] < cutoff:
+                self._event_timestamps.popleft()
+            if len(self._event_timestamps) >= msgs_per_min:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={"code": "RATE_LIMITED", "message": f"Limit {msgs_per_min}/min exceeded"},
+                )
+                return
+            self._event_timestamps.append(now)
+
         content_parts = list(frame.payload.event.content)
 
         user = self._user or User(user_id="")
