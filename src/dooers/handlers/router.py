@@ -321,6 +321,12 @@ class Router:
 
             self._user = result.user
             self._rate_limits = result.rate_limits
+            # Trust webhook-supplied org/workspace IDs over client-supplied ones for
+            # anonymous connects. The webhook can resolve the real workspace, so
+            # guest threads get tagged correctly and become visible to workspace
+            # members. Falls back to the frame values if the webhook omits them.
+            self._organization_id = result.organization_id or frame.payload.organization_id
+            self._workspace_id = result.workspace_id or frame.payload.workspace_id
         else:
             # Authenticated path unchanged — trust the frame.
             # NOTE: Roles are currently trusted from the client. A future iteration should

@@ -156,6 +156,88 @@ async def test_anonymous_fails_closed_on_upstream_5xx(validator):
 
 
 @pytest.mark.asyncio
+async def test_webhook_org_workspace_override_frame_values(validator):
+    router = _make_router(auth_validator=validator)
+    ws = FakeWebSocket()
+
+    frame = C2S_Connect(
+        id="frame-1",
+        type="connect",
+        payload=ConnectPayload(
+            agent_id="agent-1",
+            organization_id="fake-org",
+            workspace_id="fake-ws",
+            user=User(user_id=""),
+            auth_token="tok",
+        ),
+    )
+
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "user": {
+                        "user_id": "guest:abc",
+                        "user_email": "",
+                        "identity_ids": [],
+                        "roles": [],
+                    },
+                    "organizationId": "real-org",
+                    "workspaceId": "real-ws",
+                },
+            )
+        )
+        await router._handle_connect(ws, frame)
+
+    ack = _last_ack(ws)
+    assert ack["payload"]["ok"] is True
+    assert router._organization_id == "real-org"
+    assert router._workspace_id == "real-ws"
+
+
+@pytest.mark.asyncio
+async def test_frame_values_used_when_webhook_omits_ids(validator):
+    router = _make_router(auth_validator=validator)
+    ws = FakeWebSocket()
+
+    frame = C2S_Connect(
+        id="frame-1",
+        type="connect",
+        payload=ConnectPayload(
+            agent_id="agent-1",
+            organization_id="frame-org",
+            workspace_id="frame-ws",
+            user=User(user_id=""),
+            auth_token="tok",
+        ),
+    )
+
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "user": {
+                        "user_id": "guest:abc",
+                        "user_email": "",
+                        "identity_ids": [],
+                        "roles": [],
+                    },
+                },
+            )
+        )
+        await router._handle_connect(ws, frame)
+
+    ack = _last_ack(ws)
+    assert ack["payload"]["ok"] is True
+    assert router._organization_id == "frame-org"
+    assert router._workspace_id == "frame-ws"
+
+
+@pytest.mark.asyncio
 async def test_authenticated_user_skips_webhook(validator):
     router = _make_router(auth_validator=validator)
     ws = FakeWebSocket()
