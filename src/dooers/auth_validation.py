@@ -17,6 +17,8 @@ class AuthValidationResult:
     user: User | None = None
     rate_limits: dict[str, Any] = field(default_factory=dict)
     thread_ttl_hours: int | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
     reason: str | None = None
 
 
@@ -82,4 +84,6 @@ class AuthValidationClient:
             user=user,
             rate_limits=body.get("rateLimits") or {},
             thread_ttl_hours=body.get("threadTtlHours"),
+            organization_id=body.get("organizationId"),
+            workspace_id=body.get("workspaceId"),
         )

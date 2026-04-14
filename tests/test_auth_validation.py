@@ -82,6 +82,60 @@ async def test_fails_closed_on_5xx(client):
 
 
 @pytest.mark.asyncio
+async def test_parses_organization_and_workspace_ids(client):
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "user": {
+                        "user_id": "guest:abc",
+                        "user_email": "",
+                        "identity_ids": [],
+                        "roles": [],
+                    },
+                    "rateLimits": {"messagesPerMinute": 20},
+                    "threadTtlHours": 24,
+                    "organizationId": "real-org",
+                    "workspaceId": "real-ws",
+                },
+            )
+        )
+        result = await client.validate(
+            auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc"
+        )
+    assert result.valid is True
+    assert result.organization_id == "real-org"
+    assert result.workspace_id == "real-ws"
+
+
+@pytest.mark.asyncio
+async def test_organization_and_workspace_default_to_none(client):
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "user": {
+                        "user_id": "guest:abc",
+                        "user_email": "",
+                        "identity_ids": [],
+                        "roles": [],
+                    },
+                },
+            )
+        )
+        result = await client.validate(
+            auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc"
+        )
+    assert result.valid is True
+    assert result.organization_id is None
+    assert result.workspace_id is None
+
+
+@pytest.mark.asyncio
 async def test_fails_closed_on_non_200():
     c = AuthValidationClient(url="https://core.test/validate", timeout=2.0)
     try:
