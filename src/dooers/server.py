@@ -7,10 +7,10 @@ from typing import Any
 from dooers.broadcast import BroadcastManager
 from dooers.config import AgentConfig
 from dooers.dispatch import DispatchStream
-from dooers.features.analytics.collector import AnalyticsCollector
 from dooers.features.analytics.agent_analytics import AgentAnalytics
-from dooers.features.settings.broadcaster import SettingsBroadcaster
+from dooers.features.analytics.collector import AnalyticsCollector
 from dooers.features.settings.agent_settings import AgentSettings
+from dooers.features.settings.broadcaster import SettingsBroadcaster
 from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.handlers.router import Handler, Router, WebSocketProtocol
@@ -99,6 +99,7 @@ class AgentServer:
                 key=self._config.database_key,
                 database=self._config.database_name,
                 table_prefix=self._config.database_table_prefix,
+                on_settings_updated=self._config.on_settings_updated,
             )
         else:
             self._persistence = PostgresPersistence(
@@ -109,6 +110,7 @@ class AgentServer:
                 password=self._config.database_password,
                 ssl=self._config.database_ssl,
                 table_prefix=self._config.database_table_prefix,
+                on_settings_updated=self._config.on_settings_updated,
             )
 
         await self._persistence.connect()

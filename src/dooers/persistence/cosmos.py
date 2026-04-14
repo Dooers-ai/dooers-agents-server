@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from dooers.config import OnSettingsUpdated
 from dooers.features.analytics.models import AnalyticsEventPayload
 from dooers.protocol.models import (
     Run,
@@ -36,6 +37,7 @@ class CosmosPersistence:
         key: str,
         database: str,
         table_prefix: str = "agent_",
+        on_settings_updated: OnSettingsUpdated | None = None,
     ):
         if not COSMOS_AVAILABLE:
             raise ImportError("Azure Cosmos DB SDK not installed. Install with: pip install agents[cosmos]")
@@ -56,6 +58,7 @@ class CosmosPersistence:
         self._containers: dict[str, Any] = {}
         # Cache thread_id -> agent_id to avoid cross-partition queries
         self._thread_agent_cache: dict[str, str] = {}
+        self._on_settings_updated = on_settings_updated
 
     async def connect(self) -> None:
         logger.info(
@@ -586,6 +589,21 @@ class CosmosPersistence:
     def _deserialize_content_part(self, data: dict):
         return deserialize_s2c_part(data)
 
+    async def _invoke_settings_updated(
+        self, agent_id: str, field_id: str, old_value: Any, new_value: Any
+    ) -> None:
+        cb = self._on_settings_updated
+        if cb is None:
+            return
+        try:
+            await cb(agent_id, field_id, old_value, new_value)
+        except Exception:
+            logger.exception(
+                "[agents] on_settings_updated failed (agent_id=%s, field_id=%s)",
+                agent_id,
+                field_id,
+            )
+
     async def get_settings(self, agent_id: str) -> dict[str, Any]:
         container = self._get_container("settings")
 
@@ -600,6 +618,7 @@ class CosmosPersistence:
         now = datetime.now(UTC)
 
         current_values = await self.get_settings(agent_id)
+        old_value = current_values.get(field_id)
         current_values[field_id] = value
 
         doc: dict[str, Any] = {
@@ -611,11 +630,13 @@ class CosmosPersistence:
         await self._merge_settings_doc_seed_hash(container, agent_id, doc)
 
         await container.upsert_item(doc)
+        await self._invoke_settings_updated(agent_id, field_id, old_value, value)
         return now
 
     async def set_settings(self, agent_id: str, values: dict[str, Any]) -> datetime:
         container = self._get_container("settings")
         now = datetime.now(UTC)
+        old_values = await self.get_settings(agent_id)
 
         doc: dict[str, Any] = {
             "id": agent_id,
@@ -626,6 +647,12 @@ class CosmosPersistence:
         await self._merge_settings_doc_seed_hash(container, agent_id, doc)
 
         await container.upsert_item(doc)
+        if self._on_settings_updated:
+            for key in set(old_values) | set(values):
+                ov = old_values.get(key)
+                nv = values.get(key)
+                if ov != nv:
+                    await self._invoke_settings_updated(agent_id, key, ov, nv)
         return now
 
     async def _merge_settings_doc_seed_hash(self, container, agent_id: str, doc: dict[str, Any]) -> None:
