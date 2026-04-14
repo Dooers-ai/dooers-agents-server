@@ -460,6 +460,9 @@ class PostgresPersistence:
             params.append(organization_id)
             idx += 1
         elif scope == "workspace":
+            # Audited 2026-04-14: workspace-scope filters by organization+workspace
+            # only, with no guest-owner exclusion, so guest-owned threads are
+            # included for workspace members.
             conditions.append(f"organization_id = ${idx}")
             params.append(organization_id)
             idx += 1
