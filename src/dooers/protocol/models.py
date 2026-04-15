@@ -22,15 +22,23 @@ class AudioPart(BaseModel):
     mime_type: str
     duration: float | None = None
     filename: str | None = None
+    url: str | None = Field(
+        default=None,
+        description="Public HTTP(S) URL when available (e.g. persisted upload); UI can replay, LLM may see link.",
+    )
 
 
 class ImagePart(BaseModel):
     type: Literal["image"] = "image"
-    data: bytes
+    data: bytes = b""
     mime_type: str
     width: int | None = None
     height: int | None = None
     filename: str | None = None
+    url: str | None = Field(
+        default=None,
+        description="Public HTTP(S) URL when available; LLM may fetch the image instead of using inline bytes.",
+    )
 
 
 class DocumentPart(BaseModel):
@@ -39,6 +47,10 @@ class DocumentPart(BaseModel):
     mime_type: str
     filename: str
     size_bytes: int
+    url: str | None = Field(
+        default=None,
+        description="Public HTTP(S) URL when available; UI can open/download from thread history.",
+    )
 
 
 ContentPart = Annotated[
@@ -59,16 +71,28 @@ class WireC2S_AudioPart(BaseModel):
     type: Literal["audio"] = "audio"
     ref_id: str
     duration: float | None = None
+    url: str | None = Field(
+        default=None,
+        description="Optional URL from POST /uploads when the attachment was persisted.",
+    )
 
 
 class WireC2S_ImagePart(BaseModel):
     type: Literal["image"] = "image"
     ref_id: str
+    url: str | None = Field(
+        default=None,
+        description="Optional URL from POST /uploads when the attachment was persisted (fetchable HTTP(S)).",
+    )
 
 
 class WireC2S_DocumentPart(BaseModel):
     type: Literal["document"] = "document"
     ref_id: str
+    url: str | None = Field(
+        default=None,
+        description="Optional URL from POST /uploads when the attachment was persisted.",
+    )
 
 
 WireC2S_ContentPart = Annotated[
