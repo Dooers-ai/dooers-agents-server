@@ -1,15 +1,16 @@
 from dooers.broadcast import BroadcastManager
-from dooers.config import AgentConfig
+from dooers.config import AgentConfig, OnSettingsUpdated
 from dooers.dispatch import DispatchStream
 from dooers.exceptions import DispatchError, HandlerError
 from dooers.features.analytics import (
+    AgentAnalytics,
     AnalyticsBatch,
     AnalyticsCollector,
     AnalyticsEvent,
     AnalyticsEventPayload,
-    AgentAnalytics,
 )
 from dooers.features.settings import (
+    AgentSettings,
     SettingsBroadcaster,
     SettingsField,
     SettingsFieldGroup,
@@ -17,7 +18,6 @@ from dooers.features.settings import (
     SettingsFieldVisibility,
     SettingsSchema,
     SettingsSelectOption,
-    AgentSettings,
 )
 from dooers.handlers.context import AgentContext
 from dooers.handlers.incoming import AgentIncoming
@@ -56,6 +56,7 @@ from dooers.server import AgentServer
 __all__ = [
     # Core
     "AgentConfig",
+    "OnSettingsUpdated",
     "AgentServer",
     "AgentContext",
     "AgentIncoming",

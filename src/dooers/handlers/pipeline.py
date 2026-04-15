@@ -928,12 +928,17 @@ class HandlerPipeline:
                     raise UploadReferenceError(f"Upload reference '{ref_id}' not found or expired")
 
                 if part_type == "audio":
+                    wire_url = data.get("url")
+                    url_str = wire_url.strip() if isinstance(wire_url, str) else None
+                    if url_str == "":
+                        url_str = None
                     handler_parts.append(
                         AudioPart(
                             data=entry.data,
                             mime_type=entry.mime_type,
                             duration=data.get("duration"),
                             filename=entry.filename,
+                            url=url_str,
                         )
                     )
                     storage_parts.append(
@@ -941,29 +946,41 @@ class HandlerPipeline:
                             mime_type=entry.mime_type,
                             duration=data.get("duration"),
                             filename=entry.filename,
+                            url=url_str,
                         )
                     )
                 elif part_type == "image":
+                    wire_url = data.get("url")
+                    url_str = wire_url.strip() if isinstance(wire_url, str) else None
+                    if url_str == "":
+                        url_str = None
                     handler_parts.append(
                         ImagePart(
                             data=entry.data,
                             mime_type=entry.mime_type,
                             filename=entry.filename,
+                            url=url_str,
                         )
                     )
                     storage_parts.append(
                         WireS2C_ImagePart(
                             mime_type=entry.mime_type,
                             filename=entry.filename,
+                            url=url_str,
                         )
                     )
                 elif part_type == "document":
+                    wire_url = data.get("url")
+                    url_str = wire_url.strip() if isinstance(wire_url, str) else None
+                    if url_str == "":
+                        url_str = None
                     handler_parts.append(
                         DocumentPart(
                             data=entry.data,
                             mime_type=entry.mime_type,
                             filename=entry.filename,
                             size_bytes=entry.size_bytes,
+                            url=url_str,
                         )
                     )
                     storage_parts.append(
@@ -971,17 +988,23 @@ class HandlerPipeline:
                             mime_type=entry.mime_type,
                             filename=entry.filename,
                             size_bytes=entry.size_bytes,
+                            url=url_str,
                         )
                     )
 
             elif part_type == "audio" and "data" in data:
                 # Dispatch path — bytes passed directly
+                durl = data.get("url")
+                url_str = durl.strip() if isinstance(durl, str) else None
+                if url_str == "":
+                    url_str = None
                 handler_parts.append(
                     AudioPart(
                         data=data["data"],
                         mime_type=data.get("mime_type", ""),
                         duration=data.get("duration"),
                         filename=data.get("filename"),
+                        url=url_str,
                     )
                 )
                 storage_parts.append(
@@ -989,31 +1012,43 @@ class HandlerPipeline:
                         mime_type=data.get("mime_type"),
                         duration=data.get("duration"),
                         filename=data.get("filename"),
+                        url=url_str,
                     )
                 )
 
             elif part_type == "image" and "data" in data:
+                durl = data.get("url")
+                url_str = durl.strip() if isinstance(durl, str) else None
+                if url_str == "":
+                    url_str = None
                 handler_parts.append(
                     ImagePart(
                         data=data["data"],
                         mime_type=data.get("mime_type", ""),
                         filename=data.get("filename"),
+                        url=url_str,
                     )
                 )
                 storage_parts.append(
                     WireS2C_ImagePart(
                         mime_type=data.get("mime_type"),
                         filename=data.get("filename"),
+                        url=url_str,
                     )
                 )
 
             elif part_type == "document" and "data" in data:
+                durl = data.get("url")
+                url_str = durl.strip() if isinstance(durl, str) else None
+                if url_str == "":
+                    url_str = None
                 handler_parts.append(
                     DocumentPart(
                         data=data["data"],
                         mime_type=data.get("mime_type", ""),
                         filename=data.get("filename", ""),
                         size_bytes=data.get("size_bytes", 0),
+                        url=url_str,
                     )
                 )
                 storage_parts.append(
@@ -1021,6 +1056,7 @@ class HandlerPipeline:
                         mime_type=data.get("mime_type"),
                         filename=data.get("filename"),
                         size_bytes=data.get("size_bytes"),
+                        url=url_str,
                     )
                 )
 

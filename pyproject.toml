@@ -1,6 +1,6 @@
 [project]
 name = "dooers-agents-server"
-version = "0.6.0"
+version = "0.8.0"
 description = "agents-server — Python SDK for building AI agent services"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -73,4 +73,5 @@ pcu = "python scripts/pcu.py check"
 [dependency-groups]
 dev = [
     "poethepoet>=0.42.0",
+    "respx>=0.23.1",
 ]

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
 
+from dooers.auth_validation import AuthValidationClient
 from dooers.broadcast import BroadcastManager
 from dooers.config import AgentConfig
 from dooers.dispatch import DispatchStream
-from dooers.features.analytics.collector import AnalyticsCollector
 from dooers.features.analytics.agent_analytics import AgentAnalytics
-from dooers.features.settings.broadcaster import SettingsBroadcaster
+from dooers.features.analytics.collector import AnalyticsCollector
 from dooers.features.settings.agent_settings import AgentSettings
+from dooers.features.settings.broadcaster import SettingsBroadcaster
 from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.handlers.router import Handler, Router, WebSocketProtocol
@@ -56,6 +58,8 @@ class AgentServer:
         self._upload_store: UploadStore | None = None
         self._analytics_collector: AnalyticsCollector | None = None
         self._settings_broadcaster: SettingsBroadcaster | None = None
+        self._auth_validator: AuthValidationClient | None = None
+        self._guest_cleanup_task: asyncio.Task | None = None
 
     @property
     def registry(self) -> ConnectionRegistry:
@@ -99,6 +103,7 @@ class AgentServer:
                 key=self._config.database_key,
                 database=self._config.database_name,
                 table_prefix=self._config.database_table_prefix,
+                on_settings_updated=self._config.on_settings_updated,
             )
         else:
             self._persistence = PostgresPersistence(
@@ -109,6 +114,7 @@ class AgentServer:
                 password=self._config.database_password,
                 ssl=self._config.database_ssl,
                 table_prefix=self._config.database_table_prefix,
+                on_settings_updated=self._config.on_settings_updated,
             )
 
         await self._persistence.connect()
@@ -149,8 +155,59 @@ class AgentServer:
         )
         await self._upload_store.start()
 
+        if self._config.auth_validation_url:
+            self._auth_validator = AuthValidationClient(
+                url=self._config.auth_validation_url,
+                timeout=self._config.auth_validation_timeout,
+            )
+
+        if self._config.guest_thread_cleanup_interval_seconds > 0:
+            self._guest_cleanup_task = asyncio.create_task(
+                self._run_guest_cleanup_loop(),
+                name="dooers-guest-thread-cleanup",
+            )
+
         self._initialized = True
         return self._persistence
+
+    async def _run_guest_cleanup_loop(self) -> None:
+        interval = self._config.guest_thread_cleanup_interval_seconds
+        ttl = self._config.guest_thread_ttl_seconds
+        persistence = self._persistence
+        if persistence is None:
+            return  # should never happen — loop is started after init
+        logger.info(
+            "[agents] guest thread cleanup task started (interval=%ds, ttl=%ds)",
+            interval,
+            ttl,
+        )
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    raise
+                try:
+                    count = await persistence.delete_idle_guest_threads(ttl)
+                    if count > 0:
+                        logger.info("[agents] deleted %d idle guest threads", count)
+                    else:
+                        logger.debug("[agents] deleted %d idle guest threads", count)
+                except asyncio.CancelledError:
+                    raise
+                except NotImplementedError as e:
+                    logger.warning(
+                        "[agents] guest thread cleanup unsupported by persistence backend: %s",
+                        e,
+                    )
+                    return
+                except Exception:
+                    logger.exception(
+                        "[agents] guest thread cleanup iteration failed (will retry)"
+                    )
+        except asyncio.CancelledError:
+            logger.debug("[agents] guest thread cleanup task cancelled")
+            raise
 
     async def ensure_initialized(self) -> None:
         await self._ensure_initialized()
@@ -175,6 +232,7 @@ class AgentServer:
             settings_subscriptions=self._settings_subscriptions,
             settings_ws_context=self._settings_ws_context,
             upload_store=self._upload_store,
+            auth_validator=self._auth_validator,
         )
 
         try:
@@ -345,6 +403,18 @@ class AgentServer:
         await self._registry.broadcast(agent_id, message)
 
     async def close(self) -> None:
+        if self._guest_cleanup_task:
+            self._guest_cleanup_task.cancel()
+            try:
+                await self._guest_cleanup_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "[agents] guest cleanup task errored during shutdown"
+                )
+            self._guest_cleanup_task = None
+
         if self._upload_store:
             await self._upload_store.stop()
             self._upload_store = None
@@ -352,6 +422,10 @@ class AgentServer:
         if self._analytics_collector:
             await self._analytics_collector.stop()
             self._analytics_collector = None
+
+        if self._auth_validator:
+            await self._auth_validator.close()
+            self._auth_validator = None
 
         if self._persistence:
             await self._persistence.disconnect()

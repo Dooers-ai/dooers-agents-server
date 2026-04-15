@@ -1,9 +1,18 @@
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+from dooers.settings import (
+    GUEST_THREAD_CLEANUP_INTERVAL_SECONDS,
+    GUEST_THREAD_TTL_SECONDS,
+)
 
 if TYPE_CHECKING:
     from dooers.features.settings.models import SettingsSchema
+
+# (agent_id, field_id, old_value, new_value). Called after a successful settings write.
+OnSettingsUpdated = Callable[[str, str, Any, Any], Awaitable[None]]
 
 
 def _parse_ssl(value: str) -> bool | str:
@@ -40,7 +49,17 @@ class AgentConfig:
     analytics_batch_size: int | None = None
     analytics_flush_interval: float | None = None
 
+    auth_validation_url: str | None = None
+    auth_validation_timeout: float = 5.0
+
+    # Idle guest thread cleanup (threads whose owner.user_id starts with "guest:").
+    # Set guest_thread_cleanup_interval_seconds to 0 to disable.
+    guest_thread_ttl_seconds: int = GUEST_THREAD_TTL_SECONDS
+    guest_thread_cleanup_interval_seconds: int = GUEST_THREAD_CLEANUP_INTERVAL_SECONDS
+
     settings_schema: "SettingsSchema | None" = None
+    # If set, called after each successful settings field change (also per key after set_settings bulk replace).
+    on_settings_updated: OnSettingsUpdated | None = None
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
     agent_seed_secret: str = field(default_factory=lambda: os.environ.get("AGENT_SEED_SECRET", "").strip())
 

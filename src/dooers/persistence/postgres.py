@@ -7,6 +7,7 @@ from typing import Any
 
 import asyncpg
 
+from dooers.config import OnSettingsUpdated
 from dooers.features.analytics.models import AnalyticsEventPayload
 from dooers.protocol.models import (
     Run,
@@ -52,6 +53,7 @@ class PostgresPersistence:
         password: str,
         ssl: bool | str = False,
         table_prefix: str = "agent_",
+        on_settings_updated: OnSettingsUpdated | None = None,
     ):
         self._host = host
         self._port = port
@@ -61,6 +63,7 @@ class PostgresPersistence:
         self._ssl = ssl
         self._prefix = table_prefix
         self._pool: asyncpg.Pool | None = None
+        self._on_settings_updated = on_settings_updated
 
     async def connect(self) -> None:
         ssl_param = _build_ssl_context(self._ssl)
@@ -406,6 +409,42 @@ class PostgresPersistence:
             await conn.execute(f"DELETE FROM {runs_table} WHERE thread_id = $1", thread_id)
             await conn.execute(f"DELETE FROM {threads_table} WHERE id = $1", thread_id)
 
+    async def delete_idle_guest_threads(self, max_idle_seconds: int) -> int:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        threads_table = f"{self._prefix}threads"
+        events_table = f"{self._prefix}events"
+        runs_table = f"{self._prefix}runs"
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id FROM {threads_table}
+                    WHERE owner->>'user_id' LIKE 'guest:%'
+                      AND last_event_at < NOW() - make_interval(secs => $1)
+                    FOR UPDATE SKIP LOCKED
+                    """,
+                    max_idle_seconds,
+                )
+                ids = [row["id"] for row in rows]
+                if not ids:
+                    return 0
+                await conn.execute(
+                    f"DELETE FROM {events_table} WHERE thread_id = ANY($1::text[])",
+                    ids,
+                )
+                await conn.execute(
+                    f"DELETE FROM {runs_table} WHERE thread_id = ANY($1::text[])",
+                    ids,
+                )
+                await conn.execute(
+                    f"DELETE FROM {threads_table} WHERE id = ANY($1::text[])",
+                    ids,
+                )
+                return len(ids)
+
     def _build_scope_conditions(
         self,
         scope: str,
@@ -424,6 +463,9 @@ class PostgresPersistence:
             params.append(organization_id)
             idx += 1
         elif scope == "workspace":
+            # Audited 2026-04-14: workspace-scope filters by organization+workspace
+            # only, with no guest-owner exclusion, so guest-owned threads are
+            # included for workspace members.
             conditions.append(f"organization_id = ${idx}")
             params.append(organization_id)
             idx += 1
@@ -887,6 +929,21 @@ class PostgresPersistence:
     def _deserialize_content_part(self, data: dict):
         return deserialize_s2c_part(data)
 
+    async def _invoke_settings_updated(
+        self, agent_id: str, field_id: str, old_value: Any, new_value: Any
+    ) -> None:
+        cb = self._on_settings_updated
+        if cb is None:
+            return
+        try:
+            await cb(agent_id, field_id, old_value, new_value)
+        except Exception:
+            logger.exception(
+                "[agents] on_settings_updated failed (agent_id=%s, field_id=%s)",
+                agent_id,
+                field_id,
+            )
+
     async def get_settings(self, agent_id: str) -> dict[str, Any]:
         """Get all stored values for a agent. Returns empty dict if none."""
         if not self._pool:
@@ -916,6 +973,7 @@ class PostgresPersistence:
         now = datetime.now(UTC)
 
         current_values = await self.get_settings(agent_id)
+        old_value = current_values.get(field_id)
         current_values[field_id] = value
         values_json = json.dumps(current_values)
 
@@ -933,6 +991,7 @@ class PostgresPersistence:
                 now,
                 now,
             )
+        await self._invoke_settings_updated(agent_id, field_id, old_value, value)
         return now
 
     async def set_settings(self, agent_id: str, values: dict[str, Any]) -> datetime:
@@ -942,6 +1001,7 @@ class PostgresPersistence:
 
         table = f"{self._prefix}settings"
         now = datetime.now(UTC)
+        old_values = await self.get_settings(agent_id)
         values_json = json.dumps(values)
 
         async with self._pool.acquire() as conn:
@@ -958,6 +1018,12 @@ class PostgresPersistence:
                 now,
                 now,
             )
+        if self._on_settings_updated:
+            for key in set(old_values) | set(values):
+                ov = old_values.get(key)
+                nv = values.get(key)
+                if ov != nv:
+                    await self._invoke_settings_updated(agent_id, key, ov, nv)
         return now
 
     async def get_worker_seed_hash_bytes(self, worker_id: str) -> bytes | None:
