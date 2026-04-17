@@ -321,6 +321,19 @@ class Router:
                 return
 
             self._user = result.user
+            # For guest visitors, the webhook has no display info to return —
+            # the visitor's name/email/phone exist only on the pre-chat form,
+            # which the frontend carries in the connect frame. Merge those
+            # display fields in. Identity (user_id), roles, and org/workspace
+            # still come from the webhook; this only fills in visible labels.
+            if self._user.connection_type == "guest" and incoming_user is not None:
+                patches: dict[str, Any] = {}
+                if not self._user.user_name and incoming_user.user_name:
+                    patches["user_name"] = incoming_user.user_name
+                if not self._user.user_email and incoming_user.user_email:
+                    patches["user_email"] = incoming_user.user_email
+                if patches:
+                    self._user = self._user.model_copy(update=patches)
             self._rate_limits = result.rate_limits
             self._agent_owner_user_id = result.agent_owner_user_id
             self._organization_id = result.organization_id or frame.payload.organization_id

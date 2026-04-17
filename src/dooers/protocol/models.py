@@ -255,6 +255,11 @@ class User(BaseModel):
     system_role: str = "user"
     organization_role: str = "member"
     workspace_role: str = "member"
+    # How this session connected — "dashboard" (authenticated platform user),
+    # "public_authenticated" (signed in via public chat link),
+    # "guest" (anonymous public chat visitor). Set from the validation
+    # webhook's ConnectionContext; defaults to "dashboard" for legacy paths.
+    connection_type: str = "dashboard"
 
 
 # --- ConnectionContext models (returned by core backend validation endpoints) ---

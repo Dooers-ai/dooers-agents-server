@@ -116,6 +116,7 @@ class AuthValidationClient:
             system_role=ctx.user.system_role or "user",
             organization_role=ctx.organization.role or "member",
             workspace_role=ctx.workspace.role or "member",
+            connection_type=ctx.connection_type or "dashboard",
         )
 
         rate_limits: dict[str, Any] = {}
