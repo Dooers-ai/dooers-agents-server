@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-04-17
+
+Additive release focused on authentication and guest-visitor UX. The SDK
+now auto-discovers its validation URL from the JWT carried in the connect
+frame, so agents no longer need `AUTH_VALIDATION_URL` configured for
+dashboard sessions (the config stays for public-chat opaque session tokens
+only). The validation webhook returns a richer `ConnectionContext` with
+nested `user` / `organization` / `workspace` / `agent` / `policies`
+objects, and threads can now carry opaque `metadata` supplied on creation.
+
+### Added
+
+- **Self-describing JWT validation.** `AuthValidationClient.validate()`
+  base64-decodes the JWT payload, reads the `validation_url` claim, and
+  POSTs the token to that URL. No env var, no config coupling — the
+  backend tells the SDK where to verify. Opaque session tokens still fall
+  back to the configured `auth_validation_url`.
+- **`ConnectionContext` response parsing.** New Pydantic models
+  (`ConnectionUser`, `ConnectionOrganization`, `ConnectionWorkspace`,
+  `ConnectionAgent`, `ConnectionPolicies`, `ConnectionContext`) mirror
+  the nested validation response. `AuthValidationResult` exposes
+  `connection_type`, `agent_id`, `agent_owner_user_id`, and
+  `organization_plan`.
+- **`User.connection_type`** (str, default `"dashboard"`) — distinguishes
+  `"dashboard"` / `"public_authenticated"` / `"guest"` sessions. Handlers
+  can read it off `context.user` to branch UX (e.g., title prefixes,
+  feature gating).
+- **`Thread.metadata`** (`dict[str, Any] | None`) — opaque key/value
+  store attached on thread creation. `EventCreatePayload` accepts
+  `metadata?: dict` which the pipeline persists onto the thread row and
+  ignores on subsequent events. Intended for per-thread context the
+  agent needs (pre-chat form values, routing hints, external IDs).
+- **`AgentMemory.get_thread()`** — handlers can read the current
+  `Thread` (including `metadata`) on any invocation.
+- **`metadata JSONB` column** on the threads table, auto-migrated via
+  `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on startup.
+- **Guest display-field merge** on the anonymous connect path. When
+  `connection_type == "guest"` and the webhook returns empty
+  `user_name` / `user_email`, the router fills them in from the connect
+  frame so stored events carry the visitor's label instead of rendering
+  as `guest:<hex>`. Identity, roles, and scope remain webhook-authoritative.
+
+### Changed
+
+- **`AuthValidationClient` is always constructed** now, even without a
+  configured URL. The JWT path doesn't need one — it reads from the
+  token. The configured URL is only used as a legacy fallback for
+  opaque tokens.
+- **Authenticated connect path trusts only the webhook response** for
+  identity and roles. The previous `result.field or incoming_user.field`
+  fallback chain was removed — a frontend that tampers with the frame
+  can no longer inject a fake role because the merge never happens.
+  Connections are rejected outright if validation fails, rather than
+  silently falling back to frame-supplied data.
+- **`_user_author_display()` no longer falls back to `user_id`.** Guest
+  IDs are opaque (`guest:<hex>`) and not meaningful to managers; the
+  field is left null when name/email are both unavailable.
+- **`SettingsPublicSchemaResultPayload.schema`** renamed to `schema_`
+  (with `Field(alias="schema")`) to silence the Pydantic BaseModel
+  shadowing warning. Wire shape unchanged.
+
+### Compatibility
+
+Fully additive. Existing handlers continue to work — new fields default
+to safe values. Agents that still rely on the legacy flat validation
+response (flat `user.*` + `organizationId` fields) are still supported
+via the `_validate_legacy` fallback path, though new backends should
+emit the nested `ConnectionContext` shape.
+
 ## [0.8.0] — 2026-04-14
 
 Additive release on top of 0.7.0 — no new breaking changes. Bundles the
