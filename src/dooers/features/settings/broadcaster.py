@@ -100,9 +100,7 @@ class SettingsBroadcaster:
                 field_vis = f.visibility
 
         sent = False
-        has_ctx_for_agent = any(
-            ctx.get("agent_id") == agent_id for ctx in self._ws_context.values()
-        )
+        has_ctx_for_agent = any(ctx.get("agent_id") == agent_id for ctx in self._ws_context.values())
         for _ws_id, ctx in list(self._ws_context.items()):
             if ctx.get("agent_id") != agent_id:
                 continue

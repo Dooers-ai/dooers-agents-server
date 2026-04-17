@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -257,6 +257,48 @@ class User(BaseModel):
     workspace_role: str = "member"
 
 
+# --- ConnectionContext models (returned by core backend validation endpoints) ---
+
+
+class ConnectionUser(BaseModel):
+    id: str
+    email: str = ""
+    name: str = ""
+    identity_ids: list[str] = []
+    system_role: str = "user"
+
+
+class ConnectionOrganization(BaseModel):
+    id: str
+    role: str = "member"
+    plan: str = "free"
+
+
+class ConnectionWorkspace(BaseModel):
+    id: str
+    role: str = "member"
+
+
+class ConnectionAgent(BaseModel):
+    id: str
+    owner_user_id: str | None = None
+
+
+class ConnectionPolicies(BaseModel):
+    rate_limit_msgs_per_min: int | None = None
+    thread_ttl_hours: int | None = None
+
+
+class ConnectionContext(BaseModel):
+    valid: bool
+    connection_type: str = "dashboard"
+    user: ConnectionUser
+    organization: ConnectionOrganization
+    workspace: ConnectionWorkspace
+    agent: ConnectionAgent
+    policies: ConnectionPolicies = ConnectionPolicies()
+
+
 class ThreadEvent(BaseModel):
     id: str
     thread_id: str
@@ -281,6 +323,7 @@ class Thread(BaseModel):
     owner: User = User(user_id="")
     users: list[User] = []
     title: str | None = None
+    metadata: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     last_event_at: datetime

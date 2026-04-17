@@ -14,6 +14,7 @@ def get_migration_sql(table_prefix: str = "agent_") -> str:
             owner JSONB NOT NULL DEFAULT '{{}}',
             users JSONB NOT NULL DEFAULT '[]',
             title TEXT,
+            metadata JSONB,
             created_at TIMESTAMPTZ NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL,
             last_event_at TIMESTAMPTZ NOT NULL

@@ -147,6 +147,7 @@ class PostgresPersistence:
                     owner JSONB NOT NULL DEFAULT '{{}}',
                     users JSONB NOT NULL DEFAULT '[]',
                     title TEXT,
+                    metadata JSONB,
                     created_at TIMESTAMPTZ NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL,
                     last_event_at TIMESTAMPTZ NOT NULL
@@ -207,6 +208,10 @@ class PostgresPersistence:
             """)
             await conn.execute(f"""
                 ALTER TABLE {threads_table} ADD COLUMN IF NOT EXISTS users JSONB NOT NULL DEFAULT '[]'
+            """)
+
+            await conn.execute(f"""
+                ALTER TABLE {threads_table} ADD COLUMN IF NOT EXISTS metadata JSONB
             """)
 
             # Migrate legacy user_id column for existing databases
@@ -312,13 +317,14 @@ class PostgresPersistence:
         table = f"{self._prefix}threads"
         owner_json = json.dumps(thread.owner.model_dump())
         users_json = json.dumps([u.model_dump() for u in thread.users])
+        metadata_json = json.dumps(thread.metadata) if thread.metadata is not None else None
 
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
                 INSERT INTO {table}
-                    (id, agent_id, organization_id, workspace_id, owner, users, title, created_at, updated_at, last_event_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    (id, agent_id, organization_id, workspace_id, owner, users, title, metadata, created_at, updated_at, last_event_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
                 thread.id,
                 thread.agent_id,
@@ -327,6 +333,7 @@ class PostgresPersistence:
                 owner_json,
                 users_json,
                 thread.title,
+                metadata_json,
                 thread.created_at,
                 thread.updated_at,
                 thread.last_event_at,
@@ -357,6 +364,10 @@ class PostgresPersistence:
         if isinstance(users_data, str):
             users_data = json.loads(users_data)
 
+        metadata_raw = row.get("metadata")
+        if isinstance(metadata_raw, str):
+            metadata_raw = json.loads(metadata_raw)
+
         return Thread(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -365,6 +376,7 @@ class PostgresPersistence:
             owner=User(**owner_data),
             users=[User(**u) for u in users_data],
             title=row["title"],
+            metadata=metadata_raw,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_event_at=row["last_event_at"],
@@ -929,9 +941,7 @@ class PostgresPersistence:
     def _deserialize_content_part(self, data: dict):
         return deserialize_s2c_part(data)
 
-    async def _invoke_settings_updated(
-        self, agent_id: str, field_id: str, old_value: Any, new_value: Any
-    ) -> None:
+    async def _invoke_settings_updated(self, agent_id: str, field_id: str, old_value: Any, new_value: Any) -> None:
         cb = self._on_settings_updated
         if cb is None:
             return

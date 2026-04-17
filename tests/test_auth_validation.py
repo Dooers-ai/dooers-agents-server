@@ -34,9 +34,7 @@ async def test_returns_valid_when_webhook_says_valid(client):
                 },
             )
         )
-        result = await client.validate(
-            auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc"
-        )
+        result = await client.validate(auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc")
     assert result.valid is True
     assert result.user is not None
     assert result.user.user_id == "guest:abc"
@@ -51,9 +49,7 @@ async def test_returns_valid_when_webhook_says_valid(client):
 @pytest.mark.asyncio
 async def test_returns_invalid_on_false(client):
     with respx.mock() as mock:
-        mock.post("https://core.test/validate").mock(
-            return_value=httpx.Response(200, json={"valid": False, "reason": "expired"})
-        )
+        mock.post("https://core.test/validate").mock(return_value=httpx.Response(200, json={"valid": False, "reason": "expired"}))
         result = await client.validate(auth_token="tok", agent_id="a", guest_user_id="g")
     assert result.valid is False
     assert result.reason == "expired"
@@ -62,9 +58,7 @@ async def test_returns_invalid_on_false(client):
 @pytest.mark.asyncio
 async def test_fails_closed_on_network_error(client):
     with respx.mock() as mock:
-        mock.post("https://core.test/validate").mock(
-            side_effect=httpx.ConnectError("boom")
-        )
+        mock.post("https://core.test/validate").mock(side_effect=httpx.ConnectError("boom"))
         result = await client.validate(auth_token="tok", agent_id="a", guest_user_id="g")
     assert result.valid is False
     assert result.reason == "transport_error"
@@ -73,9 +67,7 @@ async def test_fails_closed_on_network_error(client):
 @pytest.mark.asyncio
 async def test_fails_closed_on_5xx(client):
     with respx.mock() as mock:
-        mock.post("https://core.test/validate").mock(
-            return_value=httpx.Response(503, text="bad")
-        )
+        mock.post("https://core.test/validate").mock(return_value=httpx.Response(503, text="bad"))
         result = await client.validate(auth_token="tok", agent_id="a", guest_user_id="g")
     assert result.valid is False
     assert result.reason == "upstream_503"
@@ -102,9 +94,7 @@ async def test_parses_organization_and_workspace_ids(client):
                 },
             )
         )
-        result = await client.validate(
-            auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc"
-        )
+        result = await client.validate(auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc")
     assert result.valid is True
     assert result.organization_id == "real-org"
     assert result.workspace_id == "real-ws"
@@ -127,9 +117,7 @@ async def test_organization_and_workspace_default_to_none(client):
                 },
             )
         )
-        result = await client.validate(
-            auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc"
-        )
+        result = await client.validate(auth_token="tok", agent_id="agent-1", guest_user_id="guest:abc")
     assert result.valid is True
     assert result.organization_id is None
     assert result.workspace_id is None
@@ -140,9 +128,7 @@ async def test_fails_closed_on_non_200():
     c = AuthValidationClient(url="https://core.test/validate", timeout=2.0)
     try:
         with respx.mock() as mock:
-            mock.post("https://core.test/validate").mock(
-                return_value=httpx.Response(404, text="no")
-            )
+            mock.post("https://core.test/validate").mock(return_value=httpx.Response(404, text="no"))
             result = await c.validate(auth_token="tok", agent_id="a", guest_user_id="g")
         assert result.valid is False
         assert result.reason == "status_404"

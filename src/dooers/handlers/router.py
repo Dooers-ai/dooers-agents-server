@@ -139,6 +139,7 @@ class Router:
         self._user: User | None = None
         self._organization_id: str = ""
         self._workspace_id: str = ""
+        self._agent_owner_user_id: str | None = None
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
@@ -321,18 +322,60 @@ class Router:
 
             self._user = result.user
             self._rate_limits = result.rate_limits
-            # Trust webhook-supplied org/workspace IDs over client-supplied ones for
-            # anonymous connects. The webhook can resolve the real workspace, so
-            # guest threads get tagged correctly and become visible to workspace
-            # members. Falls back to the frame values if the webhook omits them.
+            self._agent_owner_user_id = result.agent_owner_user_id
             self._organization_id = result.organization_id or frame.payload.organization_id
             self._workspace_id = result.workspace_id or frame.payload.workspace_id
         else:
-            # Authenticated path unchanged — trust the frame.
-            # NOTE: Roles are currently trusted from the client. A future iteration should
-            # validate them server-side using the auth_token (frame.payload.auth_token).
-            self._user = incoming_user
-            self._rate_limits = {}
+            # Authenticated path: when an auth validator is configured, the
+            # validator auto-detects JWT vs opaque token. For JWTs the
+            # validation URL is extracted from the token itself; for opaque
+            # tokens the configured auth_validation_url is used.
+            # The webhook response is the sole source of truth — no merging
+            # with frame data.
+            if self._auth_validator is not None and incoming_user is not None and incoming_user.user_id:
+                try:
+                    result = await self._auth_validator.validate(
+                        auth_token=frame.payload.auth_token,
+                        agent_id=self._agent_id,
+                        guest_user_id="",
+                        organization_id=self._organization_id,
+                        workspace_id=self._workspace_id,
+                        user_id=incoming_user.user_id,
+                    )
+                except Exception:
+                    logger.exception("[agents] dashboard auth validation raised")
+                    await self._send_ack(
+                        ws,
+                        frame.id,
+                        ok=False,
+                        error={
+                            "code": "CONNECTION_REJECTED",
+                            "message": "auth validation error",
+                        },
+                    )
+                    return
+
+                if not result.valid or result.user is None:
+                    await self._send_ack(
+                        ws,
+                        frame.id,
+                        ok=False,
+                        error={
+                            "code": "CONNECTION_REJECTED",
+                            "message": result.reason or "rejected",
+                        },
+                    )
+                    return
+
+                self._user = result.user
+                self._organization_id = result.organization_id or self._organization_id
+                self._workspace_id = result.workspace_id or self._workspace_id
+                self._agent_owner_user_id = result.agent_owner_user_id
+                self._rate_limits = result.rate_limits or {}
+            else:
+                # No validator configured — trust the frame identity (legacy).
+                self._user = incoming_user
+                self._rate_limits = {}
 
         self._ws = ws
         await self._registry.register(self._agent_id, ws)
@@ -542,6 +585,7 @@ class Router:
             data=frame.payload.event.data,
             client_event_id=frame.payload.client_event_id,
             event_type=frame.payload.event.type,
+            metadata=frame.payload.metadata if not frame.payload.thread_id else None,
         )
 
         try:
@@ -759,7 +803,7 @@ class Router:
         if audience == "creator":
             if not self._user or not _can_access_creator_settings(
                 self._user,
-                agent_owner_user_id=frame.payload.agent_owner_user_id,
+                agent_owner_user_id=self._agent_owner_user_id,
             ):
                 await self._send_ack(
                     ws,
@@ -891,11 +935,7 @@ class Router:
             )
             return
 
-        if (
-            field.visibility == SettingsFieldVisibility.USER
-            and effective_audience == "user"
-            and not field.user_editable
-        ):
+        if field.visibility == SettingsFieldVisibility.USER and effective_audience == "user" and not field.user_editable:
             await self._send_ack(
                 ws,
                 frame.id,

@@ -155,11 +155,10 @@ class AgentServer:
         )
         await self._upload_store.start()
 
-        if self._config.auth_validation_url:
-            self._auth_validator = AuthValidationClient(
-                url=self._config.auth_validation_url,
-                timeout=self._config.auth_validation_timeout,
-            )
+        self._auth_validator = AuthValidationClient(
+            url=self._config.auth_validation_url or "",
+            timeout=self._config.auth_validation_timeout,
+        )
 
         if self._config.guest_thread_cleanup_interval_seconds > 0:
             self._guest_cleanup_task = asyncio.create_task(
@@ -202,9 +201,7 @@ class AgentServer:
                     )
                     return
                 except Exception:
-                    logger.exception(
-                        "[agents] guest thread cleanup iteration failed (will retry)"
-                    )
+                    logger.exception("[agents] guest thread cleanup iteration failed (will retry)")
         except asyncio.CancelledError:
             logger.debug("[agents] guest thread cleanup task cancelled")
             raise
@@ -410,9 +407,7 @@ class AgentServer:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.exception(
-                    "[agents] guest cleanup task errored during shutdown"
-                )
+                logger.exception("[agents] guest cleanup task errored during shutdown")
             self._guest_cleanup_task = None
 
         if self._upload_store:

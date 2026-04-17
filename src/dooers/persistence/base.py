@@ -49,6 +49,7 @@ class Persistence(Protocol):
         number of threads deleted. Associated events and runs are removed as
         part of the operation."""
         ...
+
     async def create_event(self, event: ThreadEvent) -> None: ...
     async def get_events(
         self,

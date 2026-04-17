@@ -129,9 +129,7 @@ async def test_anonymous_with_invalid_webhook_is_rejected(validator):
     ws = FakeWebSocket()
 
     with respx.mock() as mock:
-        mock.post("https://core.test/validate").mock(
-            return_value=httpx.Response(200, json={"valid": False, "reason": "expired"})
-        )
+        mock.post("https://core.test/validate").mock(return_value=httpx.Response(200, json={"valid": False, "reason": "expired"}))
         await router._handle_connect(ws, _make_connect_frame(user_id=""))
 
     ack = _last_ack(ws)
@@ -145,9 +143,7 @@ async def test_anonymous_fails_closed_on_upstream_5xx(validator):
     ws = FakeWebSocket()
 
     with respx.mock() as mock:
-        mock.post("https://core.test/validate").mock(
-            return_value=httpx.Response(503, text="bad")
-        )
+        mock.post("https://core.test/validate").mock(return_value=httpx.Response(503, text="bad"))
         await router._handle_connect(ws, _make_connect_frame(user_id=""))
 
     ack = _last_ack(ws)
@@ -238,24 +234,18 @@ async def test_frame_values_used_when_webhook_omits_ids(validator):
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_skips_webhook(validator):
-    router = _make_router(auth_validator=validator)
+async def test_authenticated_user_without_validator_uses_frame_identity():
+    """When no auth validator is configured, authenticated users fall back to frame identity."""
+    router = _make_router(auth_validator=None)
     ws = FakeWebSocket()
 
-    # No respx mock configured — if the router called the webhook, httpx would try
-    # a real request. Using respx.mock(assert_all_called=False) ensures no leakage.
-    with respx.mock(assert_all_called=False) as mock:
-        route = mock.post("https://core.test/validate").mock(
-            return_value=httpx.Response(500)
-        )
-        await router._handle_connect(ws, _make_connect_frame(user_id="user-123"))
+    await router._handle_connect(ws, _make_connect_frame(user_id="user-123"))
 
     ack = _last_ack(ws)
     assert ack["payload"]["ok"] is True
     assert router._user is not None
     assert router._user.user_id == "user-123"
     assert router._rate_limits == {}
-    assert route.call_count == 0
 
     # Ensure full setup happened on the authenticated path.
     assert router._agent_id == "agent-1"
@@ -263,3 +253,56 @@ async def test_authenticated_user_skips_webhook(validator):
 
     # upsert_thread_participant is only called on event.create, not on connect.
     router._persistence.upsert_thread_participant.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_user_with_valid_webhook(validator):
+    """Authenticated users go through validation; successful response is sole source of truth."""
+    router = _make_router(auth_validator=validator)
+    ws = FakeWebSocket()
+
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "user": {
+                        "user_id": "user-123",
+                        "user_email": "user@test.com",
+                        "identity_ids": [],
+                        "system_role": "user",
+                        "organization_role": "owner",
+                        "workspace_role": "manager",
+                    },
+                    "rateLimits": {},
+                    "organizationId": "org-1",
+                    "workspaceId": "ws-1",
+                },
+            )
+        )
+        await router._handle_connect(ws, _make_connect_frame(user_id="user-123"))
+
+    ack = _last_ack(ws)
+    assert ack["payload"]["ok"] is True
+    assert router._user is not None
+    assert router._user.user_id == "user-123"
+    assert router._user.organization_role == "owner"
+
+    assert router._agent_id == "agent-1"
+    assert router._ws_id in router._subscriptions
+
+
+@pytest.mark.asyncio
+async def test_authenticated_user_with_failed_webhook_is_rejected(validator):
+    """Authenticated users are rejected when the validator returns an error."""
+    router = _make_router(auth_validator=validator)
+    ws = FakeWebSocket()
+
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(return_value=httpx.Response(500))
+        await router._handle_connect(ws, _make_connect_frame(user_id="user-123"))
+
+    ack = _last_ack(ws)
+    assert ack["payload"]["ok"] is False
+    assert ack["payload"]["error"]["code"] == "CONNECTION_REJECTED"

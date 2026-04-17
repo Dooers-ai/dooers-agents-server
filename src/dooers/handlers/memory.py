@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Any, Literal
 
-from dooers.protocol.models import ThreadEvent
+from dooers.protocol.models import Thread, ThreadEvent
 
 if TYPE_CHECKING:
     from dooers.persistence.base import EventOrder, Persistence
@@ -28,6 +28,9 @@ class AgentMemory:
     def __init__(self, thread_id: str, persistence: "Persistence"):
         self._thread_id = thread_id
         self._persistence = persistence
+
+    async def get_thread(self) -> Thread | None:
+        return await self._persistence.get_thread(self._thread_id)
 
     async def get_history_raw(
         self,
@@ -160,9 +163,7 @@ class AgentMemory:
                     "message": text,
                 }
             case "langchain" | "openai_completions" | "openai_responses":
-                raise ValueError(
-                    f"format {format!r} is handled in get_history before _format_message"
-                )
+                raise ValueError(f"format {format!r} is handled in get_history before _format_message")
             case _:
                 return {
                     "role": "user" if is_user else "assistant",
@@ -196,9 +197,7 @@ class AgentMemory:
                 out.append(dict(p))
         return out
 
-    def _message_openai_completions(
-        self, parts: list[dict[str, Any]], is_user: bool
-    ) -> dict[str, Any]:
+    def _message_openai_completions(self, parts: list[dict[str, Any]], is_user: bool) -> dict[str, Any]:
         """Chat Completions API: https://platform.openai.com/docs/api-reference/chat/create"""
         if not is_user:
             texts = [p["text"] for p in parts if p.get("type") == "text"]
@@ -239,9 +238,7 @@ class AgentMemory:
             return {"role": "user", "content": blocks[0]["text"]}
         return {"role": "user", "content": blocks}
 
-    def _message_openai_responses(
-        self, parts: list[dict[str, Any]], is_user: bool
-    ) -> dict[str, Any]:
+    def _message_openai_responses(self, parts: list[dict[str, Any]], is_user: bool) -> dict[str, Any]:
         """Responses API input items (user) / output_text (assistant)."""
         if not is_user:
             texts = [(p.get("text") or "").strip() for p in parts if p.get("type") == "text"]
@@ -409,8 +406,4 @@ class AgentMemory:
                         else:
                             raw.append({"type": "text", "text": f"[document: {fname}]"})
         merged = cls._merge_adjacent_text_parts(raw)
-        return [
-            p
-            for p in merged
-            if not (p.get("type") == "text" and not (str(p.get("text") or "")).strip())
-        ]
+        return [p for p in merged if not (p.get("type") == "text" and not (str(p.get("text") or "")).strip())]

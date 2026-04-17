@@ -112,12 +112,8 @@ async def _insert_thread(
 async def test_deletes_idle_guest_thread_but_keeps_authenticated(persistence):
     old = datetime.now(UTC) - timedelta(hours=48)
 
-    guest_id = await _insert_thread(
-        persistence, owner_user_id="guest:abc-123", last_event_at=old
-    )
-    auth_id = await _insert_thread(
-        persistence, owner_user_id="user-real-42", last_event_at=old
-    )
+    guest_id = await _insert_thread(persistence, owner_user_id="guest:abc-123", last_event_at=old)
+    auth_id = await _insert_thread(persistence, owner_user_id="user-real-42", last_event_at=old)
 
     deleted = await persistence.delete_idle_guest_threads(60)  # 1-minute TTL
     assert deleted == 1
@@ -131,9 +127,7 @@ async def test_deletes_idle_guest_thread_but_keeps_authenticated(persistence):
     assert persistence._pool is not None
     async with persistence._pool.acquire() as conn:
         events_table = f"{persistence._prefix}events"
-        row = await conn.fetchval(
-            f"SELECT COUNT(*) FROM {events_table} WHERE thread_id = $1", guest_id
-        )
+        row = await conn.fetchval(f"SELECT COUNT(*) FROM {events_table} WHERE thread_id = $1", guest_id)
         assert row == 0
 
 
@@ -141,9 +135,7 @@ async def test_deletes_idle_guest_thread_but_keeps_authenticated(persistence):
 async def test_does_not_delete_recent_guest_thread(persistence):
     recent = datetime.now(UTC) - timedelta(seconds=5)
 
-    guest_id = await _insert_thread(
-        persistence, owner_user_id="guest:fresh", last_event_at=recent
-    )
+    guest_id = await _insert_thread(persistence, owner_user_id="guest:fresh", last_event_at=recent)
 
     deleted = await persistence.delete_idle_guest_threads(3600)
     assert deleted == 0

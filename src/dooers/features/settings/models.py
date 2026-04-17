@@ -97,9 +97,7 @@ class SettingsSchema(BaseModel):
     def get_defaults(self) -> dict[str, Any]:
         return {f.id: f.value for f in _collect_all_fields(self.fields)}
 
-    def get_fields_for_audience(
-        self, audience: Literal["creator", "user"]
-    ) -> list["SettingsField | SettingsFieldGroup"]:
+    def get_fields_for_audience(self, audience: Literal["creator", "user"]) -> list["SettingsField | SettingsFieldGroup"]:
         """Fields visible to the given WebSocket subscription audience (never internal)."""
 
         def _field_visible(f: SettingsField) -> bool:

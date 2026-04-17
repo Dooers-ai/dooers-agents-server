@@ -132,6 +132,7 @@ class CosmosPersistence:
             "owner": thread.owner.model_dump(),
             "users": [u.model_dump() for u in thread.users],
             "title": thread.title,
+            "metadata": thread.metadata,
             "created_at": thread.created_at.isoformat(),
             "updated_at": thread.updated_at.isoformat(),
             "last_event_at": thread.last_event_at.isoformat(),
@@ -174,6 +175,7 @@ class CosmosPersistence:
             "owner": thread.owner.model_dump(),
             "users": [u.model_dump() for u in thread.users],
             "title": thread.title,
+            "metadata": thread.metadata,
             "created_at": thread.created_at.isoformat(),
             "updated_at": thread.updated_at.isoformat(),
             "last_event_at": thread.last_event_at.isoformat(),
@@ -488,6 +490,7 @@ class CosmosPersistence:
             owner=User(**owner_data),
             users=[User(**u) for u in users_data],
             title=row.get("title"),
+            metadata=row.get("metadata"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             last_event_at=datetime.fromisoformat(row["last_event_at"]),
@@ -604,9 +607,7 @@ class CosmosPersistence:
     def _deserialize_content_part(self, data: dict):
         return deserialize_s2c_part(data)
 
-    async def _invoke_settings_updated(
-        self, agent_id: str, field_id: str, old_value: Any, new_value: Any
-    ) -> None:
+    async def _invoke_settings_updated(self, agent_id: str, field_id: str, old_value: Any, new_value: Any) -> None:
         cb = self._on_settings_updated
         if cb is None:
             return

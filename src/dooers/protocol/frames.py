@@ -50,6 +50,7 @@ class EventCreatePayload(BaseModel):
     thread_id: str | None = None
     client_event_id: str | None = None
     event: EventCreateEventPayload
+    metadata: dict[str, Any] | None = None
 
 
 class C2S_Connect(BaseModel):
@@ -355,9 +356,9 @@ class S2C_SettingsPatch(BaseModel):
 
 
 class SettingsPublicSchemaResultPayload(BaseModel):
-    """Same shape as the former HTTP GET /settings/schema body."""
+    model_config = {"populate_by_name": True}
 
-    schema: dict[str, Any]
+    schema_: dict[str, Any] = Field(alias="schema")
 
 
 class S2C_SettingsPublicSchemaResult(BaseModel):

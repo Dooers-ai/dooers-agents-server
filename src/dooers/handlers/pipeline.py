@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from dooers.exceptions import HandlerError
-from dooers.features.analytics.models import AnalyticsEvent
 from dooers.features.analytics.agent_analytics import AgentAnalytics
+from dooers.features.analytics.models import AnalyticsEvent
 from dooers.features.settings.agent_settings import AgentSettings
 from dooers.handlers.context import AgentContext
 from dooers.handlers.incoming import AgentIncoming
@@ -63,14 +63,37 @@ def _now() -> datetime:
 
 
 def _user_author_display(user: User) -> str | None:
-    """Display name for persisted user message events (Cosmos/Postgres `author` field)."""
+    """Display name for persisted user message events (Cosmos/Postgres `author` field).
+
+    Never falls back to `user_id` — for guests the id is an opaque `guest:<hex>`
+    token that is not meaningful to managers viewing the thread. Guest display
+    info arrives on the `User` already (enriched from thread metadata upstream).
+    """
     if user.user_name and str(user.user_name).strip():
         return str(user.user_name).strip()
     if user.user_email and str(user.user_email).strip():
         return str(user.user_email).strip()
-    if user.user_id and str(user.user_id).strip():
-        return str(user.user_id).strip()
     return None
+
+
+def _enrich_user_from_metadata(user: User, metadata: dict[str, Any] | None) -> User:
+    """Populate missing user_name / user_email from thread metadata.
+
+    Anonymous public-chat visitors supply name/email/phone via the pre-chat
+    form, which is persisted as thread metadata. The visitor's `User` object
+    (built from the validation webhook) has empty name/email — this helper
+    merges the metadata so stored events carry the visitor's display info.
+    """
+    if not metadata:
+        return user
+    patches: dict[str, Any] = {}
+    if not user.user_name and metadata.get("guest_name"):
+        patches["user_name"] = str(metadata["guest_name"])
+    if not user.user_email and metadata.get("guest_email"):
+        patches["user_email"] = str(metadata["guest_email"])
+    if not patches:
+        return user
+    return user.model_copy(update=patches)
 
 
 Handler = Callable[
@@ -93,6 +116,7 @@ class HandlerContext:
     data: dict[str, Any] | None = None
     client_event_id: str | None = None
     event_type: str = "message"
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.user is None:
@@ -133,18 +157,25 @@ class HandlerPipeline:
 
         if not thread_id:
             thread_id = _generate_id()
+            # Enrich with the metadata from this EventCreate (first message on
+            # a new thread carries the pre-chat form data). Owner/users get
+            # the visitor's display name/email so manager views don't show
+            # raw `guest:<hex>` ids.
+            enriched_user = _enrich_user_from_metadata(context.user, context.metadata)
             thread = Thread(
                 id=thread_id,
                 agent_id=context.agent_id,
                 organization_id=context.organization_id,
                 workspace_id=context.workspace_id,
-                owner=context.user,
-                users=[context.user],
+                owner=enriched_user,
+                users=[enriched_user],
                 title=context.thread_title,
+                metadata=context.metadata,
                 created_at=now,
                 updated_at=now,
                 last_event_at=now,
             )
+            context = replace(context, user=enriched_user)
             await self._persistence.create_thread(thread)
             is_new_thread = True
 
@@ -169,20 +200,27 @@ class HandlerPipeline:
             if thread:
                 if thread.agent_id != context.agent_id:
                     raise PermissionError(f"Thread {thread_id} belongs to different agent")
+                # Enrich the session user with the thread's stored guest
+                # metadata so subsequent messages persist the visitor's
+                # display name/email on each event.
+                context = replace(context, user=_enrich_user_from_metadata(context.user, thread.metadata))
             else:
                 # Auto-create thread for deterministic IDs (e.g., dispatch with pre-computed thread_id)
+                enriched_user = _enrich_user_from_metadata(context.user, context.metadata)
                 thread = Thread(
                     id=thread_id,
                     agent_id=context.agent_id,
                     organization_id=context.organization_id,
                     workspace_id=context.workspace_id,
-                    owner=context.user,
-                    users=[context.user],
+                    owner=enriched_user,
+                    users=[enriched_user],
                     title=context.thread_title,
+                    metadata=context.metadata,
                     created_at=now,
                     updated_at=now,
                     last_event_at=now,
                 )
+                context = replace(context, user=enriched_user)
                 await self._persistence.create_thread(thread)
                 is_new_thread = True
 
