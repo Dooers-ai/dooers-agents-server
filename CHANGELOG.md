@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] — 2026-04-23
+
+Patch release fixing a production bug in the Postgres worker-seed
+persistence path and improving observability around settings frames.
+
+### Fixed
+
+- **`agent_settings` seed-hash SQL referenced a non-existent `worker_id`
+  column.** `get_worker_seed_hash_bytes()` and
+  `set_worker_seed_hash_bytes()` in `persistence/postgres.py` now query
+  and upsert `seed_secret_hash` by `agent_id` (the table's primary key);
+  the worker UUID remains the stored value. Before this fix,
+  `settings.seed` frames failed after the WebSocket accepted them,
+  surfacing as 500s on seed rotation.
+
+### Changed
+
+- **`settings.seed` handler logs at INFO** on start, forbidden, and
+  completion so the rotation path is visible in production logs.
+- **WebSocket `handle` loop logs parse failures and unexpected errors at
+  WARNING with `exc_info=True`**, replacing the previous silent
+  swallow — unexpected frame errors now carry a full traceback.
+
+### Compatibility
+
+Fully backward compatible. No schema or wire changes.
+
 ## [0.9.0] — 2026-04-17
 
 Additive release focused on authentication and guest-visitor UX. The SDK
