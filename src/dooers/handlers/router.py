@@ -1003,6 +1003,14 @@ class Router:
         If AGENT_SEED_SECRET is set, it can still authorize (bootstrap / legacy).
         """
         worker_id = frame.payload.worker_id
+        raw_values = frame.payload.values
+        value_keys = list(raw_values.keys()) if isinstance(raw_values, dict) else []
+        logger.info(
+            "[agents] settings.seed received worker_id=%s value_key_count=%d keys=%s",
+            worker_id,
+            len(value_keys),
+            value_keys,
+        )
         incoming = frame.payload.seed_secret.encode("utf-8")
 
         stored = await self._persistence.get_worker_seed_hash_bytes(worker_id)
@@ -1020,6 +1028,10 @@ class Router:
             authorized = len(frame.payload.seed_secret) > 0
 
         if not authorized:
+            logger.warning(
+                "[agents] settings.seed forbidden (invalid seed_secret) worker_id=%s",
+                worker_id,
+            )
             await self._send_ack(
                 ws,
                 frame.id,
@@ -1035,3 +1047,4 @@ class Router:
         await self._persistence.set_worker_seed_hash_bytes(worker_id, new_hash)
 
         await self._send_ack(ws, frame.id)
+        logger.info("[agents] settings.seed completed (ack ok) worker_id=%s", worker_id)

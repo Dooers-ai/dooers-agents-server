@@ -1043,7 +1043,7 @@ class PostgresPersistence:
         table = f"{self._prefix}settings"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT seed_secret_hash FROM {table} WHERE worker_id = $1",
+                f"SELECT seed_secret_hash FROM {table} WHERE agent_id = $1",
                 worker_id,
             )
         if row is None:
@@ -1060,9 +1060,9 @@ class PostgresPersistence:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
-                INSERT INTO {table} (worker_id, values, seed_secret_hash, created_at, updated_at)
+                INSERT INTO {table} (agent_id, values, seed_secret_hash, created_at, updated_at)
                 VALUES ($1, '{{}}'::jsonb, $2, $3, $4)
-                ON CONFLICT(worker_id) DO UPDATE SET
+                ON CONFLICT(agent_id) DO UPDATE SET
                     seed_secret_hash = EXCLUDED.seed_secret_hash,
                     updated_at = EXCLUDED.updated_at
                 """,
