@@ -38,6 +38,8 @@ from dooers.settings import (
 from dooers.upload_store import UploadStore
 
 logger = logging.getLogger(__name__)
+# Same namespace the Router uses, so handle-loop diagnostics show up in apps that tune `agents`.
+_agents = logging.getLogger("agents")
 
 
 class AgentServer:
@@ -235,12 +237,28 @@ class AgentServer:
         try:
             while True:
                 data = await websocket.receive_text()
-                frame = parse_frame(data)
+                try:
+                    frame = parse_frame(data)
+                except Exception as e:
+                    _agents.warning(
+                        "failed to parse WebSocket C2S frame: len=%d err=%s",
+                        len(data),
+                        e,
+                        exc_info=True,
+                    )
+                    raise
                 await router.route(websocket, frame)
         except Exception as e:
-            error_name = type(e).__name__
-            if error_name not in ("WebSocketDisconnect", "ConnectionClosedOK", "ConnectionClosedError"):
-                logger.debug("[agents] websocket connection error: %s: %s", error_name, e)
+            name = type(e).__name__
+            if name in ("WebSocketDisconnect", "ConnectionClosedOK", "ConnectionClosedError"):
+                logger.debug("websocket client disconnected (%s)", name)
+            else:
+                _agents.warning(
+                    "WebSocket handle loop error: %s: %s",
+                    name,
+                    e,
+                    exc_info=True,
+                )
         finally:
             await router.cleanup()
 
