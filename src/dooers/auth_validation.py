@@ -5,12 +5,35 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from dooers.protocol.models import ConnectionContext, User
 
 logger = logging.getLogger("agents")
+
+# Temporary defense: the validation_url claim is unsigned from the SDK's
+# perspective, so an honest client could be tricked into forging a token that
+# points the SDK at an attacker-controlled host. Allow only https URLs whose
+# host is dooers.ai or a subdomain. A real fix (signature verification or a
+# trusted authoritative resolver) is coming with the upcoming auth rework.
+_ALLOWED_VALIDATION_HOST_SUFFIXES = ("dooers.ai",)
+
+
+def _is_allowed_validation_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    if parsed.username or parsed.password:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return any(host == suffix or host.endswith("." + suffix) for suffix in _ALLOWED_VALIDATION_HOST_SUFFIXES)
 
 
 def _extract_jwt_validation_url(token: str) -> str | None:
@@ -66,6 +89,9 @@ class AuthValidationClient:
         if auth_token:
             jwt_url = _extract_jwt_validation_url(auth_token)
             if jwt_url:
+                if not _is_allowed_validation_url(jwt_url):
+                    logger.warning("[auth-validation] rejected validation_url host: %s", jwt_url)
+                    return AuthValidationResult(valid=False, reason="validation_url_not_allowed")
                 return await self._validate_jwt(auth_token=auth_token, validation_url=jwt_url)
 
         # Fallback: opaque session tokens use the configured auth_validation_url.

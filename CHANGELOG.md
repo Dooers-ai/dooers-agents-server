@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] — 2026-04-27
+
+Security patch hardening JWT-driven validation URL handling. The SDK
+extracts `validation_url` from the JWT payload without verifying the
+token signature, so an honest client could be tricked into pointing the
+SDK at an attacker-controlled host. This release adds a strict allowlist
+on the host in that claim. A full fix (signature verification or a
+trusted authoritative resolver) is coming with the upcoming auth rework.
+
+### Security
+
+- **`AuthValidationClient.validate()` now rejects any `validation_url`
+  whose host is not `dooers.ai` or a `*.dooers.ai` subdomain**, requires
+  `https`, and disallows URLs containing userinfo. Rejected URLs are
+  logged and surface as `reason="validation_url_not_allowed"` without
+  any outbound HTTP call. The operator-configured legacy validation URL
+  is unaffected.
+
+### Compatibility
+
+Fully backward compatible for legitimate dashboard JWTs minted by
+`dooers-service-core`, which always point at `*.dooers.ai`.
+
 ## [0.9.1] — 2026-04-23
 
 Patch release fixing a production bug in the Postgres worker-seed
