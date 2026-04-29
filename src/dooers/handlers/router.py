@@ -29,6 +29,7 @@ from dooers.protocol.frames import (
     C2S_SettingsPatch,
     C2S_SettingsPublicSchema,
     C2S_SettingsSeed,
+    C2S_SettingsMergeServiceSecrets,
     C2S_SettingsSubscribe,
     C2S_SettingsUnsubscribe,
     C2S_ThreadDelete,
@@ -94,6 +95,18 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _resolve_channel(metadata: dict[str, Any] | None) -> tuple[str, dict[str, Any] | None]:
+    if not isinstance(metadata, dict):
+        return "dooers-platform", None
+    raw = metadata.get("channel")
+    channel = str(raw).strip() if raw is not None else ""
+    if not channel:
+        channel = "dooers-platform"
+    raw_meta = metadata.get("channel_meta")
+    channel_meta = raw_meta if isinstance(raw_meta, dict) else None
+    return channel, channel_meta
+
+
 def _can_access_creator_settings(user: User, *, agent_owner_user_id: str | None) -> bool:
     """Creator-level settings: org owner/manager, or the platform agent owner user."""
     if user.organization_role in ("owner", "manager"):
@@ -124,6 +137,7 @@ class Router:
         content_policy_denial_message: str | None = None,
         hydrate_thread_events_for_client: (Callable[[list[ThreadEvent], Thread], Awaitable[list[ThreadEvent]]] | None) = None,
         agent_config: AgentConfig | None = None,
+        whatsapp_outbound: Any = None,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -154,6 +168,7 @@ class Router:
 
         self._hydrate_thread_events = hydrate_thread_events_for_client
         self._agent_config = agent_config
+        self._whatsapp_outbound = whatsapp_outbound
 
         self._pipeline = HandlerPipeline(
             persistence=persistence,
@@ -166,6 +181,7 @@ class Router:
             allowed_content_types=allowed_content_types,
             content_policy_denial_message=content_policy_denial_message,
             agent_config=agent_config,
+            whatsapp_outbound=whatsapp_outbound,
         )
 
     async def _hydrate_events_for_client(
@@ -285,6 +301,8 @@ class Router:
                 await self._handle_settings_public_schema(ws, frame)
             case C2S_SettingsSeed():
                 await self._handle_settings_seed(ws, frame)
+            case C2S_SettingsMergeServiceSecrets():
+                await self._handle_settings_merge_service_secrets(ws, frame)
 
     async def cleanup(self) -> None:
         logger.info(
@@ -644,19 +662,29 @@ class Router:
 
         user = self._user or User(user_id="")
 
+        raw_metadata = frame.payload.metadata if isinstance(frame.payload.metadata, dict) else None
+        channel, channel_meta = _resolve_channel(raw_metadata)
+        logger.debug(
+            "[agents] event.create channel resolved thread_id=%s channel=%s has_channel_meta=%s",
+            frame.payload.thread_id,
+            channel,
+            bool(channel_meta),
+        )
         context = HandlerContext(
             handler=self._handler,
             agent_id=self._agent_id,
             message="",
             organization_id=self._organization_id,
             workspace_id=self._workspace_id,
+            channel=channel,
+            channel_meta=channel_meta,
             user=user,
             thread_id=frame.payload.thread_id,
             content=content_parts,
             data=frame.payload.event.data,
             client_event_id=frame.payload.client_event_id,
             event_type=frame.payload.event.type,
-            metadata=frame.payload.metadata if not frame.payload.thread_id else None,
+            metadata=raw_metadata if not frame.payload.thread_id else None,
         )
 
         try:
@@ -1060,6 +1088,59 @@ class Router:
         )
         await self._send(ws, result)
 
+    async def _seed_secret_authorized(self, worker_id: str, seed_secret: str) -> bool:
+        incoming = seed_secret.encode("utf-8")
+        stored = await self._persistence.get_worker_seed_hash_bytes(worker_id)
+        bootstrap = (self._agent_seed_secret or "").strip()
+
+        if stored is not None:
+            if bcrypt.checkpw(incoming, stored):
+                return True
+            if bootstrap and seed_secret == bootstrap:
+                return True
+            return False
+        if bootstrap:
+            return seed_secret == bootstrap
+        return len(seed_secret) > 0
+
+    async def _handle_settings_merge_service_secrets(
+        self,
+        ws: WebSocketProtocol,
+        frame: C2S_SettingsMergeServiceSecrets,
+    ) -> None:
+        worker_id = frame.payload.worker_id
+        patch = frame.payload.patch or {}
+        patch_keys = list(patch.keys())
+        logger.info(
+            "[agents] settings.merge_service_secrets worker_id=%s patch_keys=%s",
+            worker_id,
+            patch_keys,
+        )
+        if not patch:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "INVALID", "message": "patch must not be empty"},
+            )
+            return
+
+        if not await self._seed_secret_authorized(worker_id, frame.payload.seed_secret):
+            logger.warning(
+                "[agents] settings.merge_service_secrets forbidden (invalid seed_secret) worker_id=%s",
+                worker_id,
+            )
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Invalid seed_secret"},
+            )
+            return
+
+        await self._persistence.merge_service_secrets(worker_id, patch)
+        await self._send_ack(ws, frame.id)
+
     async def _handle_settings_seed(
         self,
         ws: WebSocketProtocol,
@@ -1080,23 +1161,7 @@ class Router:
             len(value_keys),
             value_keys,
         )
-        incoming = frame.payload.seed_secret.encode("utf-8")
-
-        stored = await self._persistence.get_worker_seed_hash_bytes(worker_id)
-        bootstrap = (self._agent_seed_secret or "").strip()
-
-        authorized = False
-        if stored is not None:
-            if bcrypt.checkpw(incoming, stored):
-                authorized = True
-            elif bootstrap and frame.payload.seed_secret == bootstrap:
-                authorized = True
-        elif bootstrap:
-            authorized = frame.payload.seed_secret == bootstrap
-        else:
-            authorized = len(frame.payload.seed_secret) > 0
-
-        if not authorized:
+        if not await self._seed_secret_authorized(worker_id, frame.payload.seed_secret):
             logger.warning(
                 "[agents] settings.seed forbidden (invalid seed_secret) worker_id=%s",
                 worker_id,

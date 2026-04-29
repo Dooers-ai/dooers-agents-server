@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -710,20 +711,64 @@ class CosmosPersistence:
         container = self._get_container("settings")
         now = datetime.now(UTC)
         values: dict[str, Any] = {}
+        services_secrets: dict[str, Any] = {}
         try:
             item = await container.read_item(worker_id, partition_key=worker_id)
             values = item.get("values") or {}
+            raw_ss = item.get("services_secrets") or {}
+            if isinstance(raw_ss, str):
+                services_secrets = json.loads(raw_ss)
+            elif isinstance(raw_ss, dict):
+                services_secrets = dict(raw_ss)
         except CosmosResourceNotFoundError:
             pass
 
-        doc = {
+        doc: dict[str, Any] = {
             "id": worker_id,
             "agent_id": worker_id,
             "values": values,
             "seed_hash_b64": base64.b64encode(secret_hash).decode("ascii"),
             "updated_at": now.isoformat(),
+            "services_secrets": services_secrets,
         }
         await container.upsert_item(doc)
+
+    async def get_service_secrets(self, agent_id: str) -> dict[str, Any]:
+        container = self._get_container("settings")
+        try:
+            item = await container.read_item(agent_id, partition_key=agent_id)
+            raw = item.get("services_secrets") or {}
+            if isinstance(raw, str):
+                return json.loads(raw)
+            return dict(raw)
+        except CosmosResourceNotFoundError:
+            return {}
+
+    async def merge_service_secrets(self, agent_id: str, patch: dict[str, str]) -> datetime:
+        container = self._get_container("settings")
+        now = datetime.now(UTC)
+        current = await self.get_service_secrets(agent_id)
+        current.update(patch)
+        values: dict[str, Any] = {}
+        seed_b64: str | None = None
+        try:
+            item = await container.read_item(agent_id, partition_key=agent_id)
+            values = item.get("values") or {}
+            seed_b64 = item.get("seed_hash_b64")
+        except CosmosResourceNotFoundError:
+            pass
+
+        doc: dict[str, Any] = {
+            "id": agent_id,
+            "agent_id": agent_id,
+            "values": values,
+            "services_secrets": current,
+            "updated_at": now.isoformat(),
+        }
+        if seed_b64:
+            doc["seed_hash_b64"] = seed_b64
+        await container.upsert_item(doc)
+        return now
 
     async def insert_analytics_events(self, events: list[AnalyticsEventPayload]) -> None:
         if not events:

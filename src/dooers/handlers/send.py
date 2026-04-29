@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass
@@ -9,7 +9,101 @@ class AgentEvent:
     data: dict
 
 
+class _WhatsappSend:
+    """``send.whatsapp.*`` — same send_types as :class:`AgentSend` plus ``data['whatsapp']``."""
+
+    def __init__(self, base: "AgentSend") -> None:
+        self._b = base
+
+    @staticmethod
+    def _tag(
+        event: AgentEvent, *, to_e164: str, instance_id: str, extra: dict[str, Any] | None = None
+    ) -> AgentEvent:
+        w = {"to_e164": to_e164, "instance_id": instance_id}
+        if extra:
+            w.update(extra)
+        event.data = {**event.data, "whatsapp": w}
+        return event
+
+    def text(
+        self, text: str, *, to_e164: str, instance_id: str, author: str | None = None
+    ) -> AgentEvent:
+        return self._tag(self._b.text(text, author=author), to_e164=to_e164, instance_id=instance_id)
+
+    def image(
+        self,
+        url: str,
+        to_e164: str,
+        instance_id: str,
+        *,
+        mime_type: str | None = None,
+        alt: str | None = None,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return self._tag(
+            self._b.image(url, mime_type=mime_type, alt=alt, author=author),
+            to_e164=to_e164,
+            instance_id=instance_id,
+        )
+
+    def document(
+        self,
+        url: str,
+        filename: str,
+        mime_type: str,
+        to_e164: str,
+        instance_id: str,
+        *,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return self._tag(
+            self._b.document(url, filename=filename, mime_type=mime_type, author=author),
+            to_e164=to_e164,
+            instance_id=instance_id,
+        )
+
+    def audio(
+        self,
+        url: str,
+        to_e164: str,
+        instance_id: str,
+        *,
+        mime_type: str,
+        duration: float | None = None,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return self._tag(
+            self._b.audio(url, mime_type=mime_type, duration=duration, author=author),
+            to_e164=to_e164,
+            instance_id=instance_id,
+        )
+
+    def contact(
+        self,
+        to_e164: str,
+        instance_id: str,
+        *,
+        display_name: str,
+        vcard: str | None = None,
+        phones: list[dict] | None = None,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return self._tag(
+            self._b.contact(
+                display_name=display_name,
+                vcard=vcard,
+                phones=phones,
+                author=author,
+            ),
+            to_e164=to_e164,
+            instance_id=instance_id,
+        )
+
+
 class AgentSend:
+    def __init__(self) -> None:
+        self.whatsapp = _WhatsappSend(self)
+
     def text(self, text: str, author: str | None = None) -> AgentEvent:
         return AgentEvent(
             send_type="text",
@@ -50,6 +144,24 @@ class AgentSend:
         return AgentEvent(
             send_type="audio",
             data={"url": url, "mime_type": mime_type, "duration": duration, "author": author},
+        )
+
+    def contact(
+        self,
+        *,
+        display_name: str,
+        vcard: str | None = None,
+        phones: list[dict] | None = None,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return AgentEvent(
+            send_type="contact",
+            data={
+                "display_name": display_name,
+                "vcard": vcard,
+                "phones": phones or [],
+                "author": author,
+            },
         )
 
     def tool_call(

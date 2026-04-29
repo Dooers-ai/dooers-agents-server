@@ -1,30 +1,35 @@
-"""WhatsApp webhook using dispatch().
+"""WhatsApp-style webhook using ``dispatch()`` with tools-shaped ``User`` and ``thread_id``.
 
-External webhook flow:
-- Phone → customer lookup → resolve org/workspace context
-- Find or create thread per phone/agent
-- Dispatch handler with explicit context
-- Stream events back, forward text replies to WhatsApp
+- Bridge/tools POST ``message`` + ``content`` + tenant fields; you derive
+  ``thread_id = whatsapp_thread_id(phone)`` and ``User(user_id=e164, …)`` as in
+  :mod:`dooers.features.channels.whatsapp`.
+- For assistant replies to the phone, use ``send.whatsapp.*``; for UI-only, use
+  ``send.text`` and friends.
+- Configure a real :class:`dooers.AgentConfig` with ``database_type=postgres`` (or
+  ``cosmos``) for production; set ``AGENT_DATABASE_*`` env vars locally.
 """
 
 import logging
+import os
 
 from fastapi import FastAPI, Request, WebSocket
 
-from dooers import AgentConfig, AgentServer
+from dooers import AgentConfig, AgentServer, User, normalize_e164, whatsapp_thread_id
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 agent_server = AgentServer(
     AgentConfig(
-        database_type="sqlite",
-        database_name="agent.db",
+        database_type="postgres",
+        database_host=os.environ.get("AGENT_DATABASE_HOST", "localhost"),
+        database_port=int(os.environ.get("AGENT_DATABASE_PORT", "5432")),
+        database_user=os.environ.get("AGENT_DATABASE_USER", "postgres"),
+        database_name=os.environ.get("AGENT_DATABASE_NAME", "dooers_agent"),
+        database_password=os.environ.get("AGENT_DATABASE_PASSWORD", ""),
         assistant_name="WhatsApp Bot",
     )
 )
-
-# --- Simulated external services ---
 
 CUSTOMER_DB: dict[str, dict] = {
     "+5511999990001": {
@@ -40,79 +45,75 @@ CUSTOMER_DB: dict[str, dict] = {
 }
 
 
-def get_customer(phone: str) -> dict | None:
-    return CUSTOMER_DB.get(phone)
-
-
-async def send_whatsapp_message(phone: str, text: str) -> None:
-    logger.info("[whatsapp] -> %s: %s", phone, text[:80])
-
-
-# --- Handler (same API for both WebSocket and dispatch) ---
-
-
 async def whatsapp_handler(incoming, send, memory, analytics, settings):
     yield send.run_start(agent_id="whatsapp-echo")
-    yield send.text(f"Echo: {incoming.message}")
-    yield send.update_thread(title=incoming.message[:60])
+    instance_id = os.environ.get("DEMO_WA_INSTANCE_ID", "demo-instance")
+    to_phone = incoming.context.user.user_id
+    try:
+        e164 = normalize_e164(to_phone)
+    except ValueError:
+        e164 = to_phone
+    # Set ``AgentConfig(dooers_whatsapp_service=True)`` and ``DOOERS_WHATSAPP_SERVICE_SECRET`` (optional ``DOOERS_WHATSAPP_TOOLS_BASE``). Here: ``send.whatsapp`` vs ``send.text``.
+    yield send.whatsapp.text(
+        f"Echo (WA): {incoming.message}",
+        to_e164=e164,
+        instance_id=instance_id,
+    )
+    yield send.text(f"Echo (UI only): {incoming.message}")
+    yield send.update_thread(title=(incoming.message or "")[:60])
     yield send.run_end()
-
-
-# --- Webhook endpoint (dispatch) ---
 
 
 @app.post("/webhook/{agent_id}")
 async def webhook(agent_id: str, request: Request):
     body = await request.json()
-    phone = body.get("phone", "")
-    text = body.get("text", "")
+    phone = (body.get("user_id") or body.get("phone") or "").strip()
+    if not phone:
+        return {"status": "ignored", "reason": "missing user_id"}
+    try:
+        e164 = normalize_e164(phone)
+    except ValueError:
+        return {"status": "ignored", "reason": "invalid_e164"}
+    try:
+        text = (body.get("message") or body.get("text") or "").strip()
+    except Exception:
+        text = ""
+    if not text and not body.get("content"):
+        return {"status": "ignored", "reason": "no message or content"}
+    content = body.get("content")
+    if content is not None and not isinstance(content, list):
+        return {"status": "ignored", "reason": "invalid content"}
 
-    if not phone or not text:
-        return {"status": "ignored"}
-
-    customer = get_customer(phone)
+    customer = CUSTOMER_DB.get(e164)
     if not customer:
         return {"status": "unknown_customer"}
 
-    organization_id = customer["organization_id"]
-    workspace_id = customer["workspace_id"]
-    customer_name = customer.get("name", phone)
+    organization_id = body.get("organization_id") or customer["organization_id"]
+    workspace_id = body.get("workspace_id") or customer["workspace_id"]
+    display_name = body.get("user_name") or customer.get("name") or e164
+    user = User(user_id=e164, user_name=display_name)
+    thread_id = whatsapp_thread_id(e164)
 
-    # Find existing thread for this phone/agent
-    repo = await agent_server.repository()
-    threads = await repo.list_threads(
-        filter={
-            "agent_id": agent_id,
-            "organization_id": organization_id,
-            "workspace_id": workspace_id,
-            "user_id": phone,
-        },
-        limit=1,
-    )
-    thread_id = threads[0].id if threads else None
-
-    # Dispatch handler with explicit context
     stream = await agent_server.dispatch(
-        handler=whatsapp_handler,
+        whatsapp_handler,
         agent_id=agent_id,
         organization_id=organization_id,
         workspace_id=workspace_id,
         message=text,
-        user_id=phone,
-        user_name=customer_name,
+        user=user,
         thread_id=thread_id,
-        thread_title=f"WhatsApp: {customer_name}" if not thread_id else None,
+        thread_title=f"WhatsApp: {display_name}",
+        content=content,
     )
 
-    # Stream events, forward text replies to WhatsApp
-    async for event in stream:
-        if event.send_type == "text":
-            await send_whatsapp_message(phone, event.data["text"])
+    async for _ in stream:
+        pass
 
-    return {"status": "ok", "thread_id": stream.thread_id, "is_new": stream.is_new_thread}
-
-
-# --- WebSocket for dashboard monitoring ---
+    return {
+        "status": "ok",
+        "thread_id": stream.thread_id,
+        "is_new": stream.is_new_thread,
+    }
 
 
 @app.websocket("/ws")
