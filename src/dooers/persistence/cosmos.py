@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import uuid
@@ -620,6 +621,14 @@ class CosmosPersistence:
                 field_id,
             )
 
+    def _schedule_settings_updated(self, agent_id: str, field_id: str, old_value: Any, new_value: Any) -> None:
+        if self._on_settings_updated is None:
+            return
+        asyncio.create_task(
+            self._invoke_settings_updated(agent_id, field_id, old_value, new_value),
+            name=f"settings_updated:{agent_id}:{field_id}",
+        )
+
     async def get_settings(self, agent_id: str) -> dict[str, Any]:
         container = self._get_container("settings")
 
@@ -646,7 +655,7 @@ class CosmosPersistence:
         await self._merge_settings_doc_seed_hash(container, agent_id, doc)
 
         await container.upsert_item(doc)
-        await self._invoke_settings_updated(agent_id, field_id, old_value, value)
+        self._schedule_settings_updated(agent_id, field_id, old_value, value)
         return now
 
     async def set_settings(self, agent_id: str, values: dict[str, Any]) -> datetime:
@@ -664,11 +673,18 @@ class CosmosPersistence:
 
         await container.upsert_item(doc)
         if self._on_settings_updated:
-            for key in set(old_values) | set(values):
-                ov = old_values.get(key)
-                nv = values.get(key)
-                if ov != nv:
-                    await self._invoke_settings_updated(agent_id, key, ov, nv)
+
+            async def _run_changed_field_hooks() -> None:
+                for key in set(old_values) | set(values):
+                    ov = old_values.get(key)
+                    nv = values.get(key)
+                    if ov != nv:
+                        await self._invoke_settings_updated(agent_id, key, ov, nv)
+
+            asyncio.create_task(
+                _run_changed_field_hooks(),
+                name=f"settings_updated_batch:{agent_id}",
+            )
         return now
 
     async def _merge_settings_doc_seed_hash(self, container, agent_id: str, doc: dict[str, Any]) -> None:

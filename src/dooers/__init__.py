@@ -1,7 +1,7 @@
 from dooers.broadcast import BroadcastManager
 from dooers.config import AgentConfig, OnSettingsUpdated
 from dooers.dispatch import DispatchStream
-from dooers.exceptions import DispatchError, HandlerError
+from dooers.exceptions import DispatchError, HandlerError, UnsupportedContentTypeError
 from dooers.features.analytics import (
     AgentAnalytics,
     AnalyticsBatch,
@@ -19,11 +19,13 @@ from dooers.features.settings import (
     SettingsSchema,
     SettingsSelectOption,
 )
+from dooers.handlers.content_policy import normalize_allowed_content_types
 from dooers.handlers.context import AgentContext
 from dooers.handlers.incoming import AgentIncoming
 from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import Handler, UploadReferenceError
 from dooers.handlers.send import AgentSend
+from dooers.llm import format_user_input
 from dooers.persistence.base import Persistence
 from dooers.protocol.models import (
     Actor,
@@ -69,8 +71,11 @@ __all__ = [
     "DispatchStream",
     "DispatchError",
     "HandlerError",
+    "UnsupportedContentTypeError",
     "UploadReferenceError",
+    "normalize_allowed_content_types",
     "Handler",
+    "format_user_input",
     # Repository
     "Repository",
     # Protocol models

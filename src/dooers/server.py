@@ -13,6 +13,7 @@ from dooers.features.analytics.agent_analytics import AgentAnalytics
 from dooers.features.analytics.collector import AnalyticsCollector
 from dooers.features.settings.agent_settings import AgentSettings
 from dooers.features.settings.broadcaster import SettingsBroadcaster
+from dooers.handlers.content_policy import normalize_allowed_content_types
 from dooers.handlers.memory import AgentMemory
 from dooers.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.handlers.router import Handler, Router, WebSocketProtocol
@@ -26,7 +27,7 @@ from dooers.protocol.frames import (
     S2C_ThreadUpsert,
     ThreadUpsertPayload,
 )
-from dooers.protocol.models import User, WireC2S_ContentPart
+from dooers.protocol.models import Thread, ThreadEvent, User, WireC2S_ContentPart
 from dooers.protocol.parser import parse_frame, serialize_frame
 from dooers.registry import ConnectionRegistry
 from dooers.repository import Repository
@@ -34,6 +35,10 @@ from dooers.settings import (
     ANALYTICS_BATCH_SIZE,
     ANALYTICS_FLUSH_INTERVAL,
     ANALYTICS_WEBHOOK_URL,
+)
+from dooers.storage.chat_upload_file_policy import (
+    PERSIST_CHAT_ATTACHMENTS_FIELD,
+    enforce_allowed_chat_file_kind,
 )
 from dooers.upload_store import UploadStore
 
@@ -45,6 +50,8 @@ _agents = logging.getLogger("agents")
 class AgentServer:
     def __init__(self, config: AgentConfig):
         self._config = config
+        self._allowed_content_types = normalize_allowed_content_types(config.allowed_content_types)
+        self._content_policy_denial_message = (config.content_policy_denial_message or "").strip() or None
         self._persistence: Persistence | None = None
         self._initialized = False
 
@@ -62,6 +69,15 @@ class AgentServer:
         self._settings_broadcaster: SettingsBroadcaster | None = None
         self._auth_validator: AuthValidationClient | None = None
         self._guest_cleanup_task: asyncio.Task | None = None
+
+    async def _hydrate_thread_events_impl(
+        self,
+        events: list[ThreadEvent],
+        thread: Thread,
+    ) -> list[ThreadEvent]:
+        from dooers.storage.hydrate import hydrate_thread_events
+
+        return await hydrate_thread_events(self._config, events, thread)
 
     @property
     def registry(self) -> ConnectionRegistry:
@@ -86,6 +102,104 @@ class AgentServer:
     @property
     def upload_store(self) -> UploadStore | None:
         return self._upload_store
+
+    @property
+    def allowed_content_types(self) -> frozenset[str] | None:
+        """Normalized allowlist from :class:`~dooers.config.AgentConfig` (``None`` = no allowlist)."""
+
+        return self._allowed_content_types
+
+    @property
+    def store_chat_uploads(self) -> bool:
+        return bool(getattr(self._config, "store_chat_uploads", False))
+
+    @property
+    def upload_max_size_bytes(self) -> int:
+        return int(getattr(self._config, "upload_max_size_bytes", 25 * 1024 * 1024))
+
+    async def chat_upload(
+        self,
+        *,
+        data: bytes,
+        filename: str,
+        mime_type: str,
+        agent_id: str,
+        thread_id: str | None = None,
+        source: str = "chat",
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Stage bytes for WS ``ref_id``, then optionally persist to chat artifact storage.
+
+        Durable write runs only when creator ``persist_chat_attachments``, ops
+        ``store_chat_uploads``, and configured GCS/Azure are all satisfied.
+        """
+        aid = (agent_id or "").strip()
+        if not aid:
+            raise ValueError("agent_id is required")
+        if not data:
+            raise ValueError("empty file")
+
+        cfg = self._config
+        creator_persist = False
+        try:
+            settings_api = await self.settings(aid)
+            merged = await settings_api.get_all()
+            creator_persist = bool(merged.get(PERSIST_CHAT_ATTACHMENTS_FIELD))
+        except Exception:
+            logger.exception("persist_chat_attachments read failed for agent_id=%s", aid)
+
+        if creator_persist:
+            enforce_allowed_chat_file_kind(
+                filename=filename,
+                mime_type=mime_type,
+                allowed_raw=getattr(cfg, "allowed_content_types", None),
+            )
+
+        ref_id = await self.upload(data=data, filename=filename, mime_type=mime_type)
+        out: dict[str, Any] = {
+            "ref_id": ref_id,
+            "mime_type": mime_type,
+            "filename": filename,
+            "size_bytes": len(data),
+            "size": len(data),
+            "public_url": None,
+        }
+
+        write_durable = (
+            creator_persist
+            and bool(getattr(cfg, "store_chat_uploads", False))
+        )
+        logger.info(
+            "[uploads] durable=%s agent=%s thread=%s source=%s run_id=%s",
+            write_durable,
+            aid,
+            thread_id,
+            source,
+            run_id,
+        )
+        if not write_durable:
+            return out
+
+        from dooers.storage.chat_artifacts import chat_storage_service_ready, put_chat_artifact
+
+        if not chat_storage_service_ready(cfg):
+            return out
+        try:
+            uri, object_key = put_chat_artifact(
+                cfg,
+                data=data,
+                content_type=mime_type,
+                agent_id=aid,
+                thread_id=thread_id,
+                ref_id=ref_id,
+                filename=filename,
+            )
+            if uri:
+                out["artifact_uri"] = uri
+                out["object_key"] = object_key
+        except Exception:
+            logger.exception("Chat artifact blob upload failed; ref_id still valid in-process")
+        return out
 
     async def upload(self, data: bytes, filename: str, mime_type: str) -> str:
         """Stage a file for a future WebSocket event.create. Returns a reference ID."""
@@ -232,6 +346,10 @@ class AgentServer:
             settings_ws_context=self._settings_ws_context,
             upload_store=self._upload_store,
             auth_validator=self._auth_validator,
+            allowed_content_types=self._allowed_content_types,
+            content_policy_denial_message=self._content_policy_denial_message,
+            hydrate_thread_events_for_client=self._hydrate_thread_events_impl,
+            agent_config=self._config,
         )
 
         try:
@@ -284,6 +402,9 @@ class AgentServer:
             settings_schema=self._config.settings_schema,
             assistant_name=self._config.assistant_name,
             upload_store=self._upload_store,
+            allowed_content_types=self._allowed_content_types,
+            content_policy_denial_message=self._content_policy_denial_message,
+            agent_config=self._config,
         )
 
         context = HandlerContext(
@@ -399,11 +520,16 @@ class AgentServer:
                 payload=ThreadUpsertPayload(thread=payload["thread"]),
             )
         elif payload_type == "event.append":
+            evs = payload["events"]
+            tid = payload["thread_id"]
+            thr = await self._persistence.get_thread(tid)
+            if thr is not None:
+                evs = await self._hydrate_thread_events_impl(evs, thr)
             frame = S2C_EventAppend(
                 id=str(uuid.uuid4()),
                 payload=EventAppendPayload(
-                    thread_id=payload["thread_id"],
-                    events=payload["events"],
+                    thread_id=tid,
+                    events=evs,
                 ),
             )
         elif payload_type == "run.upsert":

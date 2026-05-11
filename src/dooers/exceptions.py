@@ -1,3 +1,12 @@
+class UnsupportedContentTypeError(Exception):
+    """Raised when ingest cannot decode a ``ContentPart`` (e.g. video or unknown ``type``).
+
+    The router maps this to a failed ``event.create`` ack **before** the user message exists.
+    For chat allowlist mismatches (:class:`~dooers.config.AgentConfig.allowed_content_types`),
+    prefer the pipeline assistant policy reply (persisted assistant text) rather than raising this error.
+    """
+
+
 class DispatchError(Exception):
     """Raised during dispatch setup phase.
 

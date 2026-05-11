@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from dooers.exceptions import HandlerError
+from dooers.config import AgentConfig
+from dooers.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.features.analytics.agent_analytics import AgentAnalytics
 from dooers.features.analytics.models import AnalyticsEvent
 from dooers.features.settings.agent_settings import AgentSettings
+from dooers.handlers.content_policy import format_allowed_content_policy_denial
 from dooers.handlers.context import AgentContext
 from dooers.handlers.incoming import AgentIncoming
 from dooers.handlers.memory import AgentMemory
@@ -40,12 +44,19 @@ from dooers.protocol.models import (
     WireS2C_TextPart,
     deserialize_s2c_part,
 )
+from dooers.storage.chat_artifacts import (
+    chat_storage_service_ready,
+    promote_orphan_chat_artifact_if_present,
+    try_fetch_upload_entry_from_blob,
+)
 
 if TYPE_CHECKING:
     from dooers.features.analytics.collector import AnalyticsCollector
     from dooers.features.settings.broadcaster import SettingsBroadcaster
     from dooers.features.settings.models import SettingsSchema
     from dooers.upload_store import UploadStore
+
+from dooers.upload_store import UploadEntry
 
 logger = logging.getLogger("agents")
 
@@ -141,6 +152,9 @@ class HandlerPipeline:
         settings_schema: SettingsSchema | None = None,
         assistant_name: str = "Assistant",
         upload_store: UploadStore | None = None,
+        allowed_content_types: frozenset[str] | None = None,
+        content_policy_denial_message: str | None = None,
+        agent_config: AgentConfig | None = None,
     ):
         self._persistence = persistence
         self._broadcast_callback = broadcast_callback
@@ -149,6 +163,9 @@ class HandlerPipeline:
         self._settings_schema = settings_schema
         self._assistant_name = assistant_name
         self._upload_store = upload_store
+        self._allowed_content_types = allowed_content_types
+        self._content_policy_denial_message = (content_policy_denial_message or "").strip() or None
+        self._agent_config = agent_config
 
     async def setup(self, context: HandlerContext) -> PipelineResult:
         now = _now()
@@ -242,7 +259,11 @@ class HandlerPipeline:
                 )
 
         if context.content:
-            handler_parts, storage_parts = self._resolve_content_parts(context.content)
+            handler_parts, storage_parts = await self._resolve_content_parts_async(
+                context.content,
+                agent_id=context.agent_id,
+                thread_id=thread_id,
+            )
         else:
             text = context.message or ""
             handler_parts = [TextPart(text=text)]
@@ -293,6 +314,7 @@ class HandlerPipeline:
         message = self._extract_message(handler_content)
         agent_context = AgentContext(
             thread_id=thread_id,
+            agent_id=context.agent_id,
             event_id=result.user_event.id,
             organization_id=context.organization_id,
             workspace_id=context.workspace_id,
@@ -328,8 +350,26 @@ class HandlerPipeline:
         current_run_id: str | None = None
         current_agent_id: str | None = None
 
+        policy_denial: str | None = None
+        if result.user_event.type == "message":
+            policy_denial = format_allowed_content_policy_denial(
+                parts=handler_content,
+                allowed=self._allowed_content_types,
+                message_template=self._content_policy_denial_message,
+            )
+
+        async def _handler_event_stream():
+            send_local = AgentSend()
+            if policy_denial:
+                yield send_local.run_start(agent_id=context.agent_id)
+                yield send_local.text(policy_denial, author=self._assistant_name)
+                yield send_local.run_end(status="failed", error="content_policy")
+                return
+            async for ev in context.handler(incoming, send, memory, analytics, settings):
+                yield ev
+
         try:
-            async for event in context.handler(incoming, send, memory, analytics, settings):
+            async for event in _handler_event_stream():
                 event_now = _now()
 
                 if event.send_type == "run_start":
@@ -933,8 +973,73 @@ class HandlerPipeline:
             broadcaster=NoopBroadcaster(),  # type: ignore
         )
 
-    def _resolve_content_parts(
-        self, parts: list[WireC2S_ContentPart | dict[str, Any]]
+    @staticmethod
+    def _wire_filename_for_chat_blob_key(data: dict[str, Any], part_type: str) -> str:
+        fn = data.get("filename")
+        if isinstance(fn, str) and fn.strip():
+            return fn.strip()
+        if part_type == "image":
+            return "image"
+        if part_type == "audio":
+            return "audio"
+        return "file"
+
+    async def _resolve_upload_entry_for_ref(
+        self,
+        ref_id: str,
+        *,
+        agent_id: str,
+        thread_id: str | None,
+        data: dict[str, Any],
+        part_type: str,
+    ) -> UploadEntry:
+        """Prefer in-process upload store; fall back to durable chat artifact blob."""
+        entry: UploadEntry | None = None
+        if self._upload_store:
+            entry = self._upload_store.consume(ref_id)
+        if self._agent_config and chat_storage_service_ready(self._agent_config):
+            wire_fn = self._wire_filename_for_chat_blob_key(data, part_type)
+            mime_raw = data.get("mime_type")
+            mime_hint = mime_raw.strip() if isinstance(mime_raw, str) else None
+            # Always promote when we have a thread id, even if this replica already
+            # resolved bytes from the in-memory upload store. Otherwise the durable
+            # object stays only under ``no-thread/`` and later hydration signs a
+            # thread-scoped URL for an object that does not exist (GCS still returns
+            # a signed URL string without verifying the blob).
+            if (thread_id or "").strip():
+                await asyncio.to_thread(
+                    partial(
+                        promote_orphan_chat_artifact_if_present,
+                        self._agent_config,
+                        agent_id=agent_id,
+                        thread_id=thread_id,
+                        ref_id=ref_id,
+                        filename=wire_fn,
+                        mime_hint=mime_hint,
+                    )
+                )
+            if entry is None:
+                entry = await asyncio.to_thread(
+                    partial(
+                        try_fetch_upload_entry_from_blob,
+                        self._agent_config,
+                        agent_id=agent_id,
+                        thread_id=thread_id,
+                        ref_id=ref_id,
+                        filename=wire_fn,
+                        mime_hint=mime_hint,
+                    )
+                )
+        if entry is None:
+            raise UploadReferenceError(f"Upload reference '{ref_id}' not found or expired")
+        return entry
+
+    async def _resolve_content_parts_async(
+        self,
+        parts: list[WireC2S_ContentPart | dict[str, Any]],
+        *,
+        agent_id: str,
+        thread_id: str | None,
     ) -> tuple[list[ContentPart], list[WireS2C_ContentPart]]:
         """Resolve C2S wire content parts into handler format (with bytes) and
         storage format (metadata only, no bytes).
@@ -954,16 +1059,25 @@ class HandlerPipeline:
 
             part_type = data.get("type")
 
+            if part_type == "video":
+                raise UnsupportedContentTypeError(
+                    "Video attachments are not supported yet. Send text, audio, images, or documents.",
+                )
+
             if part_type == "text":
                 handler_parts.append(TextPart(text=data["text"]))
                 storage_parts.append(WireS2C_TextPart(text=data["text"]))
 
             elif part_type in ("audio", "image", "document") and "ref_id" in data:
-                # WebSocket path — resolve ref_id from upload store
+                # WebSocket path — upload store first, then durable blob (replica / TTL)
                 ref_id = data["ref_id"]
-                entry = self._upload_store.consume(ref_id) if self._upload_store else None
-                if entry is None:
-                    raise UploadReferenceError(f"Upload reference '{ref_id}' not found or expired")
+                entry = await self._resolve_upload_entry_for_ref(
+                    ref_id,
+                    agent_id=agent_id,
+                    thread_id=thread_id,
+                    data=data,
+                    part_type=part_type,
+                )
 
                 if part_type == "audio":
                     wire_url = data.get("url")
@@ -985,6 +1099,7 @@ class HandlerPipeline:
                             duration=data.get("duration"),
                             filename=entry.filename,
                             url=url_str,
+                            ref_id=ref_id,
                         )
                     )
                 elif part_type == "image":
@@ -1005,6 +1120,7 @@ class HandlerPipeline:
                             mime_type=entry.mime_type,
                             filename=entry.filename,
                             url=url_str,
+                            ref_id=ref_id,
                         )
                     )
                 elif part_type == "document":
@@ -1027,6 +1143,7 @@ class HandlerPipeline:
                             filename=entry.filename,
                             size_bytes=entry.size_bytes,
                             url=url_str,
+                            ref_id=ref_id,
                         )
                     )
 
@@ -1099,7 +1216,10 @@ class HandlerPipeline:
                 )
 
             else:
-                raise ValueError(f"Unsupported content part type: {part_type!r}")
+                raise UnsupportedContentTypeError(
+                    f"Unsupported content type {part_type!r}. "
+                    "Only text, audio, image, and document are supported.",
+                )
 
         return handler_parts, storage_parts
 
