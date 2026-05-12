@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-05-08
+
+### Changed
+
+- **Naming**: `AgentConfig.chat_artifact_storage` → **`chat_storage_service`** (env **`CHAT_STORAGE_SERVICE`**). Template **`rag_archive_storage`** / **`RAG_ARCHIVE_STORAGE`** → **`rag_storage_service`** / **`RAG_STORAGE_SERVICE`**. Helper **`chat_artifact_storage_ready`** → **`chat_storage_service_ready`**.
+- **Storage selectors**: Removed **`auto`** for **`CHAT_STORAGE_SERVICE`** and **`RAG_STORAGE_SERVICE`** — use **`none`** | **`gcp`** | **`azure`** explicitly.
+- **Template**: **`STORE_RAG_UPLOADS`** (bool) gates RAG **original file** blob uploads (`upload_archive_bytes`); **`RAG_PIPELINE`** remains the **vector** pipeline only.
+
+### Added
+
+- **Chat blob storage in the SDK**: `AgentConfig` gains `store_chat_uploads`, `chat_storage_service`, `gcp_storage_bucket`, `azure_storage_connection_string`, `azure_storage_container`, and `chat_artifact_signed_url_ttl_minutes` (env defaults mirror `GCP_BUCKET_NAME`, `AZURE_*`, `CHAT_STORAGE_SERVICE`, `STORE_CHAT_UPLOADS`). Chat routing is **not** inherited from `rag_storage_service` / `RAG_STORAGE_SERVICE` (template).
+- **`dooers.storage`**: deterministic keys, optional GCS/Azure upload and signed read URLs, and automatic **thread event hydration** (signed `url` on media parts with `ref_id`) for `thread.subscribe`, `event.list`, and `event.append` broadcasts.
+- **`AgentServer.chat_upload(...)`** (HTTP chat/form pipeline: unified gating for durable blobs) and **`AgentServer.store_chat_uploads`**.
+- **`AgentServer.upload(...)`** unchanged: in-process staging only (`ref_id`).
+- **Optional dependency group** `[storage]` (`google-cloud-storage`, `azure-storage-blob`).
+
+### Removed
+
+- **`AgentConfig.hydrate_thread_events_for_client`** and **`HydrateThreadEventsForClient`** — superseded by built-in hydration when storage is configured.
+
+### Changed (follow-up)
+
+- **WebSocket `ref_id` resolution** tries the in-process upload store first, then **downloads the chat artifact from GCS/Azure** when configured (same object key as upload), so a different replica or an expired memory entry can still attach the file if it was durably stored.
+- **Orphan durable uploads** (object key under `no-thread/` because the client had no thread id at upload time) are **promoted** to the real thread path before blob fetch when `thread_id` is known: copy to the thread-scoped key, then delete the `no-thread` object with **up to five delete attempts** (exponential backoff). Failed deletes after a successful copy leave both objects; resolution still uses the thread key.
+
 ## [0.9.2] — 2026-04-27
 
 Security patch hardening JWT-driven validation URL handling. The SDK

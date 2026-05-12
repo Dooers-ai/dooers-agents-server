@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
 import bcrypt
 
 from dooers.auth_validation import AuthValidationClient
-from dooers.exceptions import HandlerError
+from dooers.config import AgentConfig
+from dooers.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.features.settings.models import SettingsFieldVisibility
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.persistence.base import Persistence
@@ -53,7 +57,7 @@ from dooers.protocol.frames import (
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
 )
-from dooers.protocol.models import User
+from dooers.protocol.models import Thread, ThreadEvent, User
 from dooers.protocol.parser import serialize_frame
 from dooers.registry import ConnectionRegistry
 
@@ -116,6 +120,12 @@ class Router:
         settings_ws_context: dict[str, dict[str, Any]] | None = None,
         upload_store: UploadStore | None = None,
         auth_validator: AuthValidationClient | None = None,
+        allowed_content_types: frozenset[str] | None = None,
+        content_policy_denial_message: str | None = None,
+        hydrate_thread_events_for_client: (
+            Callable[[list[ThreadEvent], Thread], Awaitable[list[ThreadEvent]]] | None
+        ) = None,
+        agent_config: AgentConfig | None = None,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -144,6 +154,9 @@ class Router:
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
 
+        self._hydrate_thread_events = hydrate_thread_events_for_client
+        self._agent_config = agent_config
+
         self._pipeline = HandlerPipeline(
             persistence=persistence,
             broadcast_callback=self._broadcast_to_agent_dict,
@@ -152,10 +165,32 @@ class Router:
             settings_schema=settings_schema,
             assistant_name=assistant_name,
             upload_store=upload_store,
+            allowed_content_types=allowed_content_types,
+            content_policy_denial_message=content_policy_denial_message,
+            agent_config=agent_config,
         )
 
+    async def _hydrate_events_for_client(
+        self,
+        events: list[ThreadEvent],
+        thread: Thread | None,
+    ) -> list[ThreadEvent]:
+        if not self._hydrate_thread_events or not thread:
+            return events
+        return await self._hydrate_thread_events(events, thread)
+
     async def _send(self, ws: WebSocketProtocol, frame: ServerToClient) -> None:
-        await ws.send_text(serialize_frame(frame))
+        """Send a frame; ignore closed sockets (client often disconnects after PATCH before slow hooks finish)."""
+        try:
+            await ws.send_text(serialize_frame(frame))
+        except RuntimeError as e:
+            if "close" in str(e).lower():
+                return
+            raise
+        except Exception as e:
+            if type(e).__name__ in ("WebSocketDisconnect", "ConnectionClosedOK", "ConnectionClosedError"):
+                return
+            raise
 
     async def _send_ack(
         self,
@@ -194,11 +229,16 @@ class Router:
                 payload=ThreadUpsertPayload(thread=payload["thread"]),
             )
         elif payload_type == "event.append":
+            evs = payload["events"]
+            tid = payload["thread_id"]
+            thr = await self._persistence.get_thread(tid)
+            if thr is not None:
+                evs = await self._hydrate_events_for_client(evs, thr)
             frame = S2C_EventAppend(
                 id=_generate_id(),
                 payload=EventAppendPayload(
-                    thread_id=payload["thread_id"],
-                    events=payload["events"],
+                    thread_id=tid,
+                    events=evs,
                 ),
             )
         elif payload_type == "run.upsert":
@@ -490,6 +530,7 @@ class Router:
             after_event_id=frame.payload.after_event_id,
             limit=100,
         )
+        events = await self._hydrate_events_for_client(events, thread)
 
         self._subscribed_threads.add(thread_id)
         self._subscriptions[self._ws_id].add(thread_id)
@@ -541,6 +582,25 @@ class Router:
                 error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
             )
             return
+
+        if self._agent_config:
+            try:
+                from dooers.storage.chat_artifacts import delete_chat_artifacts_for_thread
+
+                await asyncio.to_thread(
+                    partial(
+                        delete_chat_artifacts_for_thread,
+                        self._agent_config,
+                        agent_id=thread.agent_id,
+                        thread_id=thread_id,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "chat artifact cleanup failed for thread=%s agent=%s (DB delete still proceeds)",
+                    thread_id,
+                    thread.agent_id,
+                )
 
         await self._persistence.delete_thread(thread_id)
 
@@ -611,6 +671,14 @@ class Router:
                 error={"code": "UPLOAD_NOT_FOUND", "message": str(e)},
             )
             return
+        except UnsupportedContentTypeError as e:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "UNSUPPORTED_CONTENT_TYPE", "message": str(e)},
+            )
+            return
         except ValueError:
             await self._send_ack(
                 ws,
@@ -669,6 +737,9 @@ class Router:
 
         # Reverse to chronological order
         events.reverse()
+
+        thread = await self._persistence.get_thread(payload.thread_id)
+        events = await self._hydrate_events_for_client(events, thread)
 
         cursor = events[0].id if events and has_more else None
         result = S2C_EventListResult(
@@ -1040,9 +1111,23 @@ class Router:
             )
             return
 
-        await self._persistence.set_settings(worker_id, frame.payload.values)
+        payload = frame.payload
+        raw_values = payload.values if isinstance(payload.values, dict) else {}
+        merge = bool(payload.merge)
+        next_rot = (payload.next_seed_secret or "").strip()
+        key_rotation_only = bool(next_rot) and not merge and len(raw_values) == 0
 
-        to_store = frame.payload.next_seed_secret or frame.payload.seed_secret
+        if key_rotation_only:
+            # Runtime API key rotation: update bcrypt hash only; do not wipe settings.
+            pass
+        elif merge:
+            current = await self._persistence.get_settings(worker_id)
+            merged = {**current, **raw_values}
+            await self._persistence.set_settings(worker_id, merged)
+        else:
+            await self._persistence.set_settings(worker_id, raw_values)
+
+        to_store = payload.next_seed_secret or payload.seed_secret
         new_hash = bcrypt.hashpw(to_store.encode("utf-8"), bcrypt.gensalt())
         await self._persistence.set_worker_seed_hash_bytes(worker_id, new_hash)
 

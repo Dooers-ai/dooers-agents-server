@@ -71,6 +71,14 @@ class WireC2S_AudioPart(BaseModel):
     type: Literal["audio"] = "audio"
     ref_id: str
     duration: float | None = None
+    filename: str | None = Field(
+        default=None,
+        description="Original filename from POST /uploads; include for blob fallback when WS hits another replica.",
+    )
+    mime_type: str | None = Field(
+        default=None,
+        description="Optional MIME from client; used as hint when resolving from blob storage.",
+    )
     url: str | None = Field(
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted.",
@@ -80,6 +88,14 @@ class WireC2S_AudioPart(BaseModel):
 class WireC2S_ImagePart(BaseModel):
     type: Literal["image"] = "image"
     ref_id: str
+    filename: str | None = Field(
+        default=None,
+        description="Original filename from POST /uploads; include for blob fallback when WS hits another replica.",
+    )
+    mime_type: str | None = Field(
+        default=None,
+        description="Optional MIME from client; used as hint when resolving from blob storage.",
+    )
     url: str | None = Field(
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted (fetchable HTTP(S)).",
@@ -89,6 +105,14 @@ class WireC2S_ImagePart(BaseModel):
 class WireC2S_DocumentPart(BaseModel):
     type: Literal["document"] = "document"
     ref_id: str
+    filename: str | None = Field(
+        default=None,
+        description="Original filename from POST /uploads; include for blob fallback when WS hits another replica.",
+    )
+    mime_type: str | None = Field(
+        default=None,
+        description="Optional MIME from client; used as hint when resolving from blob storage.",
+    )
     url: str | None = Field(
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted.",
@@ -115,6 +139,13 @@ class WireS2C_AudioPart(BaseModel):
     mime_type: str | None = None
     duration: float | None = None
     filename: str | None = None
+    ref_id: str | None = Field(
+        default=None,
+        description=(
+            "When the part came from the WebSocket upload path (C2S ref_id), the same id "
+            "used in POST /uploads. Persisted for replay: rebuild blob keys or mint signed URLs without a separate metadata table."
+        ),
+    )
 
 
 class WireS2C_ImagePart(BaseModel):
@@ -125,6 +156,13 @@ class WireS2C_ImagePart(BaseModel):
     height: int | None = None
     alt: str | None = None
     filename: str | None = None
+    ref_id: str | None = Field(
+        default=None,
+        description=(
+            "When the part came from the WebSocket upload path (C2S ref_id), the same id "
+            "used in POST /uploads. Persisted for replay signing / durable object paths."
+        ),
+    )
 
 
 class WireS2C_DocumentPart(BaseModel):
@@ -133,6 +171,13 @@ class WireS2C_DocumentPart(BaseModel):
     filename: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None
+    ref_id: str | None = Field(
+        default=None,
+        description=(
+            "When the part came from the WebSocket upload path (C2S ref_id), the same id "
+            "used in POST /uploads. Persisted for replay signing / durable object paths."
+        ),
+    )
 
 
 WireS2C_ContentPart = Annotated[

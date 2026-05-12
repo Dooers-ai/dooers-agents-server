@@ -11,8 +11,23 @@ from dooers.settings import (
 if TYPE_CHECKING:
     from dooers.features.settings.models import SettingsSchema
 
-# (agent_id, field_id, old_value, new_value). Called after a successful settings write.
+# (agent_id, field_id, old_value, new_value). Called after each successful settings write.
 OnSettingsUpdated = Callable[[str, str, Any, Any], Awaitable[None]]
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    v = os.environ.get(key)
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _default_chat_storage_service() -> str:
+    """Chat blob backend: ``none`` | ``gcp`` | ``azure`` only. Env: ``CHAT_STORAGE_SERVICE`` (default ``none``)."""
+    raw = (os.environ.get("CHAT_STORAGE_SERVICE") or "").strip().lower()
+    if raw in {"none", "gcp", "azure"}:
+        return raw
+    return "none"
 
 
 def _parse_ssl(value: str) -> bool | str:
@@ -60,6 +75,15 @@ class AgentConfig:
     guest_thread_cleanup_interval_seconds: int = GUEST_THREAD_CLEANUP_INTERVAL_SECONDS
 
     settings_schema: "SettingsSchema | None" = None
+    #: If normalized to a non-empty set, the pipeline rejects *after* persisting the user message: it skips the
+    #: creator handler and streams ``run_start`` → assistant ``text`` (see ``content_policy_denial_message``) →
+    #: ``run_end`` failed. Unknown / video attachment kinds are still rejected in ``setup``.
+    #: ``None`` / empty parse → no allowlist here (creator may validate manually).
+    #: Pass ``frozenset({...})``, list/tuple tokens, comma-separated string, or JSON-array string — ``normalize_allowed_content_types``.
+    allowed_content_types: frozenset[str] | tuple[str, ...] | list[str] | str | None = None
+    #: When ``allowed_content_types`` blocks a ``message`` event, assistant copy shown in the thread. Use
+    #: ``{offenders}`` (present types in the payload) and ``{allowed}`` (configured allowlist). English default applies if omitted/blank.
+    content_policy_denial_message: str | None = None
     # If set, called after each successful settings field change (also per key after set_settings bulk replace).
     on_settings_updated: OnSettingsUpdated | None = None
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
@@ -67,3 +91,18 @@ class AgentConfig:
 
     upload_max_size_bytes: int = 25 * 1024 * 1024  # 25MB
     upload_ttl_seconds: int = 300  # 5 minutes
+
+    #: When True (env ``STORE_CHAT_UPLOADS``), durable blob writes may run after ``AgentServer.upload`` when the
+    #: HTTP layer requests persistence and storage credentials are configured.
+    store_chat_uploads: bool = field(default_factory=lambda: _env_bool("STORE_CHAT_UPLOADS", False))
+    #: ``none`` | ``gcp`` | ``azure`` for **chat** blobs only (env ``CHAT_STORAGE_SERVICE``). Independent of RAG.
+    chat_storage_service: str = field(default_factory=_default_chat_storage_service)
+    #: GCS bucket for chat artifacts (typically ``GCP_BUCKET_NAME`` in .env).
+    gcp_storage_bucket: str = field(default_factory=lambda: (os.environ.get("GCP_BUCKET_NAME") or "").strip())
+    azure_storage_connection_string: str = field(
+        default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip()
+    )
+    azure_storage_container: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONTAINER") or "").strip())
+    chat_artifact_signed_url_ttl_minutes: int = field(
+        default_factory=lambda: max(1, int(os.environ.get("CHAT_ARTIFACT_SIGNED_URL_TTL_MINUTES", "60") or "60"))
+    )

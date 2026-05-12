@@ -193,6 +193,8 @@ class SettingsSeedPayload(BaseModel):
     seed_secret: str
     """When rotating the runtime key, set to the new secret after verifying `seed_secret` matches the old hash."""
     next_seed_secret: str | None = None
+    """If True, shallow-merge ``values`` onto existing worker settings (creator-only sync). If False, replace."""
+    merge: bool = False
 
 
 class C2S_SettingsSeed(BaseModel):

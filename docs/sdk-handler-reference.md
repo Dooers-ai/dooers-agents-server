@@ -420,7 +420,8 @@ Documentação alargada (incl. `WorkerClient` naming, seed, persistência): **[a
 |-----|-----|
 | `await agent_server.dispatch(...)` | Run the same handler outside WebSocket (REST, webhooks); returns a stream of `AgentEvent` |
 | `await agent_server.repository()` | **Direct persistence**: threads, events, runs, settings CRUD |
-| `await agent_server.upload(data, filename, mime_type)` | Stage a binary for a later `event.create` (returns reference id) |
+| `await agent_server.upload(data, filename, mime_type)` | Stage a binary in memory for a later `event.create` (returns `ref_id` only) |
+| `await agent_server.chat_upload(data=..., filename=..., mime_type=..., agent_id=..., thread_id=...)` | Chat/form HTTP pipeline: stages bytes, applies creator `persist_chat_attachments` + ops `store_chat_uploads` + storage readiness, optional blob write; returns a dict with `ref_id` and optional artifact fields |
 | `await agent_server.memory(thread_id)` | Memory without going through `dispatch` |
 | `await agent_server.settings(agent_id)` | Settings without a full handler run |
 | `await agent_server.analytics(agent_id, thread_id=...)` | Analytics outside handlers |

@@ -9,6 +9,7 @@ class AgentContext:
     """Contextual metadata for the incoming message."""
 
     thread_id: str
+    agent_id: str
     event_id: str
     organization_id: str = ""
     workspace_id: str = ""
