@@ -1,3 +1,4 @@
+from .agent_settings import AgentSettings
 from .broadcaster import SettingsBroadcaster
 from .models import (
     SettingsField,
@@ -7,7 +8,6 @@ from .models import (
     SettingsSchema,
     SettingsSelectOption,
 )
-from .agent_settings import AgentSettings
 
 __all__ = [
     "SettingsBroadcaster",

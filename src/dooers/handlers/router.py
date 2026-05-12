@@ -122,9 +122,7 @@ class Router:
         auth_validator: AuthValidationClient | None = None,
         allowed_content_types: frozenset[str] | None = None,
         content_policy_denial_message: str | None = None,
-        hydrate_thread_events_for_client: (
-            Callable[[list[ThreadEvent], Thread], Awaitable[list[ThreadEvent]]] | None
-        ) = None,
+        hydrate_thread_events_for_client: (Callable[[list[ThreadEvent], Thread], Awaitable[list[ThreadEvent]]] | None) = None,
         agent_config: AgentConfig | None = None,
     ):
         self._persistence = persistence

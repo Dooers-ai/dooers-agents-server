@@ -331,8 +331,7 @@ def promote_orphan_chat_artifact_if_present(
             return
         if not _azure_delete_blob_with_retries(cs, container, source_key):
             logger.warning(
-                "promote orphan chat artifact: Azure copy ok dest=%s but failed to delete "
-                "orphan source=%s",
+                "promote orphan chat artifact: Azure copy ok dest=%s but failed to delete orphan source=%s",
                 dest_key,
                 source_key,
             )

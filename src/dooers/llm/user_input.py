@@ -122,9 +122,7 @@ def _ordered_openai_responses_parts(
                 continue
             if not _image_has_payload(p):
                 if strict:
-                    raise ValueError(
-                        "An image part has no usable data or HTTP(S) URL; cannot build input_image."
-                    )
+                    raise ValueError("An image part has no usable data or HTTP(S) URL; cannot build input_image.")
                 logger.warning("Skipping image part with no bytes and no HTTP(S) URL")
                 continue
             appended = _append_one_input_image(parts, p)

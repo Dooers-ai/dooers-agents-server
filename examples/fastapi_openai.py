@@ -4,12 +4,12 @@ from fastapi import FastAPI, WebSocket
 from openai import AsyncOpenAI
 
 from dooers import (
+    AgentConfig,
+    AgentServer,
     SettingsField,
     SettingsFieldType,
     SettingsSchema,
     SettingsSelectOption,
-    AgentConfig,
-    AgentServer,
 )
 
 app = FastAPI()

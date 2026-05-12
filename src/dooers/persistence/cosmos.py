@@ -531,7 +531,6 @@ class CosmosPersistence:
         container = self._get_container("runs")
         doc = {
             "id": run.id,
-            "agent_id": agent_id,
             "thread_id": run.thread_id,
             "agent_id": run.agent_id,
             "status": run.status,
@@ -549,7 +548,6 @@ class CosmosPersistence:
         container = self._get_container("runs")
         doc = {
             "id": run.id,
-            "agent_id": agent_id,
             "thread_id": run.thread_id,
             "agent_id": run.agent_id,
             "status": run.status,

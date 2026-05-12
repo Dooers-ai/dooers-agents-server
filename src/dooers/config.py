@@ -99,9 +99,7 @@ class AgentConfig:
     chat_storage_service: str = field(default_factory=_default_chat_storage_service)
     #: GCS bucket for chat artifacts (typically ``GCP_BUCKET_NAME`` in .env).
     gcp_storage_bucket: str = field(default_factory=lambda: (os.environ.get("GCP_BUCKET_NAME") or "").strip())
-    azure_storage_connection_string: str = field(
-        default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip()
-    )
+    azure_storage_connection_string: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip())
     azure_storage_container: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONTAINER") or "").strip())
     chat_artifact_signed_url_ttl_minutes: int = field(
         default_factory=lambda: max(1, int(os.environ.get("CHAT_ARTIFACT_SIGNED_URL_TTL_MINUTES", "60") or "60"))

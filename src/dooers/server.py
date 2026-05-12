@@ -165,10 +165,7 @@ class AgentServer:
             "public_url": None,
         }
 
-        write_durable = (
-            creator_persist
-            and bool(getattr(cfg, "store_chat_uploads", False))
-        )
+        write_durable = creator_persist and bool(getattr(cfg, "store_chat_uploads", False))
         logger.info(
             "[uploads] durable=%s agent=%s thread=%s source=%s run_id=%s",
             write_durable,

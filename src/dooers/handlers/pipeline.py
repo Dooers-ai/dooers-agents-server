@@ -1217,8 +1217,7 @@ class HandlerPipeline:
 
             else:
                 raise UnsupportedContentTypeError(
-                    f"Unsupported content type {part_type!r}. "
-                    "Only text, audio, image, and document are supported.",
+                    f"Unsupported content type {part_type!r}. Only text, audio, image, and document are supported.",
                 )
 
         return handler_parts, storage_parts

@@ -96,9 +96,7 @@ def format_allowed_content_policy_denial(
 
     off_h = ", ".join(sorted(set(offenders)))
     allowed_h = ", ".join(sorted(allowed))
-    default_en = (
-        "This agent does not accept this attachment type in chat ({offenders}). Allowed: {allowed}."
-    )
+    default_en = "This agent does not accept this attachment type in chat ({offenders}). Allowed: {allowed}."
     tmpl = (message_template or "").strip() or default_en
     return tmpl.format(offenders=off_h, allowed=allowed_h)
 
