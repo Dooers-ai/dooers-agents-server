@@ -53,8 +53,23 @@ class DocumentPart(BaseModel):
     )
 
 
+class ContactPart(BaseModel):
+    """User or assistant contact card (aligns with WhatsApp / Cloud API contact + vCard)."""
+
+    type: Literal["contact"] = "contact"
+    display_name: str = ""
+    vcard: str | None = Field(
+        default=None,
+        description="Raw vCard 3.0 string when the channel provided one (FN/TEL/END:VCARD).",
+    )
+    phones: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured phones: items like {phone, type} per Cloud API contacts.",
+    )
+
+
 ContentPart = Annotated[
-    TextPart | AudioPart | ImagePart | DocumentPart,
+    TextPart | AudioPart | ImagePart | DocumentPart | ContactPart,
     Field(discriminator="type"),
 ]
 
@@ -69,7 +84,7 @@ class WireC2S_TextPart(BaseModel):
 
 class WireC2S_AudioPart(BaseModel):
     type: Literal["audio"] = "audio"
-    ref_id: str
+    ref_id: str | None = None
     duration: float | None = None
     filename: str | None = Field(
         default=None,
@@ -87,7 +102,7 @@ class WireC2S_AudioPart(BaseModel):
 
 class WireC2S_ImagePart(BaseModel):
     type: Literal["image"] = "image"
-    ref_id: str
+    ref_id: str | None = None
     filename: str | None = Field(
         default=None,
         description="Original filename from POST /uploads; include for blob fallback when WS hits another replica.",
@@ -104,7 +119,7 @@ class WireC2S_ImagePart(BaseModel):
 
 class WireC2S_DocumentPart(BaseModel):
     type: Literal["document"] = "document"
-    ref_id: str
+    ref_id: str | None = None
     filename: str | None = Field(
         default=None,
         description="Original filename from POST /uploads; include for blob fallback when WS hits another replica.",
@@ -113,14 +128,26 @@ class WireC2S_DocumentPart(BaseModel):
         default=None,
         description="Optional MIME from client; used as hint when resolving from blob storage.",
     )
+    size_bytes: int | None = None
     url: str | None = Field(
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted.",
     )
 
 
+class WireC2S_ContactPart(BaseModel):
+    type: Literal["contact"] = "contact"
+    display_name: str = ""
+    vcard: str | None = None
+    phones: list[dict[str, Any]] = Field(default_factory=list)
+
+
 WireC2S_ContentPart = Annotated[
-    WireC2S_TextPart | WireC2S_AudioPart | WireC2S_ImagePart | WireC2S_DocumentPart,
+    WireC2S_TextPart
+    | WireC2S_AudioPart
+    | WireC2S_ImagePart
+    | WireC2S_DocumentPart
+    | WireC2S_ContactPart,
     Field(discriminator="type"),
 ]
 
@@ -180,8 +207,19 @@ class WireS2C_DocumentPart(BaseModel):
     )
 
 
+class WireS2C_ContactPart(BaseModel):
+    type: Literal["contact"] = "contact"
+    display_name: str = ""
+    vcard: str | None = None
+    phones: list[dict[str, Any]] = Field(default_factory=list)
+
+
 WireS2C_ContentPart = Annotated[
-    WireS2C_TextPart | WireS2C_AudioPart | WireS2C_ImagePart | WireS2C_DocumentPart,
+    WireS2C_TextPart
+    | WireS2C_AudioPart
+    | WireS2C_ImagePart
+    | WireS2C_DocumentPart
+    | WireS2C_ContactPart,
     Field(discriminator="type"),
 ]
 
@@ -281,6 +319,7 @@ _S2C_TYPE_MAP: dict[str, type] = {
     "audio": WireS2C_AudioPart,
     "image": WireS2C_ImagePart,
     "document": WireS2C_DocumentPart,
+    "contact": WireS2C_ContactPart,
 }
 
 
@@ -296,6 +335,8 @@ class User(BaseModel):
     user_id: str
     user_name: str | None = None
     user_email: str | None = None
+    user_mobile_number: str | None = None
+    user_whatsapp_number: str | None = None
     identity_ids: list[str] = []
     system_role: str = "user"
     organization_role: str = "member"

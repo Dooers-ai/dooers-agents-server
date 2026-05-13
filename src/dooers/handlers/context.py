@@ -13,6 +13,8 @@ class AgentContext:
     event_id: str
     organization_id: str = ""
     workspace_id: str = ""
+    channel: str = "dooers-platform"
+    channel_meta: dict | None = None
     user: User = field(default_factory=lambda: User(user_id=""))
     thread_title: str | None = field(default=None)
     thread_created_at: datetime | None = field(default=None)

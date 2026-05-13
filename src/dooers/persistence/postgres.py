@@ -285,6 +285,11 @@ class PostgresPersistence:
                 ADD COLUMN IF NOT EXISTS seed_secret_hash BYTEA
             """)
 
+            await conn.execute(f"""
+                ALTER TABLE {settings_table}
+                ADD COLUMN IF NOT EXISTS services_secrets JSONB NOT NULL DEFAULT '{{}}'::jsonb
+            """)
+
             analytics_table = f"{self._prefix}analytics_events"
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {analytics_table} (
@@ -1050,6 +1055,49 @@ class PostgresPersistence:
             asyncio.create_task(
                 _run_changed_field_hooks(),
                 name=f"settings_updated_batch:{agent_id}",
+            )
+        return now
+
+    async def get_service_secrets(self, agent_id: str) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}settings"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT services_secrets FROM {table} WHERE agent_id = $1",
+                agent_id,
+            )
+        if not row or row["services_secrets"] is None:
+            return {}
+        raw = row["services_secrets"]
+        if isinstance(raw, str):
+            return json.loads(raw)
+        return dict(raw)
+
+    async def merge_service_secrets(self, agent_id: str, patch: dict[str, str]) -> datetime:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+
+        table = f"{self._prefix}settings"
+        now = datetime.now(UTC)
+        current = await self.get_service_secrets(agent_id)
+        current.update(patch)
+        merged_json = json.dumps(current)
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {table} (agent_id, values, services_secrets, created_at, updated_at)
+                VALUES ($1, '{{}}'::jsonb, $2::jsonb, $3, $4)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    services_secrets = EXCLUDED.services_secrets,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                agent_id,
+                merged_json,
+                now,
+                now,
             )
         return now
 

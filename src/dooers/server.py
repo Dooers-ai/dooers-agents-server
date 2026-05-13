@@ -79,6 +79,13 @@ class AgentServer:
 
         return await hydrate_thread_events(self._config, events, thread)
 
+    def _resolve_whatsapp_outbound(self, persistence: Persistence) -> Any:
+        if not self._config.dooers_whatsapp_service:
+            return None
+        from dooers.features.channels.whatsapp.outbound import create_dooers_whatsapp_outbound
+
+        return create_dooers_whatsapp_outbound(persistence)
+
     @property
     def registry(self) -> ConnectionRegistry:
         return self._registry
@@ -347,6 +354,7 @@ class AgentServer:
             content_policy_denial_message=self._content_policy_denial_message,
             hydrate_thread_events_for_client=self._hydrate_thread_events_impl,
             agent_config=self._config,
+            whatsapp_outbound=self._resolve_whatsapp_outbound(persistence),
         )
 
         try:
@@ -388,6 +396,8 @@ class AgentServer:
         thread_id: str | None = None,
         thread_title: str | None = None,
         content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
+        channel: str = "dooers-platform",
+        channel_meta: dict[str, Any] | None = None,
     ) -> DispatchStream:
         persistence = await self._ensure_initialized()
 
@@ -402,6 +412,7 @@ class AgentServer:
             allowed_content_types=self._allowed_content_types,
             content_policy_denial_message=self._content_policy_denial_message,
             agent_config=self._config,
+            whatsapp_outbound=self._resolve_whatsapp_outbound(persistence),
         )
 
         context = HandlerContext(
@@ -410,6 +421,8 @@ class AgentServer:
             message=message,
             organization_id=organization_id,
             workspace_id=workspace_id,
+            channel=(channel or "dooers-platform"),
+            channel_meta=channel_meta,
             user=user or User(user_id=""),
             thread_id=thread_id,
             thread_title=thread_title,

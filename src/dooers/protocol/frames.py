@@ -203,6 +203,19 @@ class C2S_SettingsSeed(BaseModel):
     payload: SettingsSeedPayload
 
 
+class SettingsMergeServiceSecretsPayload(BaseModel):
+    worker_id: str
+    patch: dict[str, str] = Field(default_factory=dict)
+    seed_secret: str
+    next_seed_secret: str | None = None
+
+
+class C2S_SettingsMergeServiceSecrets(BaseModel):
+    id: str
+    type: Literal["settings.merge_service_secrets"]
+    payload: SettingsMergeServiceSecretsPayload
+
+
 ClientToServer = Annotated[
     C2S_Connect
     | C2S_ThreadList
@@ -218,7 +231,8 @@ ClientToServer = Annotated[
     | C2S_SettingsUnsubscribe
     | C2S_SettingsPatch
     | C2S_SettingsPublicSchema
-    | C2S_SettingsSeed,
+    | C2S_SettingsSeed
+    | C2S_SettingsMergeServiceSecrets,
     Field(discriminator="type"),
 ]
 

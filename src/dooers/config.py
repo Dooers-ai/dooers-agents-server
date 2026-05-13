@@ -104,3 +104,5 @@ class AgentConfig:
     chat_artifact_signed_url_ttl_minutes: int = field(
         default_factory=lambda: max(1, int(os.environ.get("CHAT_ARTIFACT_SIGNED_URL_TTL_MINUTES", "60") or "60"))
     )
+    # When True, ``HandlerPipeline`` runs the built-in Dooers WhatsApp tools HTTP outbound.
+    dooers_whatsapp_service: bool = False
