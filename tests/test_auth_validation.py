@@ -134,3 +134,85 @@ async def test_fails_closed_on_non_200():
         assert result.reason == "status_404"
     finally:
         await c.close()
+
+
+@pytest.mark.asyncio
+async def test_jwt_validation_threads_metadata(client):
+    """JWT response with metadata at each level is folded into the result."""
+    import base64
+    import json as _json
+
+    payload = {"validation_url": "https://validate.dooers.ai/api/v2/identity/validate-agent-session"}
+    fake_jwt = "x." + base64.urlsafe_b64encode(_json.dumps(payload).encode()).decode().rstrip("=") + ".y"
+
+    with respx.mock() as mock:
+        mock.post("https://validate.dooers.ai/api/v2/identity/validate-agent-session").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "connection_type": "dashboard",
+                    "user": {
+                        "id": "usr_1", "email": "a@b.test", "name": "Ada",
+                        "identity_ids": ["acc_1"], "system_role": "user",
+                        "metadata": {
+                            "email_verified": True,
+                            "member_id": "mem_1",
+                            "sso_claims": {"groups": ["eng"]},
+                        },
+                    },
+                    "organization": {
+                        "id": "org_1", "role": "owner", "plan": "pro",
+                        "metadata": {"name": "Acme", "settings": {"plan": "pro"}},
+                    },
+                    "workspace": {
+                        "id": "ws_1", "role": "manager",
+                        "metadata": {"name": "Team A", "is_public": False},
+                    },
+                    "agent": {
+                        "id": "wkr_1", "owner_user_id": "usr_1",
+                        "metadata": {"display_name": "AgentX", "blueprint_id": "bp_1"},
+                    },
+                    "policies": {"rate_limit_msgs_per_min": 60, "thread_ttl_hours": 24},
+                },
+            )
+        )
+        result = await client.validate(auth_token=fake_jwt, agent_id="wkr_1", guest_user_id="")
+
+    assert result.valid is True
+    assert result.user is not None
+    assert result.user.metadata == {
+        "email_verified": True,
+        "member_id": "mem_1",
+        "sso_claims": {"groups": ["eng"]},
+    }
+    assert result.organization_metadata == {"name": "Acme", "settings": {"plan": "pro"}}
+    assert result.workspace_metadata == {"name": "Team A", "is_public": False}
+    assert result.agent_metadata == {"display_name": "AgentX", "blueprint_id": "bp_1"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_flat_response_defaults_metadata_to_empty(client):
+    """Legacy (no nested organization key) responses set metadata to {} without raising."""
+    with respx.mock() as mock:
+        mock.post("https://core.test/validate").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "user": {
+                        "user_id": "guest:abc", "user_email": "", "identity_ids": [], "roles": [],
+                    },
+                    "rateLimits": {},
+                    "threadTtlHours": 24,
+                },
+            )
+        )
+        result = await client.validate(auth_token="opaque", agent_id="wkr_1", guest_user_id="guest:abc")
+
+    assert result.valid is True
+    assert result.user is not None
+    assert result.user.metadata == {}
+    assert result.organization_metadata == {}
+    assert result.workspace_metadata == {}
+    assert result.agent_metadata == {}
