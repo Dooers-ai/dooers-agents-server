@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] — 2026-05-13
+
+### Added
+
+- **First-class WhatsApp channel routing.** New `dooers.features.channels.whatsapp` package with deterministic thread-id derivation, per-instance outbound HTTP delivery, and HMAC-signed tool callbacks. Inbound `event.create` payloads carry **`channel`** / **`channel_meta`** (router, pipeline, `send`) so external channel events are persisted with delivery/source metadata for auditing.
+- **Persistence support for channel metadata** in PostgreSQL and Cosmos backends — thread events now round-trip the channel descriptor.
+- **`fastapi_whatsapp_webhook.py` example** demonstrating the end-to-end inbound webhook → agent → outbound flow.
+
+### Fixed
+
+- **WhatsApp tools base URL:** read from **`DOOERS_WHATSAPP_TOOLS_BASE`** and append `/whatsapp` when the value is origin-only, so `POST /api/v1/messages` matches the tools service mount. Outbound skip reasons are now logged at `INFO` instead of being silent.
+
 ## [0.10.1] — 2026-05-12
 
 ### Changed
