@@ -67,3 +67,17 @@ def test_resolve_whatsapp_event_skips_non_whatsapp_channel():
         ),
     )
     assert "whatsapp" not in resolved.data
+
+
+def test_tools_base_url_env_override(monkeypatch):
+    import importlib
+
+    import dooers.features.channels.whatsapp.config as wa_cfg
+
+    monkeypatch.setenv("DOOERS_WHATSAPP_TOOLS_BASE", "http://127.0.0.1:8810")
+    importlib.reload(wa_cfg)
+    assert wa_cfg.tools_base_url() == "http://127.0.0.1:8810"
+
+    monkeypatch.delenv("DOOERS_WHATSAPP_TOOLS_BASE", raising=False)
+    importlib.reload(wa_cfg)
+    assert wa_cfg.tools_base_url() == "https://services.dooers.ai/whatsapp"

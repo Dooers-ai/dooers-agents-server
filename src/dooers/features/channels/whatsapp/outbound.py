@@ -73,14 +73,20 @@ def create_dooers_whatsapp_outbound(persistence: Persistence) -> WhatsappOutboun
         instance_id = str(w.get("instance_id") or "").strip()
         secret = resolve_dooers_whatsapp_outbound_message_hmac(secrets, instance_id)
         if not secret:
-            logger.debug(
-                "dooers whatsapp outbound skipped (no HMAC for agent_id=%s instance_id=%s)",
+            logger.info(
+                "dooers whatsapp outbound skipped (no HMAC in service_secrets for agent_id=%s instance_id=%s); "
+                "ensure settings.merge_service_secrets ran for this worker (tools create / runtime seed).",
                 context.agent_id,
                 instance_id or "-",
             )
             return
         payload = _body_for_event(event)
         if not payload:
+            logger.info(
+                "dooers whatsapp outbound skipped (missing to_e164/instance_id on event) agent_id=%s send_type=%s",
+                context.agent_id,
+                event.send_type,
+            )
             return
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         base = tools_base_url()
