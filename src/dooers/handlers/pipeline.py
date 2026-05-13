@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -15,7 +15,7 @@ from dooers.features.analytics.agent_analytics import AgentAnalytics
 from dooers.features.analytics.models import AnalyticsEvent
 from dooers.features.settings.agent_settings import AgentSettings
 from dooers.handlers.content_policy import format_allowed_content_policy_denial
-from dooers.handlers.context import AgentContext
+from dooers.handlers.context import AgentContext, ContextAgent, ContextOrganization, ContextWorkspace
 from dooers.handlers.incoming import AgentIncoming
 from dooers.handlers.memory import AgentMemory
 from dooers.handlers.send import AgentEvent, AgentSend
@@ -121,6 +121,9 @@ class HandlerContext:
     organization_id: str = ""
     workspace_id: str = ""
     user: User = None  # type: ignore[assignment]
+    organization: ContextOrganization = field(default_factory=ContextOrganization)
+    workspace: ContextWorkspace = field(default_factory=ContextWorkspace)
+    agent: ContextAgent = field(default_factory=ContextAgent)
     thread_id: str | None = None
     thread_title: str | None = None
     content: list[WireC2S_ContentPart | dict[str, Any]] | None = None
@@ -319,6 +322,9 @@ class HandlerPipeline:
             organization_id=context.organization_id,
             workspace_id=context.workspace_id,
             user=context.user,
+            organization=context.organization,
+            workspace=context.workspace,
+            agent=context.agent,
             thread_title=thread.title,
             thread_created_at=thread.created_at,
         )
