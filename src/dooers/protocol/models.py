@@ -305,6 +305,7 @@ class User(BaseModel):
     # "guest" (anonymous public chat visitor). Set from the validation
     # webhook's ConnectionContext; defaults to "dashboard" for legacy paths.
     connection_type: str = "dashboard"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # --- ConnectionContext models (returned by core backend validation endpoints) ---
@@ -316,22 +317,26 @@ class ConnectionUser(BaseModel):
     name: str = ""
     identity_ids: list[str] = []
     system_role: str = "user"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionOrganization(BaseModel):
     id: str
     role: str = "member"
     plan: str = "free"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionWorkspace(BaseModel):
     id: str
     role: str = "member"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionAgent(BaseModel):
     id: str
     owner_user_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionPolicies(BaseModel):
