@@ -23,6 +23,7 @@ class ConnectPayload(BaseModel):
     user: User = User(user_id="")
     auth_token: str | None = None
     client: dict | None = None
+    metadata: dict[str, Any] | None = None  # NEW — guest pre-chat values; discarded for authenticated
 
 
 class ThreadListPayload(BaseModel):

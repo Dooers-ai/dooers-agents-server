@@ -376,6 +376,15 @@ class Router:
                     patches["user_email"] = incoming_user.user_email
                 if patches:
                     self._user = self._user.model_copy(update=patches)
+            # Merge guest pre-chat metadata (phone, company, etc.) from the
+            # frame. Independent of incoming_user — frame-level metadata is
+            # carried alongside the user object. Frame keys overwrite webhook
+            # keys on collision. Authenticated sessions (dashboard,
+            # public_authenticated) silently discard frame.payload.metadata —
+            # the webhook is the sole source of truth.
+            if self._user.connection_type == "guest" and frame.payload.metadata:
+                merged = {**self._user.metadata, **frame.payload.metadata}
+                self._user = self._user.model_copy(update={"metadata": merged})
             self._rate_limits = result.rate_limits
             self._agent_owner_user_id = result.agent_owner_user_id
             self._organization_id = result.organization_id or frame.payload.organization_id
