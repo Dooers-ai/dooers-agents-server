@@ -1,0 +1,91 @@
+Dooers SDK License
+Version 1.0, 2026
+
+Based on the Apache License, Version 2.0
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+(Keep ALL Apache 2.0 Section 1 definitions unchanged)
+
+2. Grant of Copyright License.
+
+Subject to the terms and conditions of this License, each Contributor hereby grants to You a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare Derivative Works of, publicly display, publicly perform, and distribute the Work in Source or Object form.
+
+3. Grant of Patent License.
+
+(Keep identical to Apache 2.0)
+
+4. Redistribution.
+
+(Keep identical to Apache 2.0)
+
+5. Submission of Contributions.
+
+(Keep identical to Apache 2.0)
+
+6. Trademarks.
+
+This License does not grant permission to use the trade names, trademarks, service marks, or product names of the Licensor, including “Dooers”, except as required for reasonable and customary use in describing the origin of the Work.
+
+7. Disclaimer of Warranty.
+
+(Keep identical to Apache 2.0)
+
+8. Limitation of Liability.
+
+(Keep identical to Apache 2.0)
+
+9. Accepting Warranty or Additional Liability.
+
+(Keep identical to Apache 2.0)
+
+------------------------------------------------------------
+10. Additional Restrictions (Dooers-Specific)
+------------------------------------------------------------
+
+10.1 Competitive Use Restriction
+
+You may not use the Work, or any Derivative Works thereof, to develop, operate, or offer any product, service, or platform that competes with the Dooers platform, including but not limited to:
+
+- AI agent hosting platforms  
+- Agent orchestration systems  
+- Agent marketplaces  
+- Any system that enables third parties to deploy, manage, or monetize AI agents at scale  
+
+10.2 Platform Dependency
+
+The Work is licensed for use primarily in connection with the Dooers platform or authorized integrations.
+
+Use of the Work as a standalone product or as the core infrastructure of another platform is prohibited without a separate commercial agreement.
+
+10.3 No Resale or White-Labeling
+
+You may not sublicense, resell, lease, or offer the Work as part of a commercial product or service where the Work represents a substantial portion of the value, without explicit written permission from the Licensor.
+
+10.4 Telemetry (Optional but Recommended)
+
+The Work may include mechanisms that collect and transmit anonymized usage data to the Licensor for purposes of improving the product, ensuring security, and monitoring performance.
+
+10.5 Branding Restrictions
+
+You may not use Dooers branding, logos, or trade names in a way that suggests endorsement, partnership, or official status without prior written authorization.
+
+------------------------------------------------------------
+11. Commercial Licensing
+------------------------------------------------------------
+
+The Licensor may offer separate commercial licenses that waive or modify the restrictions described in Section 10.
+
+Entities seeking to use the Work beyond the scope of this License must obtain a commercial agreement from the Licensor.
+
+------------------------------------------------------------
+END OF TERMS AND CONDITIONS
+------------------------------------------------------------
+
+APPENDIX:
+
+Copyright [2026] Dooers Inteligência Artificial LTDA
+
+Licensed under the Dooers SDK License v1.0.
