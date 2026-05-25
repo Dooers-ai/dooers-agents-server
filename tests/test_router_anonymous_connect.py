@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 import respx
 
-from dooers.auth_validation import AuthValidationClient
+from dooers.auth_validation import AuthValidationClient, AuthValidationResult
 from dooers.handlers.router import Router
 from dooers.protocol.frames import C2S_Connect, ConnectPayload
 from dooers.protocol.models import User
@@ -306,3 +306,119 @@ async def test_authenticated_user_with_failed_webhook_is_rejected(validator):
     ack = _last_ack(ws)
     assert ack["payload"]["ok"] is False
     assert ack["payload"]["error"]["code"] == "CONNECTION_REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_guest_connect_merges_frame_metadata_into_user(validator):
+    """Guest connections merge frame.payload.metadata into the webhook-seeded user.metadata.
+
+    The merge is additive: webhook-supplied keys are preserved unless the frame
+    overrides them. Frame-supplied keys win on ties.
+    """
+    router = _make_router(auth_validator=validator)
+    ws = FakeWebSocket()
+
+    frame = C2S_Connect(
+        id="frame-1",
+        type="connect",
+        payload=ConnectPayload(
+            agent_id="agent-1",
+            organization_id="org-1",
+            workspace_id="ws-1",
+            user=User(user_id=""),
+            auth_token="tok",
+            metadata={"phone": "+15555550123", "company": "Acme"},
+        ),
+    )
+
+    # Frame must actually carry metadata (otherwise Pydantic silently drops it
+    # and there's nothing to merge or discard).
+    assert frame.payload.metadata == {"phone": "+15555550123", "company": "Acme"}
+
+    # Stub the validator: webhook returns a guest with a pre-existing metadata
+    # bag (e.g. seeded by the public-chat-link resolver).
+    validator.validate = AsyncMock(
+        return_value=AuthValidationResult(
+            valid=True,
+            user=User(
+                user_id="guest:abc",
+                user_email="",
+                connection_type="guest",
+                metadata={"link_id": "pcl_uuid"},
+            ),
+            organization_id="org-1",
+            workspace_id="ws-1",
+            connection_type="guest",
+        )
+    )
+
+    await router._handle_connect(ws, frame)
+
+    ack = _last_ack(ws)
+    assert ack["payload"]["ok"] is True
+    assert router._user is not None
+    assert router._user.connection_type == "guest"
+    # Frame-supplied keys are merged in.
+    assert router._user.metadata["phone"] == "+15555550123"
+    assert router._user.metadata["company"] == "Acme"
+    # Webhook-supplied keys are preserved (additive merge).
+    assert router._user.metadata["link_id"] == "pcl_uuid"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_connect_discards_frame_metadata(validator):
+    """Dashboard connections silently discard frame.payload.metadata.
+
+    The webhook is the sole source of truth for authenticated sessions —
+    a client-supplied metadata bag must not leak into the user state.
+    """
+    router = _make_router(auth_validator=validator)
+    ws = FakeWebSocket()
+
+    frame = C2S_Connect(
+        id="frame-1",
+        type="connect",
+        payload=ConnectPayload(
+            agent_id="agent-1",
+            organization_id="org-1",
+            workspace_id="ws-1",
+            user=User(user_id="user-123"),
+            auth_token="tok",
+            metadata={"phone": "EVIL"},
+        ),
+    )
+
+    # Frame must actually carry metadata so the discard policy has something
+    # to ignore. If Pydantic drops the field silently, the test asserts the
+    # field shape and fails early — the protection must be explicit.
+    assert frame.payload.metadata == {"phone": "EVIL"}
+
+    # Stub the validator: webhook returns a dashboard user with its own
+    # metadata bag — the source of truth.
+    validator.validate = AsyncMock(
+        return_value=AuthValidationResult(
+            valid=True,
+            user=User(
+                user_id="user-123",
+                user_email="user@test.com",
+                organization_role="owner",
+                workspace_role="manager",
+                connection_type="dashboard",
+                metadata={"email_verified": True},
+            ),
+            organization_id="org-1",
+            workspace_id="ws-1",
+            connection_type="dashboard",
+        )
+    )
+
+    await router._handle_connect(ws, frame)
+
+    ack = _last_ack(ws)
+    assert ack["payload"]["ok"] is True
+    assert router._user is not None
+    assert router._user.connection_type == "dashboard"
+    # Webhook-supplied metadata is intact.
+    assert router._user.metadata.get("email_verified") is True
+    # Frame-supplied metadata was discarded.
+    assert "phone" not in router._user.metadata

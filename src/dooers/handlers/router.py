@@ -16,6 +16,7 @@ from dooers.auth_validation import AuthValidationClient
 from dooers.config import AgentConfig
 from dooers.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.features.settings.models import SettingsFieldVisibility
+from dooers.handlers.context import ContextAgent, ContextOrganization, ContextWorkspace
 from dooers.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.persistence.base import Persistence
 from dooers.protocol.frames import (
@@ -162,6 +163,9 @@ class Router:
         self._organization_id: str = ""
         self._workspace_id: str = ""
         self._agent_owner_user_id: str | None = None
+        self._organization_context: ContextOrganization = ContextOrganization()
+        self._workspace_context: ContextWorkspace = ContextWorkspace()
+        self._agent_context: ContextAgent = ContextAgent()
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
@@ -390,10 +394,35 @@ class Router:
                     patches["user_email"] = incoming_user.user_email
                 if patches:
                     self._user = self._user.model_copy(update=patches)
+            # Merge guest pre-chat metadata (phone, company, etc.) from the
+            # frame. Independent of incoming_user — frame-level metadata is
+            # carried alongside the user object. Frame keys overwrite webhook
+            # keys on collision. Authenticated sessions (dashboard,
+            # public_authenticated) silently discard frame.payload.metadata —
+            # the webhook is the sole source of truth.
+            if self._user.connection_type == "guest" and frame.payload.metadata:
+                merged = {**self._user.metadata, **frame.payload.metadata}
+                self._user = self._user.model_copy(update={"metadata": merged})
             self._rate_limits = result.rate_limits
             self._agent_owner_user_id = result.agent_owner_user_id
             self._organization_id = result.organization_id or frame.payload.organization_id
             self._workspace_id = result.workspace_id or frame.payload.workspace_id
+            self._organization_context = ContextOrganization(
+                id=self._organization_id,
+                role=self._user.organization_role if self._user else "member",
+                plan=result.organization_plan,
+                metadata=result.organization_metadata,
+            )
+            self._workspace_context = ContextWorkspace(
+                id=self._workspace_id,
+                role=self._user.workspace_role if self._user else "member",
+                metadata=result.workspace_metadata,
+            )
+            self._agent_context = ContextAgent(
+                id=self._agent_id or "",
+                owner_user_id=self._agent_owner_user_id,
+                metadata=result.agent_metadata,
+            )
         else:
             # Authenticated path: when an auth validator is configured, the
             # validator auto-detects JWT vs opaque token. For JWTs the
@@ -441,6 +470,22 @@ class Router:
                 self._workspace_id = result.workspace_id or self._workspace_id
                 self._agent_owner_user_id = result.agent_owner_user_id
                 self._rate_limits = result.rate_limits or {}
+                self._organization_context = ContextOrganization(
+                    id=self._organization_id,
+                    role=self._user.organization_role if self._user else "member",
+                    plan=result.organization_plan,
+                    metadata=result.organization_metadata,
+                )
+                self._workspace_context = ContextWorkspace(
+                    id=self._workspace_id,
+                    role=self._user.workspace_role if self._user else "member",
+                    metadata=result.workspace_metadata,
+                )
+                self._agent_context = ContextAgent(
+                    id=self._agent_id or "",
+                    owner_user_id=self._agent_owner_user_id,
+                    metadata=result.agent_metadata,
+                )
             else:
                 # No validator configured — trust the frame identity (legacy).
                 self._user = incoming_user
@@ -679,6 +724,9 @@ class Router:
             channel=channel,
             channel_meta=channel_meta,
             user=user,
+            organization=self._organization_context,
+            workspace=self._workspace_context,
+            agent=self._agent_context,
             thread_id=frame.payload.thread_id,
             content=content_parts,
             data=frame.payload.event.data,

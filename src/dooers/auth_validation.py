@@ -64,6 +64,9 @@ class AuthValidationResult:
     agent_id: str = ""
     agent_owner_user_id: str | None = None
     organization_plan: str = "free"
+    organization_metadata: dict[str, Any] = field(default_factory=dict)
+    workspace_metadata: dict[str, Any] = field(default_factory=dict)
+    agent_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class AuthValidationClient:
@@ -143,6 +146,7 @@ class AuthValidationClient:
             organization_role=ctx.organization.role or "member",
             workspace_role=ctx.workspace.role or "member",
             connection_type=ctx.connection_type or "dashboard",
+            metadata=ctx.user.metadata,
         )
 
         rate_limits: dict[str, Any] = {}
@@ -160,6 +164,9 @@ class AuthValidationClient:
             agent_id=ctx.agent.id,
             agent_owner_user_id=ctx.agent.owner_user_id,
             organization_plan=ctx.organization.plan,
+            organization_metadata=ctx.organization.metadata,
+            workspace_metadata=ctx.workspace.metadata,
+            agent_metadata=ctx.agent.metadata,
         )
 
     async def _validate_legacy(
@@ -222,6 +229,8 @@ class AuthValidationClient:
                 system_role=ctx.user.system_role or "user",
                 organization_role=ctx.organization.role or "member",
                 workspace_role=ctx.workspace.role or "member",
+                connection_type=ctx.connection_type or "dashboard",
+                metadata=ctx.user.metadata,
             )
 
             rate_limits: dict[str, Any] = {}
@@ -239,6 +248,9 @@ class AuthValidationClient:
                 agent_id=ctx.agent.id,
                 agent_owner_user_id=ctx.agent.owner_user_id,
                 organization_plan=ctx.organization.plan,
+                organization_metadata=ctx.organization.metadata,
+                workspace_metadata=ctx.workspace.metadata,
+                agent_metadata=ctx.agent.metadata,
             )
 
         # Legacy flat response shape (backwards compatibility).
