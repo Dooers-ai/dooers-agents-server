@@ -1,6 +1,6 @@
 # Agents server SDK — handler API reference
 
-Python package: **`dooers`** (`pip install dooers-agents-server`).
+Python package: **`dooers`** (`pip install dooers-agents`).
 
 Handlers are async generators with a fixed signature. The first argument is often named `incoming` or `on` (same object).
 

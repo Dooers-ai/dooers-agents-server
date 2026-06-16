@@ -5,7 +5,7 @@ Python agents server SDK for agents client SDK.
 ## Install
 
 ```bash
-pip install dooers-agents-server
+pip install dooers-agents
 ```
 
 ## How It Works
@@ -442,7 +442,7 @@ agent_server = AgentServer(AgentConfig(
 
 ### Azure Cosmos DB
 
-Requires the cosmos extra: `pip install dooers-agents-server[cosmos]`
+Requires the cosmos extra: `pip install dooers-agents[cosmos]`
 
 ```python
 agent_server = AgentServer(AgentConfig(

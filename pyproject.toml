@@ -1,5 +1,5 @@
 [project]
-name = "dooers-agents-server"
+name = "dooers-agents"
 version = "0.10.2"
 description = "agents-server — Python SDK for building AI agent services"
 readme = "README.md"

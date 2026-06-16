@@ -1,14 +1,14 @@
 # Agent settings (worker settings)
 
-This document describes how **configurable settings** work in the agents stack: who defines them, what fields and parameters are available, how values are stored, and how a **frontend** built with **dooers-agents-client** can display and edit them.
+This document describes how **configurable settings** work in the agents stack: who defines them, what fields and parameters are available, how values are stored, and how a **frontend** built with the **dooers-agents** React SDK can display and edit them.
 
 ## Roles
 
 | Piece | Responsibility |
 |-------|------------------|
-| **dooers-agents-server** | Provides `SettingsSchema`, `SettingsField`, `SettingsFieldGroup`, `SettingsFieldType`, persistence per `worker_id`, WebSocket frames (`settings.*`), and the handler API `WorkerSettings`. |
+| **dooers-agents** _(Python SDK)_ | Provides `SettingsSchema`, `SettingsField`, `SettingsFieldGroup`, `SettingsFieldType`, persistence per `worker_id`, WebSocket frames (`settings.*`), and the handler API `WorkerSettings`. |
 | **Your worker (agent)** | Declares **one** `SettingsSchema` instance and passes it in `WorkerConfig(settings_schema=...)`. You choose field IDs, labels, types, defaults, and which fields are user-editable vs internal. |
-| **dooers-agents-client** | Subscribes over WebSocket, receives a **snapshot** of schema + current values, and can **patch** individual fields. The UI maps each field `type` to a control. |
+| **dooers-agents** _(React SDK)_ | Subscribes over WebSocket, receives a **snapshot** of schema + current values, and can **patch** individual fields. The UI maps each field `type` to a control. |
 
 The **schema is not** global to the platform: each worker ships its own schema in code (for example `agente_dufrio` uses `schemas.py`).
 
