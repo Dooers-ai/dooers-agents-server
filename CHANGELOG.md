@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-06-17
+
+### Changed
+
+- **BREAKING — package rename.** The PyPI distribution is renamed **`dooers-agents-server` → `dooers-agents`** and the importable module is renamed **`dooers` → `dooers_agents`**. Update imports: `from dooers import AgentServer` → `from dooers_agents import AgentServer`. The public API is otherwise unchanged. Previously published versions remain available on PyPI under the old `dooers-agents-server` name; new releases publish as `dooers-agents`.
+
 ## [0.10.2] — 2026-05-13
 
 ### Added
