@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 import respx
 
-from dooers.auth_validation import AuthValidationClient
+from dooers_agents.auth_validation import AuthValidationClient
 
 
 @pytest_asyncio.fixture

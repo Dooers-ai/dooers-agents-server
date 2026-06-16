@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI, WebSocket
 from openai import AsyncOpenAI
 
-from dooers import (
+from dooers_agents import (
     AgentConfig,
     AgentServer,
     SettingsField,

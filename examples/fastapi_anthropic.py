@@ -3,7 +3,7 @@ import os
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI, WebSocket
 
-from dooers import (
+from dooers_agents import (
     AgentConfig,
     AgentServer,
     SettingsField,

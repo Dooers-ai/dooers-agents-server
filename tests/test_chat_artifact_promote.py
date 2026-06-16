@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from dooers.config import AgentConfig
-from dooers.storage.chat_artifact_keys import build_chat_artifact_object_key
-from dooers.storage.chat_artifacts import (
+from dooers_agents.config import AgentConfig
+from dooers_agents.storage.chat_artifact_keys import build_chat_artifact_object_key
+from dooers_agents.storage.chat_artifacts import (
     promote_orphan_chat_artifact_if_present,
     try_fetch_upload_entry_from_blob,
 )
@@ -22,7 +22,7 @@ def _cfg_gcp() -> AgentConfig:
 
 def test_promote_skips_when_storage_none() -> None:
     cfg = AgentConfig(database_type="postgres", chat_storage_service="none")
-    with patch("dooers.storage.chat_artifacts.gcs.download_bytes") as dl:
+    with patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes") as dl:
         promote_orphan_chat_artifact_if_present(
             cfg,
             agent_id="a1",
@@ -46,9 +46,9 @@ def test_promote_skips_when_thread_id_empty() -> None:
 def test_promote_skips_when_no_orphan_bytes() -> None:
     cfg = _cfg_gcp()
     with (
-        patch("dooers.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]),
-        patch("dooers.storage.chat_artifacts.gcs.copy_blob_same_bucket", return_value=None),
-        patch("dooers.storage.chat_artifacts.gcs.download_bytes", return_value=None) as dl,
+        patch("dooers_agents.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]),
+        patch("dooers_agents.storage.chat_artifacts.gcs.copy_blob_same_bucket", return_value=None),
+        patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes", return_value=None) as dl,
     ):
         promote_orphan_chat_artifact_if_present(
             cfg,
@@ -70,15 +70,15 @@ def test_promote_gcp_uploads_then_deletes_source() -> None:
         filename="x.png",
     )
     with (
-        patch("dooers.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]) as ex,
-        patch("dooers.storage.chat_artifacts.gcs.copy_blob_same_bucket", return_value=None),
-        patch("dooers.storage.chat_artifacts.gcs.download_bytes", return_value=payload) as dl,
+        patch("dooers_agents.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]) as ex,
+        patch("dooers_agents.storage.chat_artifacts.gcs.copy_blob_same_bucket", return_value=None),
+        patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes", return_value=payload) as dl,
         patch(
-            "dooers.storage.chat_artifacts.gcs.upload_bytes_to_blob_name",
+            "dooers_agents.storage.chat_artifacts.gcs.upload_bytes_to_blob_name",
             return_value="gs://test-bucket/x",
         ) as up,
         patch(
-            "dooers.storage.chat_artifacts._gcs_delete_blob_with_retries",
+            "dooers_agents.storage.chat_artifacts._gcs_delete_blob_with_retries",
             return_value=True,
         ) as rm,
     ):
@@ -100,11 +100,11 @@ def test_promote_gcp_uploads_then_deletes_source() -> None:
 def test_promote_gcp_when_dest_exists_only_deletes_source() -> None:
     cfg = _cfg_gcp()
     with (
-        patch("dooers.storage.chat_artifacts.gcs.download_bytes") as dl,
-        patch("dooers.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, True]),
-        patch("dooers.storage.chat_artifacts.gcs.upload_bytes_to_blob_name") as up,
+        patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes") as dl,
+        patch("dooers_agents.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, True]),
+        patch("dooers_agents.storage.chat_artifacts.gcs.upload_bytes_to_blob_name") as up,
         patch(
-            "dooers.storage.chat_artifacts._gcs_delete_blob_with_retries",
+            "dooers_agents.storage.chat_artifacts._gcs_delete_blob_with_retries",
             return_value=True,
         ) as rm,
     ):
@@ -123,12 +123,12 @@ def test_promote_gcp_when_dest_exists_only_deletes_source() -> None:
 def test_promote_gcp_no_delete_when_upload_fails() -> None:
     cfg = _cfg_gcp()
     with (
-        patch("dooers.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]),
-        patch("dooers.storage.chat_artifacts.gcs.copy_blob_same_bucket", return_value=None),
-        patch("dooers.storage.chat_artifacts.gcs.download_bytes", return_value=b"data"),
-        patch("dooers.storage.chat_artifacts.gcs.upload_bytes_to_blob_name", return_value=None),
+        patch("dooers_agents.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]),
+        patch("dooers_agents.storage.chat_artifacts.gcs.copy_blob_same_bucket", return_value=None),
+        patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes", return_value=b"data"),
+        patch("dooers_agents.storage.chat_artifacts.gcs.upload_bytes_to_blob_name", return_value=None),
         patch(
-            "dooers.storage.chat_artifacts._gcs_delete_blob_with_retries",
+            "dooers_agents.storage.chat_artifacts._gcs_delete_blob_with_retries",
             return_value=True,
         ) as rm,
     ):
@@ -151,15 +151,15 @@ def test_promote_gcp_server_side_copy_skips_download_upload() -> None:
         filename="x.png",
     )
     with (
-        patch("dooers.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]),
+        patch("dooers_agents.storage.chat_artifacts._gcs_blob_exists", side_effect=[True, False]),
         patch(
-            "dooers.storage.chat_artifacts.gcs.copy_blob_same_bucket",
+            "dooers_agents.storage.chat_artifacts.gcs.copy_blob_same_bucket",
             return_value="gs://test-bucket/d",
         ) as cp,
-        patch("dooers.storage.chat_artifacts.gcs.download_bytes") as dl,
-        patch("dooers.storage.chat_artifacts.gcs.upload_bytes_to_blob_name") as up,
+        patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes") as dl,
+        patch("dooers_agents.storage.chat_artifacts.gcs.upload_bytes_to_blob_name") as up,
         patch(
-            "dooers.storage.chat_artifacts._gcs_delete_blob_with_retries",
+            "dooers_agents.storage.chat_artifacts._gcs_delete_blob_with_retries",
             return_value=True,
         ) as rm,
     ):
@@ -193,7 +193,7 @@ def test_try_fetch_falls_back_to_no_thread_when_thread_key_missing() -> None:
         ref_id="r1",
         filename="x.png",
     )
-    with patch("dooers.storage.chat_artifacts.gcs.download_bytes") as dl:
+    with patch("dooers_agents.storage.chat_artifacts.gcs.download_bytes") as dl:
         dl.side_effect = [None, b"orphan-bytes"]
         entry = try_fetch_upload_entry_from_blob(
             cfg,

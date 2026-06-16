@@ -32,7 +32,7 @@ poe pcu:upgrade         # Upgrade dependencies
 ### Core Components
 
 ```
-src/dooers/
+src/dooers_agents/
 ├── server.py           # AgentServer: main entry point, manages connections
 ├── config.py           # AgentConfig: database and feature configuration
 ├── dispatch.py         # DispatchStream: programmatic handler execution

@@ -16,8 +16,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from dooers.persistence.postgres import PostgresPersistence
-from dooers.protocol.models import Thread, ThreadEvent, User
+from dooers_agents.persistence.postgres import PostgresPersistence
+from dooers_agents.protocol.models import Thread, ThreadEvent, User
 
 PG_HOST = os.environ.get("TEST_PG_HOST", "localhost")
 PG_PORT = int(os.environ.get("TEST_PG_PORT", "5555"))

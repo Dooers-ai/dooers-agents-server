@@ -4,7 +4,7 @@ from fastapi import FastAPI, WebSocket
 from google import genai
 from google.genai import types
 
-from dooers import AgentConfig, AgentServer
+from dooers_agents import AgentConfig, AgentServer
 
 app = FastAPI()
 agent_server = AgentServer(

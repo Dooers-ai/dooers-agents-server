@@ -35,7 +35,7 @@ The primary entry point. A WebSocket connection sends messages, and the handler 
 ```python
 from fastapi import FastAPI, WebSocket
 from openai import AsyncOpenAI
-from dooers import AgentServer, AgentConfig
+from dooers_agents import AgentServer, AgentConfig
 
 app = FastAPI()
 openai = AsyncOpenAI()
@@ -76,7 +76,7 @@ async def ws(websocket: WebSocket):
 For REST endpoints, webhooks, background jobs — anything outside a WebSocket connection. You provide the context explicitly and iterate over the handler's events.
 
 ```python
-from dooers import User
+from dooers_agents import User
 
 @app.post("/api/webhook")
 async def webhook(request: Request):
@@ -208,7 +208,7 @@ await settings.set("field_id", new_value)
 Full signature for programmatic handler execution.
 
 ```python
-from dooers import User
+from dooers_agents import User
 
 stream = await agent_server.dispatch(
     handler=my_handler,
@@ -246,7 +246,7 @@ events = await stream.collect()
 ### Error Handling
 
 ```python
-from dooers import DispatchError, HandlerError
+from dooers_agents import DispatchError, HandlerError
 
 try:
     stream = await agent_server.dispatch(...)
@@ -314,7 +314,7 @@ await analytics.track("custom.event")
 Define configurable settings for your agent.
 
 ```python
-from dooers import (
+from dooers_agents import (
     AgentConfig,
     AgentServer,
     SettingsSchema,
@@ -472,7 +472,7 @@ agent_server = AgentServer(AgentConfig(
 Users have three role levels that determine thread visibility:
 
 ```python
-from dooers import User
+from dooers_agents import User
 
 user = User(
     user_id="user-1",

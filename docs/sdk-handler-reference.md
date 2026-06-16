@@ -1,6 +1,6 @@
 # Agents server SDK — handler API reference
 
-Python package: **`dooers`** (`pip install dooers-agents`).
+Python package: **`dooers_agents`** (`pip install dooers-agents`).
 
 Handlers are async generators with a fixed signature. The first argument is often named `incoming` or `on` (same object).
 
@@ -245,7 +245,7 @@ Backed by `settings_schema` on `AgentConfig`. Values are stored **per `agent_id`
 3. No **handler**, usar `await settings.get(...)` / `get_all()` / `set()` — os mesmos valores que o frontend edita (exceto campos `INTERNAL`, só no servidor).
 
 ```python
-from dooers import (
+from dooers_agents import (
     AgentConfig,
     AgentServer,
     SettingsSchema,

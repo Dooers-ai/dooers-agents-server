@@ -14,7 +14,7 @@ import os
 
 from fastapi import FastAPI, Request, WebSocket
 
-from dooers import AgentConfig, AgentServer, User, normalize_e164, whatsapp_thread_id
+from dooers_agents import AgentConfig, AgentServer, User, normalize_e164, whatsapp_thread_id
 
 logger = logging.getLogger(__name__)
 

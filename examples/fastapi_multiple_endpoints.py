@@ -8,7 +8,7 @@
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse
 
-from dooers import AgentConfig, AgentServer
+from dooers_agents import AgentConfig, AgentServer
 
 app = FastAPI()
 agent_server = AgentServer(

@@ -3,7 +3,7 @@ import uuid
 import httpx
 from fastapi import FastAPI, WebSocket
 
-from dooers import AgentConfig, AgentServer
+from dooers_agents import AgentConfig, AgentServer
 
 app = FastAPI()
 agent_server = AgentServer(

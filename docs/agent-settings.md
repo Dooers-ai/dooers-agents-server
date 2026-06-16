@@ -25,7 +25,7 @@ The **schema is not** global to the platform: each worker ships its own schema i
 ## Defining a schema in Python
 
 ```python
-from dooers import (
+from dooers_agents import (
     SettingsSchema,
     SettingsField,
     SettingsFieldGroup,
@@ -206,4 +206,4 @@ Values are stored per **`worker_id`** (same persistence layer as threads/events)
 - [README.md](../README.md) — “Settings Schema” quick example and handler `settings` usage  
 - [dooers-agents-client README](https://github.com/Dooers-ai/dooers-agents-client) — `useSettings` and store shape  
 
-Source of truth for Python models: `src/dooers/features/settings/models.py`.
+Source of truth for Python models: `src/dooers_agents/features/settings/models.py`.

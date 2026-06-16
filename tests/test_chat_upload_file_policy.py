@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dooers.storage.chat_upload_file_policy import (
+from dooers_agents.storage.chat_upload_file_policy import (
     enforce_allowed_chat_file_kind,
     infer_chat_upload_kind,
 )
