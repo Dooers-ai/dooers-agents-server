@@ -216,6 +216,12 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
+class C2S_Ping(BaseModel):
+    id: str
+    type: Literal["ping"] = "ping"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 ClientToServer = Annotated[
     C2S_Connect
     | C2S_ThreadList
@@ -232,7 +238,8 @@ ClientToServer = Annotated[
     | C2S_SettingsPatch
     | C2S_SettingsPublicSchema
     | C2S_SettingsSeed
-    | C2S_SettingsMergeServiceSecrets,
+    | C2S_SettingsMergeServiceSecrets
+    | C2S_Ping,
     Field(discriminator="type"),
 ]
 
@@ -383,6 +390,12 @@ class S2C_SettingsPublicSchemaResult(BaseModel):
     payload: SettingsPublicSchemaResultPayload
 
 
+class S2C_Pong(BaseModel):
+    id: str
+    type: Literal["pong"] = "pong"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 ServerToClient = (
     S2C_Ack
     | S2C_ThreadListResult
@@ -397,4 +410,5 @@ ServerToClient = (
     | S2C_SettingsSnapshot
     | S2C_SettingsPatch
     | S2C_SettingsPublicSchemaResult
+    | S2C_Pong
 )

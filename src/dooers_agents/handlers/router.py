@@ -32,6 +32,7 @@ from dooers_agents.protocol.frames import (
     C2S_SettingsSeed,
     C2S_SettingsSubscribe,
     C2S_SettingsUnsubscribe,
+    C2S_Ping,
     C2S_ThreadDelete,
     C2S_ThreadList,
     C2S_ThreadSubscribe,
@@ -45,6 +46,7 @@ from dooers_agents.protocol.frames import (
     S2C_EventAppend,
     S2C_EventListResult,
     S2C_FeedbackAck,
+    S2C_Pong,
     S2C_RunUpsert,
     S2C_SettingsPublicSchemaResult,
     S2C_ThreadDeleted,
@@ -303,6 +305,15 @@ class Router:
                 await self._handle_settings_seed(ws, frame)
             case C2S_SettingsMergeServiceSecrets():
                 await self._handle_settings_merge_service_secrets(ws, frame)
+
+            case C2S_Ping():
+                await self._handle_ping(ws, frame)
+
+    async def _handle_ping(self, ws: WebSocketProtocol, frame: C2S_Ping) -> None:
+        await self._send(
+            ws,
+            S2C_Pong(id=_generate_id(), payload={}),
+        )
 
     async def cleanup(self) -> None:
         logger.info(
