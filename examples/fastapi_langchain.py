@@ -4,7 +4,7 @@ from fastapi import FastAPI, WebSocket
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from dooers_agents import AgentConfig, AgentServer
+from dooers.agents.server import AgentConfig, AgentServer
 
 app = FastAPI()
 agent_server = AgentServer(

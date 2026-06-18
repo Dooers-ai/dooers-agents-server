@@ -2,11 +2,11 @@
 
 import pytest
 
-from dooers_agents.handlers.context import AgentContext
-from dooers_agents.handlers.incoming import AgentIncoming
-from dooers_agents.llm import format_user_input
-from dooers_agents.llm.types import LlmWireFormat
-from dooers_agents.protocol.models import AudioPart, DocumentPart, ImagePart, TextPart, User
+from dooers.agents.server.handlers.context import AgentContext
+from dooers.agents.server.handlers.incoming import AgentIncoming
+from dooers.agents.server.llm import format_user_input
+from dooers.agents.server.llm.types import LlmWireFormat
+from dooers.agents.server.protocol.models import AudioPart, DocumentPart, ImagePart, TextPart, User
 
 
 def _ctx(*, tid="t1", eid="e1", aid="a1") -> AgentContext:

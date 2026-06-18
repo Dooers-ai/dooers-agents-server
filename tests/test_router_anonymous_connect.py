@@ -9,11 +9,11 @@ import pytest
 import pytest_asyncio
 import respx
 
-from dooers_agents.auth_validation import AuthValidationClient
-from dooers_agents.handlers.router import Router
-from dooers_agents.protocol.frames import C2S_Connect, ConnectPayload
-from dooers_agents.protocol.models import User
-from dooers_agents.registry import ConnectionRegistry
+from dooers.agents.server.auth_validation import AuthValidationClient
+from dooers.agents.server.handlers.router import Router
+from dooers.agents.server.protocol.frames import C2S_Connect, ConnectPayload
+from dooers.agents.server.protocol.models import User
+from dooers.agents.server.registry import ConnectionRegistry
 
 
 class FakeWebSocket:

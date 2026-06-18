@@ -6,7 +6,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-from dooers_agents import AgentConfig, AgentServer
+from dooers.agents.server import AgentConfig, AgentServer
 
 app = FastAPI()
 agent_server = AgentServer(

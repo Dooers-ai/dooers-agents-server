@@ -1,9 +1,9 @@
 from collections.abc import AsyncGenerator
 
-from dooers_agents.features.channels.whatsapp.thread_id import normalize_e164, whatsapp_thread_id
-from dooers_agents.handlers.pipeline import HandlerContext, HandlerPipeline
-from dooers_agents.handlers.send import AgentEvent, AgentSend
-from dooers_agents.protocol.models import User
+from dooers.agents.server.features.channels.whatsapp.thread_id import normalize_e164, whatsapp_thread_id
+from dooers.agents.server.handlers.pipeline import HandlerContext, HandlerPipeline
+from dooers.agents.server.handlers.send import AgentEvent, AgentSend
+from dooers.agents.server.protocol.models import User
 
 
 async def _dummy_handler(*_args) -> AsyncGenerator[AgentEvent, None]:
@@ -72,7 +72,7 @@ def test_resolve_whatsapp_event_skips_non_whatsapp_channel():
 def test_tools_base_url_env_override(monkeypatch):
     import importlib
 
-    import dooers_agents.features.channels.whatsapp.config as wa_cfg
+    import dooers.agents.server.features.channels.whatsapp.config as wa_cfg
 
     monkeypatch.setenv("DOOERS_WHATSAPP_TOOLS_BASE", "http://127.0.0.1:8810")
     importlib.reload(wa_cfg)

@@ -1,13 +1,13 @@
 """Tests for ``handlers.content_policy`` helpers."""
 
-from dooers_agents.exceptions import UnsupportedContentTypeError
-from dooers_agents.handlers.content_policy import (
+from dooers.agents.server.exceptions import UnsupportedContentTypeError
+from dooers.agents.server.handlers.content_policy import (
     enforce_allowed_content_types,
     format_allowed_content_policy_denial,
     normalize_allowed_content_types,
     parse_allowed_content_types_setting,
 )
-from dooers_agents.protocol.models import AudioPart, ImagePart, TextPart
+from dooers.agents.server.protocol.models import AudioPart, ImagePart, TextPart
 
 
 def test_parse_allowed_empty_means_none() -> None:

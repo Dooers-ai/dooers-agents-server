@@ -4,7 +4,7 @@ import uuid
 from agents import Agent, Runner, function_tool
 from fastapi import FastAPI, WebSocket
 
-from dooers_agents import AgentConfig, AgentServer
+from dooers.agents.server import AgentConfig, AgentServer
 
 app = FastAPI()
 agent_server = AgentServer(
