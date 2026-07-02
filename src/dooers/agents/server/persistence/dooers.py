@@ -72,7 +72,10 @@ class DooersPersistence(PostgresPersistence):
         self._connector = AsyncConnector()
         ip = IPTypes.PUBLIC if self._ip_type == "PUBLIC" else IPTypes.PRIVATE
 
-        async def _getconn() -> asyncpg.Connection:
+        async def _getconn(*args: object, **kwargs: object) -> asyncpg.Connection:
+            # asyncpg's pool calls this factory with its own connection kwargs
+            # (e.g. loop=...); the AlloyDB connector supplies all real params, so
+            # we accept and ignore them.
             return await self._connector.connect(
                 self._instance_uri,
                 "asyncpg",

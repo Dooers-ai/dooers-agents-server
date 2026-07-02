@@ -19,7 +19,9 @@ async def test_connect_uses_alloydb_iam_no_password():
 
     async def fake_create_pool(*args, **kwargs):
         created["kwargs"] = kwargs
-        await kwargs["connect"]()  # exercise the connection factory
+        # asyncpg invokes the `connect` factory with its own kwargs (e.g. loop=...);
+        # the factory must tolerate them.
+        await kwargs["connect"](loop=object())
         return MagicMock()
 
     with (
