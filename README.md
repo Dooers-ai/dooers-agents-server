@@ -152,6 +152,10 @@ yield send.text("Hello!", author="Support Bot")   # Override assistant_name
 yield send.image(url, mime_type?, alt?, author?)
 yield send.document(url, filename, mime_type, author?)
 
+# Reasoning (collapsible "thinking" block; not fed back to the LLM history)
+yield send.reasoning("Considering the user's constraints…")
+yield send.reasoning(text, author?)
+
 # Tool calls
 yield send.tool_call(name, args, display_name?, id?)
 yield send.tool_result(name, result, args?, display_name?, id?)

@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 Actor = Literal["user", "assistant", "system", "tool"]
-EventType = Literal["message", "run.started", "run.finished", "tool.call", "tool.result", "tool.transaction", "form", "form.response"]
+EventType = Literal["message", "reasoning", "run.started", "run.finished", "tool.call", "tool.result", "tool.transaction", "form", "form.response"]
 RunStatus = Literal["running", "succeeded", "failed", "canceled"]
 
 

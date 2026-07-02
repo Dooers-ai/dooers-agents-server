@@ -167,6 +167,7 @@ Detalhes de analytics e schema de settings nas secções 4 e 5 abaixo.
 | `send.image(url, mime_type=None, alt=None, author=None)` | `image` | Image attachment |
 | `send.document(url, filename, mime_type, author=None)` | `document` | File attachment |
 | `send.audio(url, mime_type, duration=None, author=None)` | `audio` | Audio attachment |
+| `send.reasoning(text, author=None)` | `reasoning` | Assistant reasoning shown as a collapsible block; stored as a `reasoning` event (text in `data.text`) and kept out of `content`/`memory.get_history` (not fed to the LLM) |
 | `send.tool_call(name, args, display_name=None, id=None)` | `tool_call` | Tool invocation (UI + history) |
 | `send.tool_result(name, result, args=None, display_name=None, id=None)` | `tool_result` | Tool output (pair with `tool_call` via matching `id` when used) |
 | `send.tool_transaction(name, args, result, display_name=None, id=None)` | `tool_transaction` | Combined tool call + result in one event |

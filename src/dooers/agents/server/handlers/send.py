@@ -164,6 +164,13 @@ class AgentSend:
             },
         )
 
+    def reasoning(self, text: str, author: str | None = None) -> AgentEvent:
+        """Assistant reasoning / chain-of-thought shown as a collapsible block (not sent to the LLM history)."""
+        return AgentEvent(
+            send_type="reasoning",
+            data={"text": text, "author": author},
+        )
+
     def tool_call(
         self,
         name: str,

@@ -478,6 +478,30 @@ class HandlerPipeline:
                         workspace_id=context.workspace_id,
                     )
 
+                elif event.send_type == "reasoning":
+                    # Assistant reasoning: separate event type (kept out of `content`
+                    # so it never feeds memory.get_history / the LLM). Not dispatched
+                    # to external channels (WhatsApp) — internal display only.
+                    thread_event = ThreadEvent(
+                        id=_generate_id(),
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="reasoning",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        data={"text": event.data["text"]},
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._broadcast(
+                        context.agent_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+
                 elif event.send_type == "audio":
                     event_id = _generate_id()
                     thread_event = ThreadEvent(
