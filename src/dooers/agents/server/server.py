@@ -47,44 +47,6 @@ logger = logging.getLogger(__name__)
 _agents = logging.getLogger("agents")
 
 
-def _build_persistence(config: AgentConfig) -> Persistence:
-    """Select the persistence backend from ``config.database_type``.
-
-    ``dooers`` connects to the platform-managed AlloyDB via IAM (no password);
-    ``cosmos`` uses Azure Cosmos; anything else uses the self-provided Postgres.
-    """
-    if config.database_type == "cosmos":
-        from dooers.agents.server.persistence.cosmos import CosmosPersistence
-
-        return CosmosPersistence(
-            endpoint=config.database_host,
-            key=config.database_key,
-            database=config.database_name,
-            table_prefix=config.database_table_prefix,
-            on_settings_updated=config.on_settings_updated,
-        )
-    if config.database_type == "dooers":
-        from dooers.agents.server.persistence.dooers import DooersPersistence
-
-        return DooersPersistence(
-            instance_uri=config.database_instance_uri,
-            user=config.database_user,
-            database=config.database_name,
-            table_prefix=config.database_table_prefix,
-            on_settings_updated=config.on_settings_updated,
-        )
-    return PostgresPersistence(
-        host=config.database_host,
-        port=config.database_port,
-        user=config.database_user,
-        database=config.database_name,
-        password=config.database_password,
-        ssl=config.database_ssl,
-        table_prefix=config.database_table_prefix,
-        on_settings_updated=config.on_settings_updated,
-    )
-
-
 class AgentServer:
     def __init__(self, config: AgentConfig):
         self._config = config
@@ -253,7 +215,27 @@ class AgentServer:
         if self._persistence and self._initialized:
             return self._persistence
 
-        self._persistence = _build_persistence(self._config)
+        if self._config.database_type == "cosmos":
+            from dooers.agents.server.persistence.cosmos import CosmosPersistence
+
+            self._persistence = CosmosPersistence(
+                endpoint=self._config.database_host,
+                key=self._config.database_key,
+                database=self._config.database_name,
+                table_prefix=self._config.database_table_prefix,
+                on_settings_updated=self._config.on_settings_updated,
+            )
+        else:
+            self._persistence = PostgresPersistence(
+                host=self._config.database_host,
+                port=self._config.database_port,
+                user=self._config.database_user,
+                database=self._config.database_name,
+                password=self._config.database_password,
+                ssl=self._config.database_ssl,
+                table_prefix=self._config.database_table_prefix,
+                on_settings_updated=self._config.on_settings_updated,
+            )
 
         await self._persistence.connect()
 
@@ -303,6 +285,14 @@ class AgentServer:
                 self._run_guest_cleanup_loop(),
                 name="dooers-guest-thread-cleanup",
             )
+
+        from dooers.agents.server.observability.otel import init_otel
+        init_otel(
+            otel_service_url=self._config.otel_service_url,
+            core_base_url=self._config.agent_core_base_url,
+            persistence=self._persistence,
+            service_name=self._config.otel_service_name,
+        )
 
         self._initialized = True
         return self._persistence
@@ -454,7 +444,21 @@ class AgentServer:
         if not result.is_new_thread and (resolved_user.user_id or resolved_user.user_email):
             await persistence.upsert_thread_participant(result.thread.id, resolved_user)
 
-        return DispatchStream(pipeline=pipeline, context=context, result=result)
+        from dooers.agents.server.observability.otel import start_tracker
+        tracker = start_tracker(
+            thread_id=result.thread.id,
+            event_id=result.user_event.id,
+            agent_id=agent_id,
+            thread_title=result.thread.title,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            channel=channel or "dooers-platform",
+            user_id=resolved_user.user_id or None,
+            user_name=resolved_user.user_name or None,
+            user_email=resolved_user.user_email or None,
+        )
+
+        return DispatchStream(pipeline=pipeline, context=context, result=result, tracker=tracker)
 
     async def repository(self) -> Repository:
         persistence = await self._ensure_initialized()

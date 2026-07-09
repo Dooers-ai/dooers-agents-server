@@ -4,19 +4,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 Actor = Literal["user", "assistant", "system", "tool"]
-EventType = Literal[
-    "message",
-    "reasoning",
-    "run.started",
-    "run.finished",
-    "tool.call",
-    "tool.result",
-    "tool.transaction",
-    "form",
-    "form.response",
-    "chart",
-]
-ChartType = Literal["bar", "bar_horizontal", "stacked_bar", "line", "area", "pie", "donut", "scatter"]
+EventType = Literal["message", "run.started", "run.finished", "tool.call", "tool.result", "tool.transaction", "form", "form.response"]
 RunStatus = Literal["running", "succeeded", "failed", "canceled"]
 
 
@@ -324,25 +312,6 @@ WireS2C_FormElement = Annotated[
     | WireS2C_FormFileElement,
     Field(discriminator="type"),
 ]
-
-
-class WireS2C_ChartSeries(BaseModel):
-    key: str
-    label: str | None = None
-    color: str | None = None
-
-
-class WireS2C_ChartEventData(BaseModel):
-    title: str = ""
-    message: str = ""
-    chart_type: ChartType
-    size: Literal["small", "medium", "large"] = "medium"
-    x_key: str
-    y_keys: list[str]
-    data: list[dict[str, Any]]
-    series: list[WireS2C_ChartSeries] = []
-    x_label: str | None = None
-    y_label: str | None = None
 
 
 _S2C_TYPE_MAP: dict[str, type] = {

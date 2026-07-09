@@ -44,10 +44,7 @@ def _parse_ssl(value: str) -> bool | str:
 
 @dataclass
 class AgentConfig:
-    # `dooers` = platform-managed AlloyDB (connected via IAM, no password — the
-    # instance/user/name are injected by dooers-push at deploy time). `postgres`
-    # / `cosmos` = creator self-provided (unchanged).
-    database_type: Literal["postgres", "cosmos", "dooers"]
+    database_type: Literal["postgres", "cosmos"]
 
     assistant_name: str = "Assistant"
 
@@ -58,8 +55,6 @@ class AgentConfig:
     database_password: str = field(default_factory=lambda: os.environ.get("AGENT_DATABASE_PASSWORD", ""))
     database_key: str = field(default_factory=lambda: os.environ.get("AGENT_DATABASE_KEY", ""))
     database_ssl: bool | str = field(default_factory=lambda: _parse_ssl(os.environ.get("AGENT_DATABASE_SSL", "false")))
-    #: AlloyDB instance URI for `database_type="dooers"` (env ``AGENT_DATABASE_INSTANCE``).
-    database_instance_uri: str = field(default_factory=lambda: os.environ.get("AGENT_DATABASE_INSTANCE", ""))
 
     database_table_prefix: str = "agent_"
     database_auto_migrate: bool = True
@@ -111,3 +106,19 @@ class AgentConfig:
     )
     # When True, ``HandlerPipeline`` runs the built-in Dooers WhatsApp tools HTTP outbound.
     dooers_whatsapp_service: bool = False
+
+    #: Base URL of the dooers-service-core, used to exchange this worker's runtime API key for a
+    #: short-lived service token (env ``AGENT_CORE_BASE_URL``). Required for observability — when
+    #: empty, tracing stays disabled even if ``otel_service_url`` is set.
+    agent_core_base_url: str = field(default_factory=lambda: (os.environ.get("AGENT_CORE_BASE_URL") or "").strip())
+
+    #: Base URL of dooers-agents-observability, where OTLP spans are POSTed after being
+    #: authenticated with a service token (env ``AGENT_OTEL_SERVICE_URL``). When set, every agent
+    #: turn is exported as a trace with thread_id, event_id, agent_id, user, org, and channel
+    #: attributes. LLM calls are auto-instrumented as child spans when openinference is installed.
+    #: The worker never talks to GCP directly — Requires observability extras:
+    #: ``pip install "dooers-agents-server[observability]"``.
+    otel_service_url: str = field(default_factory=lambda: (os.environ.get("AGENT_OTEL_SERVICE_URL") or "").strip())
+
+    #: Service name attached to exported spans (env ``OTEL_SERVICE_NAME``, default ``dooers-agent``).
+    otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "dooers-agent").strip())

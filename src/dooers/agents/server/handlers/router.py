@@ -26,13 +26,13 @@ from dooers.agents.server.protocol.frames import (
     C2S_EventCreate,
     C2S_EventList,
     C2S_Feedback,
+    C2S_Ping,
     C2S_SettingsMergeServiceSecrets,
     C2S_SettingsPatch,
     C2S_SettingsPublicSchema,
     C2S_SettingsSeed,
     C2S_SettingsSubscribe,
     C2S_SettingsUnsubscribe,
-    C2S_Ping,
     C2S_ThreadDelete,
     C2S_ThreadList,
     C2S_ThreadSubscribe,
@@ -743,11 +743,27 @@ class Router:
 
         await self._send_ack(ws, frame.id)
 
+        from dooers.agents.server.observability.otel import start_tracker
+        tracker = start_tracker(
+            thread_id=result.thread.id,
+            event_id=result.user_event.id,
+            agent_id=context.agent_id,
+            thread_title=result.thread.title,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            channel=context.channel,
+            user_id=context.user.user_id or None,
+            user_name=context.user.user_name or None,
+            user_email=context.user.user_email or None,
+        )
         try:
             async for _event in self._pipeline.execute(context, result):
                 pass
         except HandlerError:
-            pass  # Pipeline already handled cleanup (error event, run failure, broadcast)
+            tracker.fail()
+            # Pipeline already handled cleanup (error event, run failure, broadcast)
+        finally:
+            tracker.end()
 
     async def _handle_event_list(self, ws: WebSocketProtocol, frame: C2S_EventList) -> None:
         if not self._agent_id:

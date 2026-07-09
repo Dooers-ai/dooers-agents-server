@@ -44,7 +44,6 @@ from dooers.agents.server.protocol.models import (
     WireS2C_FormTextElement,
     WireS2C_ImagePart,
     WireS2C_TextPart,
-    WireS2C_ChartEventData,
     deserialize_s2c_part,
 )
 from dooers.agents.server.storage.chat_artifacts import (
@@ -479,30 +478,6 @@ class HandlerPipeline:
                         workspace_id=context.workspace_id,
                     )
 
-                elif event.send_type == "reasoning":
-                    # Assistant reasoning: separate event type (kept out of `content`
-                    # so it never feeds memory.get_history / the LLM). Not dispatched
-                    # to external channels (WhatsApp) — internal display only.
-                    thread_event = ThreadEvent(
-                        id=_generate_id(),
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="reasoning",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        data={"text": event.data["text"]},
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-
                 elif event.send_type == "audio":
                     event_id = _generate_id()
                     thread_event = ThreadEvent(
@@ -722,41 +697,6 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "form"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "chart":
-                    event_id = _generate_id()
-                    chart_payload = WireS2C_ChartEventData(**event.data).model_dump(exclude_unset=True)
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="chart",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=None,
-                        data=chart_payload,
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "chart", "chart_type": chart_payload.get("chart_type")},
                         organization_id=context.organization_id,
                         workspace_id=context.workspace_id,
                     )

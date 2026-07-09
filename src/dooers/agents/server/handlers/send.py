@@ -164,13 +164,6 @@ class AgentSend:
             },
         )
 
-    def reasoning(self, text: str, author: str | None = None) -> AgentEvent:
-        """Assistant reasoning / chain-of-thought shown as a collapsible block (not sent to the LLM history)."""
-        return AgentEvent(
-            send_type="reasoning",
-            data={"text": text, "author": author},
-        )
-
     def tool_call(
         self,
         name: str,
@@ -416,50 +409,5 @@ class AgentSend:
                 "submit_label": submit_label,
                 "cancel_label": cancel_label,
                 "size": size,
-            },
-        )
-
-    @staticmethod
-    def chart_series(
-        key: str,
-        *,
-        label: str | None = None,
-        color: str | None = None,
-    ) -> dict:
-        return {
-            "key": key,
-            "label": label,
-            "color": color,
-        }
-
-    def chart(
-        self,
-        *,
-        chart_type: Literal[
-            "bar", "bar_horizontal", "stacked_bar", "line", "area", "pie", "donut", "scatter"
-        ],
-        data: list[dict],
-        x_key: str,
-        y_keys: list[str],
-        title: str = "",
-        message: str = "",
-        size: Literal["small", "medium", "large"] = "medium",
-        series: list[dict] | None = None,
-        x_label: str | None = None,
-        y_label: str | None = None,
-    ) -> AgentEvent:
-        return AgentEvent(
-            send_type="chart",
-            data={
-                "title": title,
-                "message": message,
-                "chart_type": chart_type,
-                "size": size,
-                "x_key": x_key,
-                "y_keys": y_keys,
-                "data": data,
-                "series": series or [],
-                "x_label": x_label,
-                "y_label": y_label,
             },
         )

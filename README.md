@@ -152,10 +152,6 @@ yield send.text("Hello!", author="Support Bot")   # Override assistant_name
 yield send.image(url, mime_type?, alt?, author?)
 yield send.document(url, filename, mime_type, author?)
 
-# Reasoning (collapsible "thinking" block; not fed back to the LLM history)
-yield send.reasoning("Considering the user's constraints…")
-yield send.reasoning(text, author?)
-
 # Tool calls
 yield send.tool_call(name, args, display_name?, id?)
 yield send.tool_result(name, result, args?, display_name?, id?)
@@ -470,6 +466,21 @@ agent_server = AgentServer(AgentConfig(
 | `database_password` | `AGENT_DATABASE_PASSWORD` |
 | `database_key` | `AGENT_DATABASE_KEY` |
 | `database_ssl` | `AGENT_DATABASE_SSL` |
+| `agent_core_base_url` | `AGENT_CORE_BASE_URL` |
+| `otel_service_url` | `AGENT_OTEL_SERVICE_URL` |
+| `otel_service_name` | `OTEL_SERVICE_NAME` |
+
+#### Observability (dooers-agents-observability)
+
+Set `AGENT_CORE_BASE_URL` and `AGENT_OTEL_SERVICE_URL` to enable OpenTelemetry tracing. Each agent turn is exported as a trace with `agent.id`, `thread.id`, `event.id`, `user.id`, `org.id`, `workspace.id`, and `agent.channel` attributes. LLM calls (Anthropic, OpenAI) are auto-instrumented as child spans when `openinference` is installed.
+
+The worker never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (delivered by dooers-service-core via the same `settings.merge_service_secrets` channel used for other per-worker secrets) for a short-lived service token (audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-agents-observability`, which is the only component with GCP credentials and writes to Cloud Trace on the worker's behalf.
+
+Requires observability extras:
+
+```bash
+pip install "dooers-agents-server[observability]"
+```
 
 ## User Roles and Thread Scoping
 
