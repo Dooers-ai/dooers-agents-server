@@ -47,6 +47,44 @@ logger = logging.getLogger(__name__)
 _agents = logging.getLogger("agents")
 
 
+def _build_persistence(config: AgentConfig) -> Persistence:
+    """Select the persistence backend from ``config.database_type``.
+
+    ``dooers`` connects to the platform-managed AlloyDB via IAM (no password);
+    ``cosmos`` uses Azure Cosmos; anything else uses the self-provided Postgres.
+    """
+    if config.database_type == "cosmos":
+        from dooers.agents.server.persistence.cosmos import CosmosPersistence
+
+        return CosmosPersistence(
+            endpoint=config.database_host,
+            key=config.database_key,
+            database=config.database_name,
+            table_prefix=config.database_table_prefix,
+            on_settings_updated=config.on_settings_updated,
+        )
+    if config.database_type == "dooers":
+        from dooers.agents.server.persistence.dooers import DooersPersistence
+
+        return DooersPersistence(
+            instance_uri=config.database_instance_uri,
+            user=config.database_user,
+            database=config.database_name,
+            table_prefix=config.database_table_prefix,
+            on_settings_updated=config.on_settings_updated,
+        )
+    return PostgresPersistence(
+        host=config.database_host,
+        port=config.database_port,
+        user=config.database_user,
+        database=config.database_name,
+        password=config.database_password,
+        ssl=config.database_ssl,
+        table_prefix=config.database_table_prefix,
+        on_settings_updated=config.on_settings_updated,
+    )
+
+
 class AgentServer:
     def __init__(self, config: AgentConfig):
         self._config = config
@@ -215,27 +253,7 @@ class AgentServer:
         if self._persistence and self._initialized:
             return self._persistence
 
-        if self._config.database_type == "cosmos":
-            from dooers.agents.server.persistence.cosmos import CosmosPersistence
-
-            self._persistence = CosmosPersistence(
-                endpoint=self._config.database_host,
-                key=self._config.database_key,
-                database=self._config.database_name,
-                table_prefix=self._config.database_table_prefix,
-                on_settings_updated=self._config.on_settings_updated,
-            )
-        else:
-            self._persistence = PostgresPersistence(
-                host=self._config.database_host,
-                port=self._config.database_port,
-                user=self._config.database_user,
-                database=self._config.database_name,
-                password=self._config.database_password,
-                ssl=self._config.database_ssl,
-                table_prefix=self._config.database_table_prefix,
-                on_settings_updated=self._config.on_settings_updated,
-            )
+        self._persistence = _build_persistence(self._config)
 
         await self._persistence.connect()
 

@@ -44,7 +44,10 @@ def _parse_ssl(value: str) -> bool | str:
 
 @dataclass
 class AgentConfig:
-    database_type: Literal["postgres", "cosmos"]
+    # `dooers` = platform-managed AlloyDB (connected via IAM, no password — the
+    # instance/user/name are injected by dooers-push at deploy time). `postgres`
+    # / `cosmos` = creator self-provided (unchanged).
+    database_type: Literal["postgres", "cosmos", "dooers"]
 
     assistant_name: str = "Assistant"
 
@@ -55,6 +58,8 @@ class AgentConfig:
     database_password: str = field(default_factory=lambda: os.environ.get("AGENT_DATABASE_PASSWORD", ""))
     database_key: str = field(default_factory=lambda: os.environ.get("AGENT_DATABASE_KEY", ""))
     database_ssl: bool | str = field(default_factory=lambda: _parse_ssl(os.environ.get("AGENT_DATABASE_SSL", "false")))
+    #: AlloyDB instance URI for `database_type="dooers"` (env ``AGENT_DATABASE_INSTANCE``).
+    database_instance_uri: str = field(default_factory=lambda: os.environ.get("AGENT_DATABASE_INSTANCE", ""))
 
     database_table_prefix: str = "agent_"
     database_auto_migrate: bool = True

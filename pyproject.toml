@@ -40,6 +40,9 @@ observability = [
 cosmos = [
     "azure-cosmos>=4.7.0",
 ]
+dooers = [
+    "google-cloud-alloydb-connector[asyncpg]>=1.7.0",
+]
 storage = [
     "google-cloud-storage>=2.18.0",
     "azure-storage-blob>=12.23.0",
