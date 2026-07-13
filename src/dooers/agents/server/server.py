@@ -305,11 +305,18 @@ class AgentServer:
             )
 
         from dooers.agents.server.observability.otel import init_otel
+        from dooers.agents.server.settings import (
+            AGENT_CORE_BASE_URL,
+            AGENT_OTEL_SERVICE_URL,
+            OTEL_SERVICE_NAME,
+        )
+
+        # Optional overrides via AgentConfig / env; otherwise platform defaults (like analytics).
         init_otel(
-            otel_service_url=self._config.otel_service_url,
-            core_base_url=self._config.agent_core_base_url,
+            otel_service_url=self._config.otel_service_url or AGENT_OTEL_SERVICE_URL,
+            core_base_url=self._config.agent_core_base_url or AGENT_CORE_BASE_URL,
             persistence=self._persistence,
-            service_name=self._config.otel_service_name,
+            service_name=self._config.otel_service_name or OTEL_SERVICE_NAME,
         )
 
         self._initialized = True

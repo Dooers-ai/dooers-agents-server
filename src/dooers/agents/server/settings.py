@@ -2,6 +2,12 @@ ANALYTICS_WEBHOOK_URL = "https://api.dooers.ai/api/webhooks/analytics"
 ANALYTICS_BATCH_SIZE = 10
 ANALYTICS_FLUSH_INTERVAL = 5.0  # seconds
 
+# Platform defaults for OpenTelemetry (same abstraction style as analytics / WhatsApp).
+# Creators should not need to set these; operators may override via env / AgentConfig.
+AGENT_CORE_BASE_URL = "https://api.dooers.ai"
+AGENT_OTEL_SERVICE_URL = "https://observability.dooers.ai"
+OTEL_SERVICE_NAME = "dooers-agent"
+
 # Legacy fallback URL. All tokens (dashboard + public-chat) now carry their
 # own validation_url as a signed JWT claim, so this setting is no longer
 # required. The SDK auto-detects JWT tokens and calls the embedded URL.

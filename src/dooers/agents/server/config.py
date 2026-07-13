@@ -112,18 +112,14 @@ class AgentConfig:
     # When True, ``HandlerPipeline`` runs the built-in Dooers WhatsApp tools HTTP outbound.
     dooers_whatsapp_service: bool = False
 
-    #: Base URL of the dooers-service-core, used to exchange this worker's runtime API key for a
-    #: short-lived service token (env ``AGENT_CORE_BASE_URL``). Required for observability — when
-    #: empty, tracing stays disabled even if ``otel_service_url`` is set.
+    #: Base URL of dooers-service-core for minting short-lived ``otel:write`` tokens
+    #: (env ``AGENT_CORE_BASE_URL``). Empty → platform default (same pattern as analytics webhook).
     agent_core_base_url: str = field(default_factory=lambda: (os.environ.get("AGENT_CORE_BASE_URL") or "").strip())
 
-    #: Base URL of dooers-agents-observability, where OTLP spans are POSTed after being
-    #: authenticated with a service token (env ``AGENT_OTEL_SERVICE_URL``). When set, every agent
-    #: turn is exported as a trace with thread_id, event_id, agent_id, user, org, and channel
-    #: attributes. LLM calls are auto-instrumented as child spans when openinference is installed.
-    #: The worker never talks to GCP directly — Requires observability extras:
-    #: ``pip install "dooers-agents-server[observability]"``.
+    #: Base URL of dooers-service-otel for OTLP export (env ``AGENT_OTEL_SERVICE_URL``).
+    #: Empty → platform default. Requires ``pip install "dooers-agents-server[observability]"``.
+    #: The worker never talks to GCP directly.
     otel_service_url: str = field(default_factory=lambda: (os.environ.get("AGENT_OTEL_SERVICE_URL") or "").strip())
 
-    #: Service name attached to exported spans (env ``OTEL_SERVICE_NAME``, default ``dooers-agent``).
-    otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "dooers-agent").strip())
+    #: Service name on exported spans (env ``OTEL_SERVICE_NAME``). Empty → platform default.
+    otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())
