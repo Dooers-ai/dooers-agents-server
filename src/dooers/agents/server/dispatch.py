@@ -7,6 +7,7 @@ from dooers.agents.server.handlers.send import AgentEvent
 
 if TYPE_CHECKING:
     from dooers.agents.server.handlers.pipeline import HandlerContext, HandlerPipeline, PipelineResult
+    from dooers.agents.server.observability.otel import _NoOpTracker, _OtelTracker
 
 
 class DispatchStream:
@@ -15,6 +16,10 @@ class DispatchStream:
     Properties ``thread_id``, ``event_id``, and ``is_new_thread`` are
     available immediately (before iteration), because the pipeline setup
     phase runs before this object is returned.
+
+    The AgentOps trace (when enabled) is started before this object is
+    returned and ended automatically when the stream is fully consumed
+    or an error occurs.
     """
 
     def __init__(
@@ -22,10 +27,12 @@ class DispatchStream:
         pipeline: HandlerPipeline,
         context: HandlerContext,
         result: PipelineResult,
+        tracker: _OtelTracker | _NoOpTracker | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._context = context
         self._result = result
+        self._tracker = tracker
 
     @property
     def thread_id(self) -> str:
@@ -39,8 +46,19 @@ class DispatchStream:
     def is_new_thread(self) -> bool:
         return self._result.is_new_thread
 
-    def __aiter__(self) -> AsyncGenerator[AgentEvent, None]:
-        return self._pipeline.execute(self._context, self._result)
+    async def __aiter__(self) -> AsyncGenerator[AgentEvent, None]:  # type: ignore[override]
+        tracker = self._tracker
+        try:
+            async for event in self._pipeline.execute(self._context, self._result):
+                yield event
+        except Exception as e:
+            if tracker:
+                tracker.fail()
+                tracker.record_error(e)
+            raise
+        finally:
+            if tracker:
+                tracker.end()
 
     async def collect(self) -> list[AgentEvent]:
         events: list[AgentEvent] = []

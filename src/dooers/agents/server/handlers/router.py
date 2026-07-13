@@ -743,11 +743,27 @@ class Router:
 
         await self._send_ack(ws, frame.id)
 
+        from dooers.agents.server.observability.otel import start_tracker
+        tracker = start_tracker(
+            thread_id=result.thread.id,
+            event_id=result.user_event.id,
+            agent_id=context.agent_id,
+            thread_title=result.thread.title,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            channel=context.channel,
+            user_id=context.user.user_id or None,
+            user_name=context.user.user_name or None,
+            user_email=context.user.user_email or None,
+        )
         try:
             async for _event in self._pipeline.execute(context, result):
                 pass
         except HandlerError:
-            pass  # Pipeline already handled cleanup (error event, run failure, broadcast)
+            tracker.fail()
+            # Pipeline already handled cleanup (error event, run failure, broadcast)
+        finally:
+            tracker.end()
 
     async def _handle_event_list(self, ws: WebSocketProtocol, frame: C2S_EventList) -> None:
         if not self._agent_id:
@@ -1162,6 +1178,9 @@ class Router:
         Core sends the creator's API key in `seed_secret`; on first success we persist a hash so
         later seeds must match. Optional `next_seed_secret` rotates the stored hash after apply.
         If AGENT_SEED_SECRET is set, it can still authorize (bootstrap / legacy).
+
+        Also stores the plaintext runtime API key in ``service_secrets`` so OTEL can mint
+        ``otel:write`` tokens without a separate ``settings.merge_service_secrets`` push from core.
         """
         worker_id = frame.payload.worker_id
         raw_values = frame.payload.values
@@ -1201,9 +1220,26 @@ class Router:
         else:
             await self._persistence.set_settings(worker_id, raw_values)
 
-        to_store = payload.next_seed_secret or payload.seed_secret
+        to_store = (payload.next_seed_secret or payload.seed_secret or "").strip()
+        if not to_store:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "INVALID", "message": "seed_secret must not be empty"},
+            )
+            return
+
         new_hash = bcrypt.hashpw(to_store.encode("utf-8"), bcrypt.gensalt())
         await self._persistence.set_worker_seed_hash_bytes(worker_id, new_hash)
+
+        # Core already sent this key as seed_secret — keep plaintext for OTEL token mint
+        # (same credential verifyWorkerRuntimeCredential checks). Rotation uses next_seed_secret.
+        from dooers.agents.server.observability.service_token import RUNTIME_API_KEY_SECRET_NAME
+
+        await self._persistence.merge_service_secrets(
+            worker_id, {RUNTIME_API_KEY_SECRET_NAME: to_store}
+        )
 
         await self._send_ack(ws, frame.id)
         logger.info("[agents] settings.seed completed (ack ok) worker_id=%s", worker_id)

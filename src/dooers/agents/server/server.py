@@ -304,6 +304,14 @@ class AgentServer:
                 name="dooers-guest-thread-cleanup",
             )
 
+        from dooers.agents.server.observability.otel import init_otel
+        init_otel(
+            otel_service_url=self._config.otel_service_url,
+            core_base_url=self._config.agent_core_base_url,
+            persistence=self._persistence,
+            service_name=self._config.otel_service_name,
+        )
+
         self._initialized = True
         return self._persistence
 
@@ -454,7 +462,21 @@ class AgentServer:
         if not result.is_new_thread and (resolved_user.user_id or resolved_user.user_email):
             await persistence.upsert_thread_participant(result.thread.id, resolved_user)
 
-        return DispatchStream(pipeline=pipeline, context=context, result=result)
+        from dooers.agents.server.observability.otel import start_tracker
+        tracker = start_tracker(
+            thread_id=result.thread.id,
+            event_id=result.user_event.id,
+            agent_id=agent_id,
+            thread_title=result.thread.title,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            channel=channel or "dooers-platform",
+            user_id=resolved_user.user_id or None,
+            user_name=resolved_user.user_name or None,
+            user_email=resolved_user.user_email or None,
+        )
+
+        return DispatchStream(pipeline=pipeline, context=context, result=result, tracker=tracker)
 
     async def repository(self) -> Repository:
         persistence = await self._ensure_initialized()
