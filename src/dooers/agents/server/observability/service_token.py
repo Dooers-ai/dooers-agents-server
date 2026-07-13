@@ -15,6 +15,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Persisted under service_secrets when core sends ``settings.seed`` (the plaintext runtime API
+# key). OTEL reads it back to mint ``otel:write`` tokens — same credential core verifies via
+# ``verifyWorkerRuntimeCredential``.
+RUNTIME_API_KEY_SECRET_NAME = "dooers_runtime_api_key"
+
 _AUDIENCE = "otel-service"
 _SCOPES = ["otel:write"]
 # Renew proactively before expiry (tokens last 300s) instead of waiting for a 401 — a

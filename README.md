@@ -478,7 +478,7 @@ agent_server = AgentServer(AgentConfig(
 
 Set `AGENT_CORE_BASE_URL` and `AGENT_OTEL_SERVICE_URL` to enable OpenTelemetry tracing. Each agent turn is exported as a trace with `agent.id`, `thread.id`, `event.id`, `user.id`, `org.id`, `workspace.id`, and `agent.channel` attributes. LLM calls (Anthropic, OpenAI) are auto-instrumented as child spans when `openinference` is installed.
 
-The worker never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (delivered by dooers-service-core via the same `settings.merge_service_secrets` channel used for other per-worker secrets) for a short-lived service token (audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-agents-observability`, which is the only component with GCP credentials and writes to Cloud Trace on the worker's behalf.
+The worker never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (persisted into `service_secrets` from the plaintext `seed_secret` / `next_seed_secret` on successful `settings.seed` from dooers-service-core) for a short-lived service token (audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-service-otel`, which is the only component with GCP credentials and writes to Cloud Trace on the worker's behalf.
 
 Requires observability extras:
 

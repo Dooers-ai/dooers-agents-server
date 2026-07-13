@@ -20,7 +20,10 @@ from typing import Any
 
 import httpx
 
-from dooers.agents.server.observability.service_token import ServiceTokenClient
+from dooers.agents.server.observability.service_token import (
+    RUNTIME_API_KEY_SECRET_NAME,
+    ServiceTokenClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +32,6 @@ _service_name = "dooers-agent"
 _otel_service_url = ""
 _token_client: ServiceTokenClient | None = None
 _persistence: Any = None
-
-# service_secrets key delivered by the core via the existing settings.merge_service_secrets
-# channel (same mechanism dooers_whatsapp_service_secret already uses) — worker_id in that
-# channel is the same UUID as agent_id here, just named differently on the core's side.
-_RUNTIME_API_KEY_SECRET_NAME = "dooers_runtime_api_key"
 
 
 def _make_turn_export_processor():  # noqa: ANN202
@@ -78,7 +76,7 @@ async def _get_runtime_api_key(agent_id: str) -> str | None:
     except Exception:
         logger.exception("OTEL: failed to fetch service_secrets for agent_id=%s", agent_id)
         return None
-    value = secrets.get(_RUNTIME_API_KEY_SECRET_NAME)
+    value = secrets.get(RUNTIME_API_KEY_SECRET_NAME)
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
@@ -101,8 +99,9 @@ async def _export_turn(spans: list) -> None:  # noqa: ANN001
     runtime_api_key = await _get_runtime_api_key(agent_id)
     if not runtime_api_key:
         logger.warning(
-            "OTEL: no %s in service_secrets for agent_id=%s — skipping export",
-            _RUNTIME_API_KEY_SECRET_NAME,
+            "OTEL: no %s in service_secrets for agent_id=%s — skipping export "
+            "(waiting for settings.seed from core?)",
+            RUNTIME_API_KEY_SECRET_NAME,
             agent_id,
         )
         return
