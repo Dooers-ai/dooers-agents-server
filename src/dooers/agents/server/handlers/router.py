@@ -79,7 +79,16 @@ class WebSocketProtocol(Protocol):
     async def close(self, code: int = 1000) -> None: ...
 
 
-def resolve_scope(user: User) -> str:
+def resolve_scope(user: User, *, workspace_id: str = "") -> str:
+    """Resolve thread list scope from user roles.
+
+    Personal chats (empty ``workspace_id``) always use participant-only
+    ``member`` scope — including org/workspace managers — so 1:1 threads
+    are not visible to elevated roles. Shared team visibility applies only
+    when connected inside a real workspace.
+    """
+    if not (workspace_id or "").strip():
+        return "member"
     if user.system_role == "admin":
         return "admin"
     if user.organization_role in ("owner", "manager"):
@@ -87,6 +96,43 @@ def resolve_scope(user: User) -> str:
     if user.workspace_role == "manager":
         return "workspace"
     return "member"
+
+
+def _user_is_thread_participant(user: User, thread: Thread) -> bool:
+    """True if the connected user owns or participates in the thread."""
+    identity_ids = {uid for uid in [user.user_id, *(user.identity_ids or [])] if uid}
+    if not identity_ids:
+        return False
+    if thread.owner and thread.owner.user_id and thread.owner.user_id in identity_ids:
+        return True
+    for participant in thread.users or []:
+        if participant.user_id and participant.user_id in identity_ids:
+            return True
+        for iid in participant.identity_ids or []:
+            if iid in identity_ids:
+                return True
+    return False
+
+
+def _can_access_thread(user: User, thread: Thread, *, connection_workspace_id: str) -> bool:
+    """Personal threads (empty workspace_id) require participation; team threads use connect agent match only at call site."""
+    thread_ws = (thread.workspace_id or "").strip()
+    if not thread_ws:
+        return _user_is_thread_participant(user, thread)
+    # Team / workspace-scoped threads: elevated scopes may see all in that workspace;
+    # members must be participants. Connection workspace should match for shared lists.
+    conn_ws = (connection_workspace_id or "").strip()
+    if conn_ws and thread_ws != conn_ws:
+        # Allow org-wide listing paths when connected with empty personal context skipped above.
+        # When connected to a specific workspace, only that workspace's threads.
+        scope = resolve_scope(user, workspace_id=conn_ws)
+        if scope in ("admin", "organization"):
+            return True
+        return False
+    scope = resolve_scope(user, workspace_id=conn_ws or thread_ws)
+    if scope in ("admin", "organization", "workspace"):
+        return True
+    return _user_is_thread_participant(user, thread)
 
 
 def _generate_id() -> str:
@@ -473,7 +519,7 @@ class Router:
             return
 
         user = self._user or User(user_id="")
-        scope = resolve_scope(user)
+        scope = resolve_scope(user, workspace_id=self._workspace_id)
         # Build complete identity set for thread filtering
         all_identity_ids = [uid for uid in [user.user_id, *(user.identity_ids or [])] if uid]
         limit = frame.payload.limit or 30
@@ -552,6 +598,16 @@ class Router:
             )
             return
 
+        user = self._user or User(user_id="")
+        if not _can_access_thread(user, thread, connection_workspace_id=self._workspace_id):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Not a participant of this thread"},
+            )
+            return
+
         events = await self._persistence.get_events(
             thread_id,
             after_event_id=frame.payload.after_event_id,
@@ -607,6 +663,16 @@ class Router:
                 frame.id,
                 ok=False,
                 error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
+            )
+            return
+
+        user = self._user or User(user_id="")
+        if not _can_access_thread(user, thread, connection_workspace_id=self._workspace_id):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Not a participant of this thread"},
             )
             return
 

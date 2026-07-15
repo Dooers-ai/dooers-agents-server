@@ -480,6 +480,12 @@ class PostgresPersistence:
             conditions.append(f"organization_id = ${idx}")
             params.append(organization_id)
             idx += 1
+            # When connected inside a workspace, stay in that context so personal
+            # threads (workspace_id='') are never listed via org elevation.
+            if (workspace_id or "").strip():
+                conditions.append(f"workspace_id = ${idx}")
+                params.append(workspace_id)
+                idx += 1
         elif scope == "workspace":
             # Audited 2026-04-14: workspace-scope filters by organization+workspace
             # only, with no guest-owner exclusion, so guest-owned threads are
