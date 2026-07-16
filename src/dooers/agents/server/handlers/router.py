@@ -450,7 +450,10 @@ class Router:
             self._rate_limits = result.rate_limits
             self._agent_owner_user_id = result.agent_owner_user_id
             self._organization_id = result.organization_id or frame.payload.organization_id
-            self._workspace_id = result.workspace_id or frame.payload.workspace_id
+            # Empty string is a valid personal/direct-chat workspace; do not
+            # fall back via truthiness ("" or frame_ws would pick frame_ws).
+            if result.workspace_id is not None:
+                self._workspace_id = result.workspace_id
         else:
             # Authenticated path: when an auth validator is configured, the
             # validator auto-detects JWT vs opaque token. For JWTs the
@@ -495,7 +498,9 @@ class Router:
 
                 self._user = result.user
                 self._organization_id = result.organization_id or self._organization_id
-                self._workspace_id = result.workspace_id or self._workspace_id
+                # Empty string is a valid personal/direct-chat workspace.
+                if result.workspace_id is not None:
+                    self._workspace_id = result.workspace_id
                 self._agent_owner_user_id = result.agent_owner_user_id
                 self._rate_limits = result.rate_limits or {}
             else:
