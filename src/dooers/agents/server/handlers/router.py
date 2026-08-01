@@ -65,6 +65,7 @@ from dooers.agents.server.protocol.frames import (
     ThreadUpsertPayload,
 )
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
+from dooers.agents.server.protocol.parser import serialize_frame
 from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 from dooers.agents.server.registry import ConnectionRegistry
 
