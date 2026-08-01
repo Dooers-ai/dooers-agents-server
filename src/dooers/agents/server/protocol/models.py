@@ -437,6 +437,25 @@ class ThreadEvent(BaseModel):
     client_event_id: str | None = None
 
 
+ArtifactKind = Literal["audio", "image", "document"]
+ArtifactDirection = Literal["in", "out"]
+
+
+class ThreadArtifact(BaseModel):
+    """Media attachment surfaced from thread message events (session file index)."""
+
+    event_id: str
+    direction: ArtifactDirection
+    kind: ArtifactKind
+    filename: str | None = None
+    mime_type: str | None = None
+    url: str | None = None
+    ref_id: str | None = None
+    created_at: datetime
+    user_id: str | None = None
+    user_name: str | None = None
+
+
 class Thread(BaseModel):
     id: str
     agent_id: str

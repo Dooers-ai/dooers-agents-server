@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING, Any, Literal
 
-from dooers.agents.server.protocol.models import Thread, ThreadEvent
+from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
+from dooers.agents.server.protocol.models import Thread, ThreadArtifact, ThreadEvent
 
 if TYPE_CHECKING:
     from dooers.agents.server.persistence.base import EventOrder, Persistence
@@ -407,3 +408,24 @@ class AgentMemory:
                             raw.append({"type": "text", "text": f"[document: {fname}]"})
         merged = cls._merge_adjacent_text_parts(raw)
         return [p for p in merged if not (p.get("type") == "text" and not (str(p.get("text") or "")).strip())]
+
+    async def list_artifacts(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 30,
+        direction: Literal["in", "out", "all"] = "all",
+    ) -> tuple[list[ThreadArtifact], str | None, bool]:
+        """Media attachments in this thread (newest first), same index as ``thread.artifacts.list``."""
+        thread = await self.get_thread()
+        if not thread:
+            return [], None, False
+        return await list_thread_artifacts(
+            self._persistence,
+            self._thread_id,
+            thread,
+            cursor=cursor,
+            limit=limit,
+            direction=direction,
+            hydrate_events=None,
+        )

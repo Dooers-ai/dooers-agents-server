@@ -17,6 +17,7 @@ from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.agents.server.features.settings.models import SettingsFieldVisibility
 from dooers.agents.server.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
+from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.frames import (
     AckPayload,
@@ -25,6 +26,7 @@ from dooers.agents.server.protocol.frames import (
     C2S_Connect,
     C2S_EventCreate,
     C2S_EventList,
+    C2S_ThreadArtifactsList,
     C2S_Feedback,
     C2S_SettingsMergeServiceSecrets,
     C2S_SettingsPatch,
@@ -40,11 +42,13 @@ from dooers.agents.server.protocol.frames import (
     ClientToServer,
     EventAppendPayload,
     EventListResultPayload,
+    ThreadArtifactsListResultPayload,
     FeedbackAckPayload,
     RunUpsertPayload,
     S2C_Ack,
     S2C_EventAppend,
     S2C_EventListResult,
+    S2C_ThreadArtifactsListResult,
     S2C_FeedbackAck,
     S2C_Pong,
     S2C_RunUpsert,
@@ -331,7 +335,8 @@ class Router:
                 await self._handle_event_create(ws, frame)
             case C2S_EventList():
                 await self._handle_event_list(ws, frame)
-
+            case C2S_ThreadArtifactsList():
+                await self._handle_thread_artifacts_list(ws, frame)
             case C2S_AnalyticsSubscribe():
                 await self._handle_analytics_subscribe(ws, frame)
             case C2S_AnalyticsUnsubscribe():
@@ -871,6 +876,70 @@ class Router:
             payload=EventListResultPayload(
                 thread_id=payload.thread_id,
                 events=events,
+                cursor=cursor,
+                has_more=has_more,
+            ),
+        )
+        await self._send(ws, result)
+
+    async def _handle_thread_artifacts_list(
+        self,
+        ws: WebSocketProtocol,
+        frame: C2S_ThreadArtifactsList,
+    ) -> None:
+        if not self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_CONNECTED", "message": "Must connect first"},
+            )
+            return
+
+        thread_id = frame.payload.thread_id
+        thread = await self._persistence.get_thread(thread_id)
+        if not thread:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_FOUND", "message": "Thread not found"},
+            )
+            return
+
+        if thread.agent_id != self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
+            )
+            return
+
+        user = self._user or User(user_id="")
+        if not _can_access_thread(user, thread, connection_workspace_id=self._workspace_id):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Not a participant of this thread"},
+            )
+            return
+
+        artifacts, cursor, has_more = await list_thread_artifacts(
+            self._persistence,
+            thread_id,
+            thread,
+            cursor=frame.payload.cursor,
+            limit=frame.payload.limit,
+            direction=frame.payload.direction,
+            hydrate_events=self._hydrate_events_for_client,
+        )
+        result = S2C_ThreadArtifactsListResult(
+            id=_generate_id(),
+            payload=ThreadArtifactsListResultPayload(
+                thread_id=thread_id,
+                artifacts=artifacts,
                 cursor=cursor,
                 has_more=has_more,
             ),

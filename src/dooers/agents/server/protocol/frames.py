@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
 from dooers.agents.server.features.settings.models import SettingsField, SettingsFieldGroup
-from dooers.agents.server.protocol.models import Run, Thread, ThreadEvent, User, WireC2S_ContentPart
+from dooers.agents.server.protocol.models import Run, Thread, ThreadArtifact, ThreadEvent, User, WireC2S_ContentPart
 
 T = TypeVar("T")
 
@@ -139,6 +139,19 @@ class C2S_EventList(BaseModel):
     payload: EventListPayload
 
 
+class ThreadArtifactsListPayload(BaseModel):
+    thread_id: str
+    cursor: str | None = None
+    limit: int = 30
+    direction: Literal["in", "out", "all"] = "all"
+
+
+class C2S_ThreadArtifactsList(BaseModel):
+    id: str
+    type: Literal["thread.artifacts.list"] = "thread.artifacts.list"
+    payload: ThreadArtifactsListPayload
+
+
 class SettingsSubscribePayload(BaseModel):
     agent_id: str
     audience: Literal["creator", "user"] = "user"
@@ -230,6 +243,7 @@ ClientToServer = Annotated[
     | C2S_ThreadDelete
     | C2S_EventCreate
     | C2S_EventList
+    | C2S_ThreadArtifactsList
     | C2S_AnalyticsSubscribe
     | C2S_AnalyticsUnsubscribe
     | C2S_Feedback
@@ -318,6 +332,19 @@ class S2C_EventListResult(BaseModel):
     payload: EventListResultPayload
 
 
+class ThreadArtifactsListResultPayload(BaseModel):
+    thread_id: str
+    artifacts: list[ThreadArtifact]
+    cursor: str | None = None
+    has_more: bool = False
+
+
+class S2C_ThreadArtifactsListResult(BaseModel):
+    id: str
+    type: Literal["thread.artifacts.list.result"] = "thread.artifacts.list.result"
+    payload: ThreadArtifactsListResultPayload
+
+
 class ThreadDeletedPayload(BaseModel):
     thread_id: str
 
@@ -402,6 +429,7 @@ ServerToClient = (
     | S2C_ThreadSnapshot
     | S2C_EventAppend
     | S2C_EventListResult
+    | S2C_ThreadArtifactsListResult
     | S2C_ThreadUpsert
     | S2C_ThreadDeleted
     | S2C_RunUpsert
