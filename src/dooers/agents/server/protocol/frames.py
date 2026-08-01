@@ -262,6 +262,7 @@ class AckPayload(BaseModel):
     ack_id: str
     ok: bool
     error: dict | None = None
+    server: dict[str, str] | None = None
 
 
 class ThreadListResultPayload(BaseModel):

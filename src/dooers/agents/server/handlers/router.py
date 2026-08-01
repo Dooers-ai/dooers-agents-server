@@ -65,7 +65,7 @@ from dooers.agents.server.protocol.frames import (
     ThreadUpsertPayload,
 )
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
-from dooers.agents.server.protocol.parser import serialize_frame
+from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 from dooers.agents.server.registry import ConnectionRegistry
 
 if TYPE_CHECKING:
@@ -264,10 +264,11 @@ class Router:
         ack_id: str,
         ok: bool = True,
         error: dict[str, str] | None = None,
+        server: dict[str, str] | None = None,
     ) -> None:
         frame = S2C_Ack(
             id=_generate_id(),
-            payload=AckPayload(ack_id=ack_id, ok=ok, error=error),
+            payload=AckPayload(ack_id=ack_id, ok=ok, error=error, server=server),
         )
         await self._send(ws, frame)
 
@@ -516,7 +517,11 @@ class Router:
         self._ws = ws
         await self._registry.register(self._agent_id, ws)
         self._subscriptions[self._ws_id] = set()
-        await self._send_ack(ws, frame.id)
+        await self._send_ack(
+            ws,
+            frame.id,
+            server={"name": SERVER_NAME, "version": PACKAGE_VERSION},
+        )
 
     async def _handle_thread_list(self, ws: WebSocketProtocol, frame: C2S_ThreadList) -> None:
         if not self._agent_id:
