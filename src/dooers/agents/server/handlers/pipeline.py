@@ -33,6 +33,7 @@ from dooers.agents.server.protocol.models import (
     User,
     WireC2S_ContentPart,
     WireS2C_AudioPart,
+    WireS2C_ChartEventData,
     WireS2C_ContactPart,
     WireS2C_ContentPart,
     WireS2C_DocumentPart,
@@ -44,7 +45,6 @@ from dooers.agents.server.protocol.models import (
     WireS2C_FormTextElement,
     WireS2C_ImagePart,
     WireS2C_TextPart,
-    WireS2C_ChartEventData,
     deserialize_s2c_part,
 )
 from dooers.agents.server.storage.chat_artifacts import (
@@ -52,6 +52,7 @@ from dooers.agents.server.storage.chat_artifacts import (
     promote_orphan_chat_artifact_if_present,
     try_fetch_upload_entry_from_blob,
 )
+from dooers.tools.whatsapp.runtime import bind_handler_context, reset_handler_context
 
 if TYPE_CHECKING:
     from dooers.agents.server.features.analytics.collector import AnalyticsCollector
@@ -377,6 +378,10 @@ class HandlerPipeline:
             async for ev in context.handler(incoming, send, memory, analytics, settings):
                 yield ev
 
+        runtime_tokens = bind_handler_context(
+            persistence=self._persistence,
+            agent_id=context.agent_id,
+        )
         try:
             async for event in _handler_event_stream():
                 event_now = _now()
@@ -663,6 +668,51 @@ class HandlerPipeline:
                         run_id=current_run_id,
                         event_id=event_id,
                         data={"type": "contact"},
+                        organization_id=context.organization_id,
+                        workspace_id=context.workspace_id,
+                    )
+
+                elif event.send_type == "template":
+                    template_name = str(event.data.get("template_name") or "").strip()
+                    template_language = str(event.data.get("template_language") or "").strip()
+                    display = f"[template: {template_name} ({template_language})]"
+                    event_id = _generate_id()
+                    thread_event = ThreadEvent(
+                        id=event_id,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        type="message",
+                        actor="assistant",
+                        author=event.data.get("author") or self._assistant_name,
+                        content=[WireS2C_TextPart(text=display)],
+                        data={
+                            **(self._assistant_delivery_data(context) or {}),
+                            "template": {
+                                "name": template_name,
+                                "language": template_language,
+                                "components": event.data.get("template_components") or [],
+                            },
+                        },
+                        created_at=event_now,
+                    )
+                    await self._persistence.create_event(thread_event)
+                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._broadcast(
+                        context.agent_id,
+                        {
+                            "type": "event.append",
+                            "thread_id": thread_id,
+                            "events": [thread_event],
+                        },
+                    )
+                    await self._track_event(
+                        context.agent_id,
+                        AnalyticsEvent.MESSAGE_S2C.value,
+                        thread_id=thread_id,
+                        user_id=context.user.user_id,
+                        run_id=current_run_id,
+                        event_id=event_id,
+                        data={"type": "template", "name": template_name},
                         organization_id=context.organization_id,
                         workspace_id=context.workspace_id,
                     )
@@ -981,6 +1031,8 @@ class HandlerPipeline:
             await self._update_thread_last_event(thread_id, error_now)
 
             raise HandlerError(str(e), original=e) from e
+        finally:
+            reset_handler_context(runtime_tokens)
 
     async def _dispatch_whatsapp_outbound(self, event: AgentEvent, context: HandlerContext) -> None:
         if not self._whatsapp_outbound:

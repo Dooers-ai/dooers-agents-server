@@ -1,4 +1,3 @@
-from dooers.agents.server.broadcast import BroadcastManager
 from dooers.agents.server.config import AgentConfig, OnSettingsUpdated
 from dooers.agents.server.dispatch import DispatchStream
 from dooers.agents.server.exceptions import DispatchError, HandlerError, UnsupportedContentTypeError
@@ -11,6 +10,8 @@ from dooers.agents.server.features.analytics import (
 )
 from dooers.agents.server.features.channels.whatsapp import (
     WhatsappOutboundCallback,
+    WhatsappToolsClient,
+    WhatsappToolsError,
     create_dooers_whatsapp_outbound,
     dooers_whatsapp_hmac_key_fingerprint,
     normalize_e164,
@@ -135,6 +136,8 @@ __all__ = [
     "AgentSettings",
     # WhatsApp (Dooers tools channel)
     "WhatsappOutboundCallback",
+    "WhatsappToolsClient",
+    "WhatsappToolsError",
     "create_dooers_whatsapp_outbound",
     "dooers_whatsapp_hmac_key_fingerprint",
     "normalize_e164",

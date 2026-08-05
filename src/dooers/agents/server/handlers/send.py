@@ -99,6 +99,27 @@ class _WhatsappSend:
             instance_id=instance_id,
         )
 
+    def template(
+        self,
+        template_name: str,
+        template_language: str,
+        *,
+        to_e164: str,
+        instance_id: str,
+        template_components: list[dict[str, Any]] | None = None,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return self._tag(
+            self._b.template(
+                template_name,
+                template_language,
+                template_components=template_components,
+                author=author,
+            ),
+            to_e164=to_e164,
+            instance_id=instance_id,
+        )
+
 
 class AgentSend:
     def __init__(self) -> None:
@@ -160,6 +181,24 @@ class AgentSend:
                 "display_name": display_name,
                 "vcard": vcard,
                 "phones": phones or [],
+                "author": author,
+            },
+        )
+
+    def template(
+        self,
+        template_name: str,
+        template_language: str,
+        *,
+        template_components: list[dict[str, Any]] | None = None,
+        author: str | None = None,
+    ) -> AgentEvent:
+        return AgentEvent(
+            send_type="template",
+            data={
+                "template_name": template_name,
+                "template_language": template_language,
+                "template_components": template_components or [],
                 "author": author,
             },
         )
