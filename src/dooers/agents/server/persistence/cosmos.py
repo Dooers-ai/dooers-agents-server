@@ -255,21 +255,25 @@ class CosmosPersistence:
             params.append({"name": "@organization_id", "value": organization_id})
             conditions.append("c.workspace_id = @workspace_id")
             params.append({"name": "@workspace_id", "value": workspace_id})
+            member_conditions: list[str] = []
+            if user_id:
+                member_conditions.append("u.user_id = @user_id")
+                params.append({"name": "@user_id", "value": user_id})
+            if user_email:
+                member_conditions.append("u.user_email = @user_email")
+                params.append({"name": "@user_email", "value": user_email})
             if identity_ids:
-                conditions.append(
-                    "EXISTS(SELECT VALUE u FROM u IN c.users "
-                    "WHERE ARRAY_CONTAINS(@all_ids, u.user_id) "
+                member_conditions.append(
+                    "(ARRAY_CONTAINS(@identity_ids, u.user_id) "
                     "OR (IS_DEFINED(u.identity_ids) AND EXISTS("
                     "SELECT VALUE iid FROM iid IN u.identity_ids "
-                    "WHERE ARRAY_CONTAINS(@all_ids, iid))))"
+                    "WHERE ARRAY_CONTAINS(@identity_ids, iid))))"
                 )
-                params.append({"name": "@all_ids", "value": identity_ids})
-            elif user_id:
-                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_id = @user_id)")
-                params.append({"name": "@user_id", "value": user_id})
-            elif user_email:
-                conditions.append("EXISTS(SELECT VALUE u FROM u IN c.users WHERE u.user_email = @user_email)")
-                params.append({"name": "@user_email", "value": user_email})
+                params.append({"name": "@identity_ids", "value": identity_ids})
+            if member_conditions:
+                conditions.append(
+                    "EXISTS(SELECT VALUE u FROM u IN c.users WHERE " + " OR ".join(member_conditions) + ")"
+                )
         # scope == "admin" — no additional filters
 
     async def count_threads(

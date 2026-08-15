@@ -503,9 +503,17 @@ class PostgresPersistence:
             conditions.append(f"workspace_id = ${idx}")
             params.append(workspace_id)
             idx += 1
+            or_parts: list[str] = []
+            if user_id:
+                or_parts.append(f"users @> ${idx}::jsonb")
+                params.append(json.dumps([{"user_id": user_id}]))
+                idx += 1
+            if user_email:
+                or_parts.append(f"users @> ${idx}::jsonb")
+                params.append(json.dumps([{"user_email": user_email}]))
+                idx += 1
             if identity_ids:
                 # OR'd containment checks use the GIN index on users column
-                or_parts: list[str] = []
                 for uid in identity_ids:
                     or_parts.append(f"users @> ${idx}::jsonb")
                     params.append(json.dumps([{"user_id": uid}]))
@@ -518,15 +526,8 @@ class PostgresPersistence:
                 )""")
                 params.append(identity_ids)
                 idx += 1
+            if or_parts:
                 conditions.append(f"({' OR '.join(or_parts)})")
-            elif user_id:
-                conditions.append(f"users @> ${idx}::jsonb")
-                params.append(json.dumps([{"user_id": user_id}]))
-                idx += 1
-            elif user_email:
-                conditions.append(f"users @> ${idx}::jsonb")
-                params.append(json.dumps([{"user_email": user_email}]))
-                idx += 1
         # scope == "admin" — no additional filters
         return idx
 

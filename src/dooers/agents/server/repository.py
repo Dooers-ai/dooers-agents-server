@@ -28,11 +28,13 @@ class Repository:
 
     async def list_threads(
         self,
-        filter: dict[str, str] | None = None,
+        filter: dict[str, Any] | None = None,
         order: dict[str, str] | None = None,
         limit: int = 50,
     ) -> list[Thread]:
         f = filter or {}
+        raw_identity_ids = f.get("identity_ids")
+        identity_ids = [raw_identity_ids] if isinstance(raw_identity_ids, str) else raw_identity_ids
         return await self._persistence.list_threads(
             agent_id=f.get("agent_id", ""),
             organization_id=f.get("organization_id", ""),
@@ -41,6 +43,8 @@ class Repository:
             cursor=None,
             limit=limit,
             scope=f.get("scope", "member"),
+            user_email=f.get("user_email"),
+            identity_ids=identity_ids,
         )
 
     async def get_thread(self, thread_id: str) -> Thread | None:
