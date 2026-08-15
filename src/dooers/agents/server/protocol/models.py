@@ -404,6 +404,7 @@ class ConnectionWorkspace(BaseModel):
 class ConnectionAgent(BaseModel):
     id: str
     owner_user_id: str | None = None
+    can_configure_settings: bool = False
 
 
 class ConnectionPolicies(BaseModel):

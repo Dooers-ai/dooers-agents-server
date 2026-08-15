@@ -63,6 +63,7 @@ class AuthValidationResult:
     connection_type: str = ""
     agent_id: str = ""
     agent_owner_user_id: str | None = None
+    can_configure_settings: bool = False
     organization_plan: str = "free"
 
 
@@ -159,6 +160,7 @@ class AuthValidationClient:
             connection_type=ctx.connection_type,
             agent_id=ctx.agent.id,
             agent_owner_user_id=ctx.agent.owner_user_id,
+            can_configure_settings=ctx.agent.can_configure_settings,
             organization_plan=ctx.organization.plan,
         )
 
@@ -238,6 +240,7 @@ class AuthValidationClient:
                 connection_type=ctx.connection_type,
                 agent_id=ctx.agent.id,
                 agent_owner_user_id=ctx.agent.owner_user_id,
+                can_configure_settings=ctx.agent.can_configure_settings,
                 organization_plan=ctx.organization.plan,
             )
 

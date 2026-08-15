@@ -26,15 +26,15 @@ from dooers.agents.server.protocol.frames import (
     C2S_Connect,
     C2S_EventCreate,
     C2S_EventList,
-    C2S_ThreadArtifactsList,
     C2S_Feedback,
+    C2S_Ping,
     C2S_SettingsMergeServiceSecrets,
     C2S_SettingsPatch,
     C2S_SettingsPublicSchema,
     C2S_SettingsSeed,
     C2S_SettingsSubscribe,
     C2S_SettingsUnsubscribe,
-    C2S_Ping,
+    C2S_ThreadArtifactsList,
     C2S_ThreadDelete,
     C2S_ThreadList,
     C2S_ThreadSubscribe,
@@ -42,23 +42,23 @@ from dooers.agents.server.protocol.frames import (
     ClientToServer,
     EventAppendPayload,
     EventListResultPayload,
-    ThreadArtifactsListResultPayload,
     FeedbackAckPayload,
     RunUpsertPayload,
     S2C_Ack,
     S2C_EventAppend,
     S2C_EventListResult,
-    S2C_ThreadArtifactsListResult,
     S2C_FeedbackAck,
     S2C_Pong,
     S2C_RunUpsert,
     S2C_SettingsPublicSchemaResult,
+    S2C_ThreadArtifactsListResult,
     S2C_ThreadDeleted,
     S2C_ThreadListResult,
     S2C_ThreadSnapshot,
     S2C_ThreadUpsert,
     ServerToClient,
     SettingsPublicSchemaResultPayload,
+    ThreadArtifactsListResultPayload,
     ThreadDeletedPayload,
     ThreadListResultPayload,
     ThreadSnapshotPayload,
@@ -66,8 +66,8 @@ from dooers.agents.server.protocol.frames import (
 )
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
 from dooers.agents.server.protocol.parser import serialize_frame
-from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 from dooers.agents.server.registry import ConnectionRegistry
+from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 
 if TYPE_CHECKING:
     from dooers.agents.server.features.analytics.collector import AnalyticsCollector
@@ -169,6 +169,15 @@ def _can_access_creator_settings(user: User, *, agent_owner_user_id: str | None)
     return False
 
 
+def _can_configure_runtime_settings(user: User | None, *, can_configure_settings: bool) -> bool:
+    """Runtime settings require an authenticated dashboard session with agent configure access."""
+    return bool(
+        user
+        and user.connection_type == "dashboard"
+        and can_configure_settings
+    )
+
+
 class Router:
     def __init__(
         self,
@@ -215,6 +224,7 @@ class Router:
         self._organization_id: str = ""
         self._workspace_id: str = ""
         self._agent_owner_user_id: str | None = None
+        self._can_configure_settings: bool = False
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
@@ -439,6 +449,14 @@ class Router:
                     },
                 )
                 return
+            if result.agent_id and result.agent_id != self._agent_id:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={"code": "CONNECTION_REJECTED", "message": "agent session does not match connection"},
+                )
+                return
 
             self._user = result.user
             # For guest visitors, the webhook has no display info to return —
@@ -456,6 +474,7 @@ class Router:
                     self._user = self._user.model_copy(update=patches)
             self._rate_limits = result.rate_limits
             self._agent_owner_user_id = result.agent_owner_user_id
+            self._can_configure_settings = result.can_configure_settings
             self._organization_id = result.organization_id or frame.payload.organization_id
             # Empty string is a valid personal/direct-chat workspace; do not
             # fall back via truthiness ("" or frame_ws would pick frame_ws).
@@ -502,6 +521,14 @@ class Router:
                         },
                     )
                     return
+                if result.agent_id and result.agent_id != self._agent_id:
+                    await self._send_ack(
+                        ws,
+                        frame.id,
+                        ok=False,
+                        error={"code": "CONNECTION_REJECTED", "message": "agent session does not match connection"},
+                    )
+                    return
 
                 self._user = result.user
                 self._organization_id = result.organization_id or self._organization_id
@@ -509,6 +536,7 @@ class Router:
                 if result.workspace_id is not None:
                     self._workspace_id = result.workspace_id
                 self._agent_owner_user_id = result.agent_owner_user_id
+                self._can_configure_settings = result.can_configure_settings
                 self._rate_limits = result.rate_limits or {}
             else:
                 # No validator configured — trust the frame identity (legacy).
@@ -1098,6 +1126,20 @@ class Router:
                     },
                 )
                 return
+        elif not _can_configure_runtime_settings(
+            self._user,
+            can_configure_settings=self._can_configure_settings,
+        ):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={
+                    "code": "FORBIDDEN",
+                    "message": "Runtime settings require configure access to this agent",
+                },
+            )
+            return
 
         if agent_id not in self._settings_subscriptions:
             self._settings_subscriptions[agent_id] = set()
@@ -1192,6 +1234,32 @@ class Router:
 
         ctx = self._settings_ws_context.get(self._ws_id)
         effective_audience = ctx.get("audience", "user") if ctx else "user"
+        if effective_audience == "creator":
+            if not self._user or not _can_access_creator_settings(
+                self._user,
+                agent_owner_user_id=self._agent_owner_user_id,
+            ):
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={"code": "FORBIDDEN", "message": "Creator settings access was denied"},
+                )
+                return
+        elif not _can_configure_runtime_settings(
+            self._user,
+            can_configure_settings=self._can_configure_settings,
+        ):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={
+                    "code": "FORBIDDEN",
+                    "message": "Runtime settings require configure access to this agent",
+                },
+            )
+            return
         if field.visibility == SettingsFieldVisibility.CREATOR and effective_audience != "creator":
             await self._send_ack(
                 ws,
