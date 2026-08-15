@@ -551,4 +551,5 @@ See [`examples/`](examples/) for complete working examples:
 
 ## See Also
 
+- [WhatsApp integration](docs/whatsapp.md) — inbound/outbound, `WhatsAppClient`, templates, Meta 24h window
 - [dooers-agents-client](https://github.com/Dooers-ai/dooers-agents-client) — React SDK that connects to agents built with this server

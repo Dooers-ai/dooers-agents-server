@@ -176,6 +176,18 @@ Detalhes de analytics e schema de settings nas secções 4 e 5 abaixo.
 | `send.update_user_event(event_id, content)` | `event_update` | Updates an existing user event’s content (list of content-part dicts) |
 | `send.update_thread(title=None)` | `thread_update` | Updates thread metadata (e.g. title) |
 
+### WhatsApp delivery (`send.whatsapp.*`)
+
+Requires `AgentConfig(dooers_whatsapp_service=True)`. Sends to the user's phone via Dooers tools **and** persists the event in the thread (unlike `WhatsAppClient`, which is programmatic-only).
+
+| Method | Notes |
+|--------|-------|
+| `send.whatsapp.text(text, *, to_e164, instance_id, author=None)` | Free-form text (24h Meta window). Omit `to_e164` / `instance_id` when `incoming.context.channel == "whatsapp"`. |
+| `send.whatsapp.template(name, language, *, to_e164, instance_id, template_components=None, author=None)` | Approved Meta template; works outside the 24h window. |
+| `send.whatsapp.image(...)`, `.document(...)`, `.audio(...)`, `.contact(...)` | Same media shapes as `send.*`, plus required routing fields. |
+
+See [whatsapp.md](whatsapp.md) for `WhatsAppClient`, Studio setup, and troubleshooting.
+
 ### Forms
 
 | Method | Notes |
