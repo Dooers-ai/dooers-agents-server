@@ -1,0 +1,24 @@
+name: Release v0.18.3
+
+on:
+  push:
+    branches: [release/v0.18.3]
+    paths: ['.github/workflows/release-v0.18.3.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub release for merged SDK commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view v0.18.3 --repo Dooers-ai/dooers-agents-server >/dev/null 2>&1 && exit 0
+          gh release create v0.18.3 \
+            --repo Dooers-ai/dooers-agents-server \
+            --target a69cf5efe2eb354be20182c9258d05a871fab363 \
+            --title 'v0.18.3' \
+            --generate-notes
