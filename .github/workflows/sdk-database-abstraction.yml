@@ -165,7 +165,7 @@ jobs:
       - name: Lock, test and lint
         run: |
           uv lock
-          uv sync --frozen --extra dev
+          uv sync --frozen --extra dev --extra observability
           uv run pytest -q
           uv run ruff check src tests
 
