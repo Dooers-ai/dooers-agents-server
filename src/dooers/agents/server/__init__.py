@@ -1,4 +1,5 @@
 from dooers.agents.server.config import AgentConfig, OnSettingsUpdated
+from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
 from dooers.agents.server.exceptions import DispatchError, HandlerError, UnsupportedContentTypeError
 from dooers.agents.server.features.analytics import (
@@ -75,6 +76,7 @@ __all__ = [
     "AgentConfig",
     "OnSettingsUpdated",
     "AgentServer",
+    "SqlDatabase",
     "AgentContext",
     "AgentIncoming",
     "AgentSend",
