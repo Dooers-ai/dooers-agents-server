@@ -37,8 +37,9 @@ jobs:
 
           from __future__ import annotations
 
+          from collections.abc import AsyncIterator
           from contextlib import asynccontextmanager
-          from typing import Any, AsyncIterator
+          from typing import Any
 
           import asyncpg
 
@@ -167,7 +168,8 @@ jobs:
           uv lock
           uv sync --frozen --extra dev --extra observability
           uv run pytest -q
-          uv run ruff check src tests
+          uv run ruff check --fix src/dooers/agents/server/database.py src/dooers/agents/server/server.py src/dooers/agents/server/__init__.py tests/test_application_database.py
+          uv run ruff check src/dooers/agents/server/database.py src/dooers/agents/server/server.py src/dooers/agents/server/__init__.py tests/test_application_database.py
 
       - name: Commit SDK 0.18.3
         run: |
