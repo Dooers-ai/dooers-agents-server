@@ -1,0 +1,183 @@
+name: SDK Database Abstraction Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sdk-database-abstraction.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Add SDK-owned SQL database facade
+        run: |
+          cat > src/dooers/agents/server/database.py <<'PY'
+          """SDK-owned application SQL access over the persistence connection.
+
+          Applications use this facade instead of creating database clients. For
+          ``database_type='dooers'`` it reuses the same SDK-managed AlloyDB/IAM
+          pool that stores threads, events and settings. For self-hosted Postgres
+          it reuses that Postgres pool. Cosmos does not expose SQL access.
+          """
+
+          from __future__ import annotations
+
+          from contextlib import asynccontextmanager
+          from typing import Any, AsyncIterator
+
+          import asyncpg
+
+          from dooers.agents.server.persistence.postgres import PostgresPersistence
+
+
+          class SqlDatabase:
+              """Application SQL facade backed by the AgentServer persistence pool."""
+
+              def __init__(self, persistence: PostgresPersistence):
+                  self._persistence = persistence
+
+              def _pool(self) -> asyncpg.Pool:
+                  pool = self._persistence._pool
+                  if pool is None:
+                      raise RuntimeError("AgentServer database is not connected")
+                  return pool
+
+              async def execute(self, query: str, *args: Any) -> str:
+                  async with self._pool().acquire() as conn:
+                      return await conn.execute(query, *args)
+
+              async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+                  async with self._pool().acquire() as conn:
+                      row = await conn.fetchrow(query, *args)
+                  return dict(row) if row is not None else None
+
+              async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+                  async with self._pool().acquire() as conn:
+                      rows = await conn.fetch(query, *args)
+                  return [dict(row) for row in rows]
+
+              @asynccontextmanager
+              async def connection(self) -> AsyncIterator[asyncpg.Connection]:
+                  """Borrow a connection from the SDK-owned pool without owning its lifecycle."""
+                  async with self._pool().acquire() as conn:
+                      yield conn
+
+              @asynccontextmanager
+              async def transaction(self) -> AsyncIterator[asyncpg.Connection]:
+                  """Borrow one SDK-owned connection and run a transaction on it."""
+                  async with self._pool().acquire() as conn:
+                      async with conn.transaction():
+                          yield conn
+          PY
+
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/dooers/agents/server/server.py')
+          s = p.read_text()
+          needle = 'from dooers.agents.server.dispatch import DispatchStream\n'
+          replacement = needle + 'from dooers.agents.server.database import SqlDatabase\n'
+          assert needle in s and 'from dooers.agents.server.database import SqlDatabase' not in s
+          s = s.replace(needle, replacement, 1)
+
+          needle = '''    async def repository(self) -> Repository:\n        persistence = await self._ensure_initialized()\n        return Repository(persistence)\n'''
+          replacement = '''    async def database(self) -> SqlDatabase:\n        \"\"\"Return application SQL access backed by the SDK-owned persistence pool.\n\n        With ``database_type=\"dooers\"`` this is the same managed AlloyDB/IAM\n        pool used internally by AgentServer. Applications never need the instance\n        URI, IAM user, password, connector, or pool lifecycle.\n        \"\"\"\n        persistence = await self._ensure_initialized()\n        if not isinstance(persistence, PostgresPersistence):\n            raise RuntimeError(\n                f\"SQL database access is unavailable for database_type={self._config.database_type!r}\"\n            )\n        return SqlDatabase(persistence)\n\n    async def repository(self) -> Repository:\n        persistence = await self._ensure_initialized()\n        return Repository(persistence)\n'''
+          assert needle in s and 'async def database(self) -> SqlDatabase' not in s
+          p.write_text(s.replace(needle, replacement, 1))
+
+          p = Path('src/dooers/agents/server/__init__.py')
+          s = p.read_text()
+          needle = 'from dooers.agents.server.dispatch import DispatchStream\n'
+          s = s.replace(needle, needle + 'from dooers.agents.server.database import SqlDatabase\n', 1)
+          s = s.replace('    "AgentServer",\n', '    "AgentServer",\n    "SqlDatabase",\n', 1)
+          p.write_text(s)
+
+          p = Path('pyproject.toml')
+          s = p.read_text()
+          assert 'version = "0.18.2"' in s
+          p.write_text(s.replace('version = "0.18.2"', 'version = "0.18.3"', 1))
+          PY
+
+          cat > tests/test_application_database.py <<'PY'
+          from unittest.mock import AsyncMock, MagicMock
+
+          import pytest
+
+          from dooers.agents.server import AgentConfig, AgentServer, SqlDatabase
+          from dooers.agents.server.persistence.postgres import PostgresPersistence
+
+
+          class _Acquire:
+              def __init__(self, conn):
+                  self.conn = conn
+
+              async def __aenter__(self):
+                  return self.conn
+
+              async def __aexit__(self, *args):
+                  return False
+
+
+          @pytest.mark.asyncio
+          async def test_sql_database_reuses_persistence_pool():
+              conn = MagicMock()
+              conn.execute = AsyncMock(return_value='OK')
+              conn.fetchrow = AsyncMock(return_value={'value': 7})
+              conn.fetch = AsyncMock(return_value=[{'value': 1}, {'value': 2}])
+              pool = MagicMock()
+              pool.acquire.return_value = _Acquire(conn)
+
+              persistence = PostgresPersistence(host='h', port=5432, user='u', database='d', password='p')
+              persistence._pool = pool
+              db = SqlDatabase(persistence)
+
+              assert await db.execute('SELECT 1') == 'OK'
+              assert await db.fetchrow('SELECT 7') == {'value': 7}
+              assert await db.fetch('SELECT value') == [{'value': 1}, {'value': 2}]
+              assert pool.acquire.call_count == 3
+
+
+          @pytest.mark.asyncio
+          async def test_agent_server_database_rejects_non_sql_backend():
+              server = AgentServer(AgentConfig(database_type='cosmos'))
+              server._persistence = MagicMock()
+              server._initialized = True
+              server._ensure_initialized = AsyncMock(return_value=server._persistence)
+              with pytest.raises(RuntimeError, match='SQL database access is unavailable'):
+                  await server.database()
+          PY
+
+      - name: Lock, test and lint
+        run: |
+          uv lock
+          uv sync --frozen --extra dev
+          uv run pytest -q
+          uv run ruff check src tests
+
+      - name: Commit SDK 0.18.3
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src tests pyproject.toml uv.lock
+          git commit -m 'feat(database): expose SDK-managed application SQL access'
+          git push origin HEAD:main
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create v0.18.3 --target main --title 'v0.18.3' --generate-notes
