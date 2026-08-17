@@ -8,6 +8,7 @@ from typing import Any
 from dooers.agents.server.auth_validation import AuthValidationClient
 from dooers.agents.server.broadcast import BroadcastManager
 from dooers.agents.server.config import AgentConfig
+from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
 from dooers.agents.server.features.analytics.agent_analytics import AgentAnalytics
 from dooers.agents.server.features.analytics.collector import AnalyticsCollector
@@ -484,6 +485,20 @@ class AgentServer:
         )
 
         return DispatchStream(pipeline=pipeline, context=context, result=result, tracker=tracker)
+
+    async def database(self) -> SqlDatabase:
+        """Return app SQL access backed by the SDK-owned persistence pool.
+
+        For ``database_type="dooers"`` this is the same managed AlloyDB/IAM
+        pool used internally by AgentServer. Application code never owns DB
+        connection credentials, connector construction, or pool lifecycle.
+        """
+        persistence = await self._ensure_initialized()
+        if not isinstance(persistence, PostgresPersistence):
+            raise RuntimeError(
+                f"SQL database access is unavailable for database_type={self._config.database_type!r}"
+            )
+        return SqlDatabase(persistence)
 
     async def repository(self) -> Repository:
         persistence = await self._ensure_initialized()
