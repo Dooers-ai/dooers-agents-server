@@ -806,6 +806,7 @@ class Router:
             client_event_id=frame.payload.client_event_id,
             event_type=frame.payload.event.type,
             metadata=raw_metadata if not frame.payload.thread_id else None,
+            chat_context=frame.payload.chat_context,
         )
 
         try:

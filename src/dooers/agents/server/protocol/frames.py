@@ -5,7 +5,15 @@ from pydantic import BaseModel, Field
 
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
 from dooers.agents.server.features.settings.models import SettingsField, SettingsFieldGroup
-from dooers.agents.server.protocol.models import Run, Thread, ThreadArtifact, ThreadEvent, User, WireC2S_ContentPart
+from dooers.agents.server.protocol.models import (
+    ChatContext,
+    Run,
+    Thread,
+    ThreadArtifact,
+    ThreadEvent,
+    User,
+    WireC2S_ContentPart,
+)
 
 T = TypeVar("T")
 
@@ -51,6 +59,7 @@ class EventCreatePayload(BaseModel):
     client_event_id: str | None = None
     event: EventCreateEventPayload
     metadata: dict[str, Any] | None = None
+    chat_context: ChatContext | None = None
 
 
 class C2S_Connect(BaseModel):

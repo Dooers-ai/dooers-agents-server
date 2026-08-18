@@ -37,6 +37,15 @@ Dataclass; **só atributos**, sem métodos próprios.
 | `user` | `User` | Utilizador (ver tabela seguinte). |
 | `thread_title` | `str \| None` | Título do thread, se existir. |
 | `thread_created_at` | `datetime \| None` | Data de criação do thread. |
+| `chat_context` | `ChatContext \| None` | Hints de execução deste turno (`event.create.chat_context`). Hoje: `llm_model`. |
+
+### `incoming.context.chat_context` (`ChatContext`)
+
+Sugestão do cliente — o handler deve validar contra o schema (`llm_models`) antes de aplicar. Helpers: `resolve_chat_llm_override` / `apply_chat_llm_override`.
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `llm_model` | `str \| None` | Modelo escolhido no compositor. |
 
 ### `incoming.context.user` (`User`)
 

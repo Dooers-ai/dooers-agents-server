@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from dooers.agents.server.protocol.models import User
+from dooers.agents.server.protocol.models import ChatContext, User
 
 
 @dataclass
@@ -18,3 +18,4 @@ class AgentContext:
     user: User = field(default_factory=lambda: User(user_id=""))
     thread_title: str | None = field(default=None)
     thread_created_at: datetime | None = field(default=None)
+    chat_context: ChatContext | None = None

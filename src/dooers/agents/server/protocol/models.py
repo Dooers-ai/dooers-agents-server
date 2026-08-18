@@ -374,6 +374,16 @@ def deserialize_s2c_part(data: dict) -> WireS2C_ContentPart:
     return cls(**data)
 
 
+class ChatContext(BaseModel):
+    """Client-supplied per-turn execution hints (``event.create`` ``chat_context``).
+
+    Values are suggestions: handlers must validate against the agent settings schema
+    (reserved field ``llm_models``) before applying.
+    """
+
+    llm_model: str | None = None
+
+
 class User(BaseModel):
     user_id: str
     user_name: str | None = None

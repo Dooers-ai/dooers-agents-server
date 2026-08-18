@@ -21,6 +21,10 @@ class AgentSettings:
         self._persistence = persistence
         self._broadcaster = broadcaster
 
+    @property
+    def schema(self) -> SettingsSchema:
+        return self._schema
+
     async def get(self, field_id: str) -> Any:
         field = self._schema.get_field(field_id)
         if not field:

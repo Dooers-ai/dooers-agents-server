@@ -31,6 +31,9 @@ from dooers.agents.server.features.settings import (
     SettingsFieldVisibility,
     SettingsSchema,
     SettingsSelectOption,
+    apply_chat_llm_override,
+    LLM_MODELS_FIELD_ID,
+    resolve_chat_llm_override,
 )
 from dooers.agents.server.handlers.content_policy import normalize_allowed_content_types
 from dooers.agents.server.handlers.context import AgentContext
@@ -43,6 +46,7 @@ from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.models import (
     Actor,
     AudioPart,
+    ChatContext,
     ContactPart,
     ContentPart,
     DocumentPart,
@@ -97,6 +101,7 @@ __all__ = [
     "Repository",
     # Protocol models
     "User",
+    "ChatContext",
     "ContentPart",
     "TextPart",
     "AudioPart",
@@ -136,6 +141,9 @@ __all__ = [
     "SettingsSchema",
     "SettingsBroadcaster",
     "AgentSettings",
+    "LLM_MODELS_FIELD_ID",
+    "apply_chat_llm_override",
+    "resolve_chat_llm_override",
     # WhatsApp (Dooers tools channel)
     "WhatsappOutboundCallback",
     "WhatsappToolsClient",

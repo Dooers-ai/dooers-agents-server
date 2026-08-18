@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] — 2026-08-18
+
+### Added
+
+- **`event.create` `chat_context`.** Optional per-turn execution hints (currently `llm_model`) on the WebSocket create payload. The pipeline copies them to `incoming.context.chat_context` for every message (unlike `metadata`, which is only persisted on thread create).
+- **Reserved settings field `llm_models`.** Helpers `resolve_chat_llm_override` / `apply_chat_llm_override` accept a chat override only when it matches that field's `select` options. `AgentSettings.schema` exposes the schema for handlers.
+
 ## [0.11.1] — 2026-06-18
 
 ### Added

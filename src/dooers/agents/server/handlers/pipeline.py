@@ -22,6 +22,7 @@ from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.models import (
     AudioPart,
+    ChatContext,
     ContactPart,
     ContentPart,
     DocumentPart,
@@ -140,6 +141,7 @@ class HandlerContext:
     client_event_id: str | None = None
     event_type: str = "message"
     metadata: dict[str, Any] | None = None
+    chat_context: ChatContext | None = None
 
     def __post_init__(self):
         if self.user is None:
@@ -337,6 +339,7 @@ class HandlerPipeline:
             user=context.user,
             thread_title=thread.title,
             thread_created_at=thread.created_at,
+            chat_context=context.chat_context,
         )
         incoming = AgentIncoming(
             message=message,
