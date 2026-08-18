@@ -8,7 +8,7 @@ from typing import Any
 
 from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.llm.types import LlmWireFormat
-from dooers.agents.server.protocol.models import AudioPart, DocumentPart, ImagePart, TextPart
+from dooers.agents.server.protocol.models import AudioPart, ContactPart, DocumentPart, ImagePart, TextPart
 
 logger = logging.getLogger("dooers.llm")
 
@@ -106,11 +106,17 @@ def _ordered_openai_responses_parts(
     """OpenAI Responses API user content: ``input_text`` / ``input_image`` items in order."""
     _ = wire  # reserved when provider-specific branching is added
     parts: list[dict[str, Any]] = []
+    text_from_parts = "\n".join(
+        (p.text or "").strip()
+        for p in incoming.content or []
+        if isinstance(p, TextPart) and (p.text or "").strip()
+    )
     m = (incoming.message or "").strip()
-    if m:
+    if m and m != text_from_parts:
         parts.append(_input_text_part(m))
 
     images_seen = 0
+    message_lines = {line.strip() for line in m.split("\n") if line.strip()} if m else set()
     for p in incoming.content or []:
         if isinstance(p, TextPart):
             t = (p.text or "").strip()
@@ -134,6 +140,11 @@ def _ordered_openai_responses_parts(
             parts.append(_audio_to_input_text(p))
         elif isinstance(p, DocumentPart):
             parts.append(_document_to_input_text(p))
+        elif isinstance(p, ContactPart):
+            line = (p.display_name or "").strip() or "Contact"
+            labeled = f"{line} [contact card]"
+            if labeled not in message_lines and labeled != m:
+                parts.append(_input_text_part(labeled))
         elif strict:
             raise ValueError(f"Unsupported content type for formatting: {type(p).__name__}.")
         else:

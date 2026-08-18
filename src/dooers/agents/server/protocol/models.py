@@ -110,6 +110,10 @@ class WireC2S_AudioPart(BaseModel):
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted.",
     )
+    data_base64: str | None = Field(
+        default=None,
+        description="Inline audio from a channel adapter (e.g. WhatsApp). Stripped after ingest; not persisted.",
+    )
 
 
 class WireC2S_ImagePart(BaseModel):
@@ -126,6 +130,10 @@ class WireC2S_ImagePart(BaseModel):
     url: str | None = Field(
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted (fetchable HTTP(S)).",
+    )
+    data_base64: str | None = Field(
+        default=None,
+        description="Inline image from a channel adapter (e.g. WhatsApp). Stripped after ingest; not persisted.",
     )
 
 
@@ -144,6 +152,10 @@ class WireC2S_DocumentPart(BaseModel):
     url: str | None = Field(
         default=None,
         description="Optional URL from POST /uploads when the attachment was persisted.",
+    )
+    data_base64: str | None = Field(
+        default=None,
+        description="Inline document from a channel adapter (e.g. WhatsApp). Stripped after ingest; not persisted.",
     )
 
 

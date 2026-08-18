@@ -6,7 +6,7 @@ from dooers.agents.server.handlers.context import AgentContext
 from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.llm import format_user_input
 from dooers.agents.server.llm.types import LlmWireFormat
-from dooers.agents.server.protocol.models import AudioPart, DocumentPart, ImagePart, TextPart, User
+from dooers.agents.server.protocol.models import AudioPart, ContactPart, DocumentPart, ImagePart, TextPart, User
 
 
 def _ctx(*, tid="t1", eid="e1", aid="a1") -> AgentContext:
@@ -186,3 +186,28 @@ def test_role_parameter() -> None:
     inc = AgentIncoming(message="x", content=[], context=_ctx())
     out = format_user_input(inc, "openai_responses", strict=True, role="developer")
     assert out["role"] == "developer"
+
+
+def test_contact_only_does_not_duplicate_message() -> None:
+    inc = AgentIncoming(
+        message="Ana [contact card]",
+        content=[ContactPart(display_name="Ana", vcard="BEGIN:VCARD\nEND:VCARD")],
+        context=_ctx(),
+    )
+    assert format_user_input(inc, "openai_responses")["content"] == "Ana [contact card]"
+
+
+def test_caption_text_part_not_duplicated_when_message_matches() -> None:
+    inc = AgentIncoming(
+        message="foto da placa",
+        content=[
+            TextPart(text="foto da placa"),
+            ImagePart(data=b"\xff\xd8\xff", mime_type="image/jpeg"),
+        ],
+        context=_ctx(),
+    )
+    content = format_user_input(inc, "openai_responses")["content"]
+    assert isinstance(content, list)
+    texts = [p["text"] for p in content if p.get("type") == "input_text"]
+    assert texts.count("foto da placa") == 1
+

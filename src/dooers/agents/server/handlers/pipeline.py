@@ -47,10 +47,16 @@ from dooers.agents.server.protocol.models import (
     WireS2C_TextPart,
     deserialize_s2c_part,
 )
+from dooers.agents.server.storage.channel_media_ingest import prepare_inline_media_part
 from dooers.agents.server.storage.chat_artifacts import (
     chat_storage_service_ready,
     promote_orphan_chat_artifact_if_present,
+    put_chat_artifact,
     try_fetch_upload_entry_from_blob,
+)
+from dooers.agents.server.storage.chat_upload_file_policy import (
+    PERSIST_CHAT_ATTACHMENTS_FIELD,
+    enforce_allowed_chat_file_kind,
 )
 from dooers.tools.whatsapp.runtime import bind_handler_context, reset_handler_context
 
@@ -1333,14 +1339,27 @@ class HandlerPipeline:
         """
         handler_parts: list[ContentPart] = []
         storage_parts: list[WireS2C_ContentPart] = []
+        persist = False
+        if any(
+            bool(getattr(part, "data_base64", None) if not isinstance(part, dict) else part.get("data_base64"))
+            for part in parts
+        ):
+            persist = await self._should_persist_attachments(agent_id)
 
         for part in parts:
             if hasattr(part, "model_dump"):
                 data = part.model_dump()
             elif isinstance(part, dict):
-                data = part
+                data = dict(part)
             else:
                 raise ValueError(f"Unsupported content part: {type(part)}")
+
+            data = await self._ingest_inline_media_part(
+                data,
+                agent_id=agent_id,
+                thread_id=thread_id,
+                persist=persist,
+            )
 
             part_type = data.get("type")
 
@@ -1581,6 +1600,99 @@ class HandlerPipeline:
 
         return handler_parts, storage_parts
 
+    async def _should_persist_attachments(self, agent_id: str) -> bool:
+        cfg = self._agent_config
+        if not cfg or not bool(getattr(cfg, "store_chat_uploads", False)):
+            return False
+        if not chat_storage_service_ready(cfg):
+            return False
+        try:
+            values = await self._persistence.get_settings(agent_id)
+        except Exception:
+            logger.exception("persist_chat_attachments read failed agent_id=%s", agent_id)
+            return False
+        return bool(values.get(PERSIST_CHAT_ATTACHMENTS_FIELD))
+
+    async def _ingest_inline_media_part(
+        self,
+        data: dict[str, Any],
+        *,
+        agent_id: str,
+        thread_id: str | None,
+        persist: bool,
+    ) -> dict[str, Any]:
+        prepared = prepare_inline_media_part(data)
+        inline = prepared.pop("_inline_bytes", None)
+        if not isinstance(inline, (bytes, bytearray)) or not inline:
+            return prepared
+        blob = bytes(inline)
+        if self._upload_store is not None:
+            try:
+                ref_id = self._upload_store.store(
+                    blob,
+                    str(prepared.get("filename") or "file"),
+                    str(prepared.get("mime_type") or "application/octet-stream"),
+                )
+            except ValueError:
+                logger.warning("inline media exceeds upload store limit; keeping in-memory bytes")
+                prepared["data"] = blob
+                return prepared
+            prepared["ref_id"] = ref_id
+            if persist:
+                await self._persist_inline_artifact(
+                    agent_id=agent_id,
+                    thread_id=thread_id,
+                    ref_id=ref_id,
+                    data=prepared,
+                    blob=blob,
+                )
+            return prepared
+        prepared["data"] = blob
+        return prepared
+
+    async def _persist_inline_artifact(
+        self,
+        *,
+        agent_id: str,
+        thread_id: str | None,
+        ref_id: str,
+        data: dict[str, Any],
+        blob: bytes,
+    ) -> None:
+        cfg = self._agent_config
+        if not cfg:
+            return
+        filename = str(data.get("filename") or "file")
+        mime = str(data.get("mime_type") or "application/octet-stream")
+        try:
+            enforce_allowed_chat_file_kind(
+                filename=filename,
+                mime_type=mime,
+                allowed_raw=getattr(cfg, "allowed_content_types", None),
+            )
+        except ValueError:
+            logger.info(
+                "skip durable persist for disallowed/unknown kind filename=%s mime=%s",
+                filename,
+                mime,
+            )
+            return
+        try:
+            await asyncio.to_thread(
+                partial(
+                    put_chat_artifact,
+                    cfg,
+                    data=blob,
+                    content_type=mime,
+                    agent_id=agent_id,
+                    thread_id=thread_id,
+                    ref_id=ref_id,
+                    filename=filename,
+                )
+            )
+        except Exception:
+            logger.exception("Chat artifact blob upload failed for inline channel media ref_id=%s", ref_id)
+
     def _extract_message(self, content: list[ContentPart]) -> str:
         texts = []
         for part in content:
@@ -1589,4 +1701,15 @@ class HandlerPipeline:
             elif isinstance(part, ContactPart):
                 line = part.display_name.strip() or "Contact"
                 texts.append(f"{line} [contact card]")
-        return " ".join(texts)
+        joined = " ".join(t for t in texts if t and str(t).strip()).strip()
+        if joined:
+            return joined
+        fallback: list[str] = []
+        for part in content:
+            if isinstance(part, ImagePart):
+                fallback.append("[image]")
+            elif isinstance(part, AudioPart):
+                fallback.append("[audio]")
+            elif isinstance(part, DocumentPart):
+                fallback.append(f"[document: {part.filename or 'file'}]")
+        return " ".join(fallback)

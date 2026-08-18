@@ -6,10 +6,10 @@ import json
 from typing import Any
 
 from dooers.agents.server.exceptions import UnsupportedContentTypeError
-from dooers.agents.server.protocol.models import AudioPart, ContentPart, DocumentPart, ImagePart, TextPart
+from dooers.agents.server.protocol.models import AudioPart, ContactPart, ContentPart, DocumentPart, ImagePart, TextPart
 
 # Types the SDK can surface to handlers today (excluding video — rejected at ingest).
-HANDLER_SUPPORTED_CONTENT_TYPES = frozenset({"text", "audio", "image", "document"})
+HANDLER_SUPPORTED_CONTENT_TYPES = frozenset({"text", "audio", "image", "document", "contact"})
 
 
 def content_part_public_type(part: ContentPart) -> str:
@@ -21,6 +21,8 @@ def content_part_public_type(part: ContentPart) -> str:
         return "image"
     if isinstance(part, DocumentPart):
         return "document"
+    if isinstance(part, ContactPart):
+        return "contact"
     return type(part).__name__
 
 
