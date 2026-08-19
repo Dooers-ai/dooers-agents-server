@@ -1,6 +1,6 @@
 from .agent_settings import AgentSettings
 from .broadcaster import SettingsBroadcaster
-from .chat_llm import LLM_MODELS_FIELD_ID, apply_chat_llm_override, resolve_chat_llm_override
+from .chat_llm import LLM_MODELS_FIELD_ID, apply_chat_llm_override, resolve_chat_llm_override, resolve_chat_reasoning_effort
 from .models import (
     SettingsField,
     SettingsFieldGroup,
@@ -22,4 +22,5 @@ __all__ = [
     "LLM_MODELS_FIELD_ID",
     "apply_chat_llm_override",
     "resolve_chat_llm_override",
+    "resolve_chat_reasoning_effort",
 ]
