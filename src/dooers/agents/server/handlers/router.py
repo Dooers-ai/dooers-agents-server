@@ -1324,6 +1324,11 @@ class Router:
             )
             return
         public = self._settings_schema.to_public_http_dict()
+        logger.info(
+            "[agents] settings.public_schema id=%s fields=%s",
+            frame.id,
+            len(public.get("fields") or []),
+        )
         result = S2C_SettingsPublicSchemaResult(
             id=frame.id,
             payload=SettingsPublicSchemaResultPayload(schema=public),

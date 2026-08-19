@@ -378,10 +378,13 @@ class ChatContext(BaseModel):
     """Client-supplied per-turn execution hints (``event.create`` ``chat_context``).
 
     Values are suggestions: handlers must validate against the agent settings schema
-    (reserved field ``llm_models``) before applying.
+    (reserved field ``llm_models``) before applying. ``reasoning_effort`` is a well-known
+    Responses API enum (``none`` / ``low`` / ``medium`` / ``high``); handlers should ignore
+    it when the selected model does not support reasoning.
     """
 
     llm_model: str | None = None
+    reasoning_effort: str | None = None
 
 
 class User(BaseModel):

@@ -416,7 +416,7 @@ class S2C_SettingsPatch(BaseModel):
 
 
 class SettingsPublicSchemaResultPayload(BaseModel):
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "ser_json_by_alias": True}
 
     schema_: dict[str, Any] = Field(alias="schema")
 

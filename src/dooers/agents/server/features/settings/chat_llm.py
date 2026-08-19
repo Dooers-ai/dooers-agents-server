@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from dooers.agents.server.features.settings.models import SettingsFieldType
 
@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from dooers.agents.server.protocol.models import ChatContext
 
 LLM_MODELS_FIELD_ID = "llm_models"
+
+ReasoningEffort = Literal["none", "low", "medium", "high"]
+ALLOWED_REASONING_EFFORT: frozenset[str] = frozenset({"none", "low", "medium", "high"})
+DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium"
 
 
 def resolve_chat_llm_override(
@@ -34,15 +38,30 @@ def resolve_chat_llm_override(
     return None
 
 
+def resolve_chat_reasoning_effort(chat_context: ChatContext | None) -> str | None:
+    """Return ``chat_context.reasoning_effort`` when it is a known Responses API value."""
+
+    if chat_context is None:
+        return None
+    requested = (chat_context.reasoning_effort or "").strip().lower()
+    if requested in ALLOWED_REASONING_EFFORT:
+        return requested
+    return None
+
+
 def apply_chat_llm_override(
     settings_values: dict[str, Any],
     *,
     chat_context: ChatContext | None,
     schema: SettingsSchema | None,
 ) -> dict[str, Any]:
-    """Copy ``settings_values``, replacing ``llm_model`` when the chat override is allowlisted."""
+    """Copy ``settings_values``, applying allowlisted chat overrides for this turn only."""
 
+    out = settings_values
     override = resolve_chat_llm_override(chat_context, schema=schema)
-    if not override:
-        return settings_values
-    return {**settings_values, "llm_model": override}
+    if override:
+        out = {**out, "llm_model": override}
+    effort = resolve_chat_reasoning_effort(chat_context)
+    if effort:
+        out = {**out, "reasoning_effort": effort}
+    return out

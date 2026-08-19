@@ -16,4 +16,5 @@ def parse_frame(data: str) -> ClientToServer:
 
 
 def serialize_frame(frame: ServerToClient) -> str:
-    return frame.model_dump_json(exclude_none=True)
+    # ``by_alias=True`` so fields like ``schema_`` wire as ``schema``.
+    return frame.model_dump_json(exclude_none=True, by_alias=True)
