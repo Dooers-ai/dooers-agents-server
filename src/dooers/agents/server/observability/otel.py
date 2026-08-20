@@ -91,9 +91,9 @@ async def _export_turn(spans: list) -> None:  # noqa: ANN001
 
     root = next((s for s in spans if s.parent is None), spans[-1])
     agent_id = root.attributes.get("agent.id")
-    workspace_id = root.attributes.get("workspace.id")
-    if not agent_id or not workspace_id:
-        logger.debug("OTEL: turn missing agent.id/workspace.id — skipping export (agent_id=%s)", agent_id)
+    workspace_id = root.attributes.get("workspace.id") or ""
+    if not agent_id:
+        logger.debug("OTEL: turn missing agent.id — skipping export")
         return
 
     runtime_api_key = await _get_runtime_api_key(agent_id)
@@ -106,7 +106,9 @@ async def _export_turn(spans: list) -> None:  # noqa: ANN001
         )
         return
 
-    token = await _token_client.get_token(agent_id=agent_id, workspace_id=workspace_id, runtime_api_key=runtime_api_key)
+    token = await _token_client.get_token(
+        agent_id=agent_id, workspace_id=str(workspace_id), runtime_api_key=runtime_api_key
+    )
     if not token:
         logger.warning("OTEL: could not obtain service token for agent_id=%s — skipping export", agent_id)
         return

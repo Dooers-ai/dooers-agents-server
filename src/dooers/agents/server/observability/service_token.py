@@ -1,8 +1,8 @@
 """Acquisition/cache/renewal of dooers-service-core service tokens (audience ``otel-service``).
 
 One dooers-agents-server process can serve many concurrent agents (``ConnectionRegistry`` is
-keyed by ``agent_id``), each with its own ``runtimeApiKey`` — tokens are cached per agent_id,
-never shared across agents.
+keyed by ``agent_id``), each with its own ``runtimeApiKey`` — tokens are cached per
+``agent_id`` + workspace (empty workspace = personal 1:1 chat), never shared across agents.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ logger = logging.getLogger(__name__)
 
 # Persisted under service_secrets when core sends ``settings.seed`` (the plaintext runtime API
 # key). OTEL reads it back to mint ``otel:write`` tokens — same credential core verifies via
-# ``verifyWorkerRuntimeCredential``.
+# ``verifyAgentRuntimeCredential``.
 RUNTIME_API_KEY_SECRET_NAME = "dooers_runtime_api_key"
 
 _AUDIENCE = "otel-service"
 _SCOPES = ["otel:write"]
 # Renew proactively before expiry (tokens last 300s) instead of waiting for a 401 — a
-# long-lived worker renews many times per hour, treat it as routine, not as an error path.
+# long-lived agent renews many times per hour, treat it as routine, not as an error path.
 _REFRESH_MARGIN_SECONDS = 60
 
 
@@ -31,6 +31,10 @@ _REFRESH_MARGIN_SECONDS = 60
 class _CachedToken:
     access_token: str
     expires_at: float  # time.monotonic() timestamp
+
+
+def _cache_key(agent_id: str, workspace_id: str) -> str:
+    return f"{agent_id}:{workspace_id.strip()}"
 
 
 class ServiceTokenClient:
@@ -44,14 +48,15 @@ class ServiceTokenClient:
         if self._owns_client:
             await self.http_client.aclose()
 
-    async def get_token(self, *, agent_id: str, workspace_id: str, runtime_api_key: str) -> str | None:
-        cached = self._cache.get(agent_id)
+    async def get_token(self, *, agent_id: str, workspace_id: str = "", runtime_api_key: str) -> str | None:
+        key = _cache_key(agent_id, workspace_id)
+        cached = self._cache.get(key)
         if cached and cached.expires_at - time.monotonic() > _REFRESH_MARGIN_SECONDS:
             return cached.access_token
 
         fresh = await self._fetch_token(agent_id=agent_id, workspace_id=workspace_id, runtime_api_key=runtime_api_key)
         if fresh is not None:
-            self._cache[agent_id] = fresh
+            self._cache[key] = fresh
             return fresh.access_token
 
         # Renewal failed (core unreachable, key revoked) — reuse the stale token rather than
@@ -64,18 +69,17 @@ class ServiceTokenClient:
         return None
 
     async def _fetch_token(self, *, agent_id: str, workspace_id: str, runtime_api_key: str) -> _CachedToken | None:
-        url = f"{self._core_base_url}/api/v2/identity/service-token/worker"
+        url = f"{self._core_base_url}/api/v2/identity/service-token/agent"
+        payload: dict[str, object] = {
+            "audience": _AUDIENCE,
+            "workerId": agent_id,
+            "runtimeApiKey": runtime_api_key,
+            "scopes": _SCOPES,
+        }
+        if workspace_id.strip():
+            payload["workspaceId"] = workspace_id.strip()
         try:
-            response = await self.http_client.post(
-                url,
-                json={
-                    "audience": _AUDIENCE,
-                    "workerId": agent_id,
-                    "workspaceId": workspace_id,
-                    "runtimeApiKey": runtime_api_key,
-                    "scopes": _SCOPES,
-                },
-            )
+            response = await self.http_client.post(url, json=payload)
         except httpx.HTTPError as exc:
             logger.warning("service-token: transport error fetching token for agent_id=%s: %s", agent_id, exc)
             return None

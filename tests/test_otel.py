@@ -8,7 +8,7 @@ from dooers.agents.server.observability import otel
 
 CORE_URL = "https://core.test"
 OTEL_SERVICE_URL = "https://otel.test"
-TOKEN_URL = f"{CORE_URL}/api/v2/identity/service-token/worker"
+TOKEN_URL = f"{CORE_URL}/api/v2/identity/service-token/agent"
 TRACES_URL = f"{OTEL_SERVICE_URL}/v1/traces"
 
 
@@ -117,9 +117,14 @@ async def test_turn_without_runtime_api_key_is_not_exported():
 
 
 @pytest.mark.asyncio
-async def test_turn_without_workspace_id_is_not_exported():
+async def test_turn_without_workspace_id_is_still_exported():
     with respx.mock(assert_all_called=False) as mock:
-        token_route = mock.post(TOKEN_URL).mock(return_value=httpx.Response(200))
+        token_route = mock.post(TOKEN_URL).mock(
+            return_value=httpx.Response(
+                200, json={"success": True, "data": {"accessToken": "jwt-personal", "expiresIn": 300}}
+            )
+        )
+        traces_route = mock.post(TRACES_URL).mock(return_value=httpx.Response(200))
 
         otel.init_otel(
             otel_service_url=OTEL_SERVICE_URL,
@@ -127,12 +132,16 @@ async def test_turn_without_workspace_id_is_not_exported():
             persistence=FakePersistence({"dooers_runtime_api_key": "rak-1"}),
         )
 
-        # No workspace_id passed — the core's token endpoint requires it, so we must not even try.
         tracker = otel.start_tracker(thread_id="thread-1", event_id="event-1", agent_id="agent-xyz")
         tracker.end()
         await asyncio.sleep(0.2)
 
-    assert not token_route.called
+    assert token_route.called
+    assert traces_route.called
+    import json
+
+    body = json.loads(token_route.calls.last.request.content)
+    assert "workspaceId" not in body
 
 
 @pytest.mark.asyncio

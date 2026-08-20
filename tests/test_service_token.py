@@ -6,7 +6,7 @@ import respx
 from dooers.agents.server.observability.service_token import ServiceTokenClient
 
 CORE_URL = "https://core.test"
-TOKEN_URL = f"{CORE_URL}/api/v2/identity/service-token/worker"
+TOKEN_URL = f"{CORE_URL}/api/v2/identity/service-token/agent"
 
 
 @pytest_asyncio.fixture
@@ -43,6 +43,20 @@ async def test_get_token_fetches_and_returns_access_token(client):
         "runtimeApiKey": "key-1",
         "scopes": ["otel:write"],
     }
+
+
+@pytest.mark.asyncio
+async def test_get_token_omits_workspace_id_for_personal_chat(client):
+    with respx.mock() as mock:
+        route = mock.post(TOKEN_URL).mock(return_value=_token_response("jwt-personal"))
+        token = await client.get_token(agent_id="agent-1", workspace_id="", runtime_api_key="key-1")
+
+    assert token == "jwt-personal"
+    import json
+
+    body = json.loads(route.calls.last.request.content)
+    assert "workspaceId" not in body
+    assert body["workerId"] == "agent-1"
 
 
 @pytest.mark.asyncio
