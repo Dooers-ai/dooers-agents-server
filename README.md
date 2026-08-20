@@ -480,7 +480,7 @@ Install the extras and tracing uses Dooers platform defaults automatically (same
 
 Each agent turn is exported as a trace with `agent.id`, `thread.id`, `event.id`, `user.id`, `org.id`, `workspace.id`, and `agent.channel` attributes. LLM calls (Anthropic, OpenAI) are auto-instrumented as child spans when `openinference` is installed.
 
-The worker never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (persisted into `service_secrets` from the plaintext `seed_secret` / `next_seed_secret` on successful `settings.seed` from dooers-service-core) for a short-lived service token (audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-service-otel`.
+The agent never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (persisted into `service_secrets` from the plaintext `seed_secret` / `next_seed_secret` on successful `settings.seed` from dooers-service-core) for a short-lived service token (`POST /identity/service-token/agent`, audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-service-otel`. Personal 1:1 chats omit `workspaceId` and mint an org-scoped write token.
 
 Operators may override destinations with `AGENT_CORE_BASE_URL` / `AGENT_OTEL_SERVICE_URL` (e.g. staging).
 
