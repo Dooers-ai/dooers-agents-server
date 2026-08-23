@@ -1,9 +1,8 @@
 """HTTP transport for the managed Dooers RAG service.
 
-Cloud Run mints an OIDC ID token from the ambient tenant service account. No
-shared RAG secret is exposed to creator code.
+Cloud Run mints an OIDC ID token from the ambient tenant service account. Agent,
+workspace and user context comes from the SDK runtime, never from LLM arguments.
 """
-
 from __future__ import annotations
 
 import json
@@ -15,6 +14,7 @@ from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 
 from dooers.tools.rag.errors import RAGToolsError
+from dooers.tools.rag.runtime import current_execution_context
 from dooers.tools.whatsapp.runtime import require_agent_id
 
 
@@ -34,8 +34,15 @@ def _id_token(audience: str) -> str:
 
 async def post(path: str, payload: dict[str, Any]) -> Any:
     base = _base_url()
-    agent_id = require_agent_id()
-    body_payload = {"agent_id": agent_id, **payload}
+    runtime = current_execution_context()
+    agent_id = runtime.agent_id if runtime and runtime.agent_id else require_agent_id()
+    body_payload: dict[str, Any] = {"agent_id": agent_id, **payload}
+    if runtime:
+        if runtime.workspace_id:
+            body_payload["workspace_id"] = runtime.workspace_id
+        if runtime.user_id:
+            body_payload["user_id"] = runtime.user_id
+            body_payload["on_behalf"] = runtime.on_behalf
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {_id_token(base)}",
@@ -50,5 +57,7 @@ async def post(path: str, payload: dict[str, Any]) -> Any:
     except httpx.HTTPError as exc:
         raise RAGToolsError(f"RAG service request failed: {exc}") from exc
     if not response.is_success:
-        raise RAGToolsError(f"RAG service {path} returned {response.status_code}: {response.text[:500]}")
+        raise RAGToolsError(
+            f"RAG service {path} returned {response.status_code}: {response.text[:500]}"
+        )
     return response.json() if response.content else None
