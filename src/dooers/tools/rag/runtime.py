@@ -23,15 +23,24 @@ class RAGExecutionContext:
 _contexts: WeakKeyDictionary[asyncio.Task, RAGExecutionContext] = WeakKeyDictionary()
 
 
-def bind_execution_context(*, agent_id: str, organization_id: str = "", workspace_id: str = "", user_id: str = "") -> None:
+def bind_execution_context(
+    *,
+    agent_id: str,
+    organization_id: str = "",
+    workspace_id: str = "",
+    user_id: str = "",
+    channel: str = "",
+) -> None:
     task = asyncio.current_task()
     if task is None:
         return
     user_id = (user_id or "").strip()
-    # Platform authenticated user ids can be validated by Core. Guests/channel identities
-    # are intentionally omitted so an anonymous WhatsApp/public-chat turn can still use
-    # KBs that do not require a user/on-behalf constraint.
-    authenticated_user = user_id if user_id and not user_id.startswith("guest:") else ""
+    channel = (channel or "").strip()
+    authenticated_user = (
+        user_id
+        if user_id and not user_id.startswith("guest:") and channel == "dooers-platform"
+        else ""
+    )
     _contexts[task] = RAGExecutionContext(
         agent_id=(agent_id or "").strip(),
         organization_id=(organization_id or "").strip(),
