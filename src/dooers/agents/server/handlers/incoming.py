@@ -25,4 +25,5 @@ class AgentIncoming:
             organization_id=self.context.organization_id,
             workspace_id=self.context.workspace_id,
             user_id=self.context.user.user_id,
+            channel=self.context.channel,
         )
