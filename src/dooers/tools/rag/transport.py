@@ -1,33 +1,47 @@
 """HTTP transport for the managed Dooers RAG service.
 
-Cloud Run mints an OIDC ID token from the ambient tenant service account. Agent,
-workspace and user context comes from the SDK runtime, never from LLM arguments.
+Hosted agents mint an OIDC ID token from the Cloud Run metadata server using the
+ambient tenant service account. Agent/workspace/user context comes from the SDK
+runtime and is never exposed as an LLM-controlled argument.
 """
 from __future__ import annotations
 
 import json
 import os
 from typing import Any
+from urllib.parse import quote
 
 import httpx
-from google.auth.transport.requests import Request
-from google.oauth2 import id_token
 
 from dooers.tools.rag.errors import RAGToolsError
 from dooers.tools.rag.runtime import current_execution_context
 from dooers.tools.whatsapp.runtime import require_agent_id
 
+_METADATA_IDENTITY_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/"
+    "service-accounts/default/identity"
+)
+
 
 def _base_url() -> str:
     value = (os.environ.get("DOOERS_RAG_SERVICE_URL") or "").strip().rstrip("/")
     if not value:
-        raise RAGToolsError("DOOERS_RAG_SERVICE_URL is not configured")
+        raise RAGToolsError("Managed Dooers RAG is not configured for this runtime")
     return value
 
 
-def _id_token(audience: str) -> str:
+async def _id_token(audience: str) -> str:
     try:
-        return id_token.fetch_id_token(Request(), audience)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                f"{_METADATA_IDENTITY_URL}?audience={quote(audience, safe='')}&format=full",
+                headers={"Metadata-Flavor": "Google"},
+            )
+        response.raise_for_status()
+        token = response.text.strip()
+        if not token:
+            raise ValueError("empty identity token")
+        return token
     except Exception as exc:  # noqa: BLE001
         raise RAGToolsError("Could not mint workload identity token for RAG service") from exc
 
@@ -45,7 +59,7 @@ async def post(path: str, payload: dict[str, Any]) -> Any:
             body_payload["on_behalf"] = runtime.on_behalf
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        "Authorization": f"Bearer {_id_token(base)}",
+        "Authorization": f"Bearer {await _id_token(base)}",
     }
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
