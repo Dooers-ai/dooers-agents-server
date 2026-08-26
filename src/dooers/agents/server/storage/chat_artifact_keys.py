@@ -21,11 +21,15 @@ def safe_filename(name: str) -> str:
     return base.replace("/", "_") or "file"
 
 
-def build_chat_artifact_thread_prefix(*, agent_id: str, thread_id: str) -> str:
-    """Prefix for all durable uploads for this thread (``…/agent/thread_seg/``)."""
+def build_chat_artifact_thread_prefix(*, agent_id: str, thread_id: str, prefix: str = "") -> str:
+    """Prefix for all durable uploads for this thread (``[prefix]…/agent/thread_seg/``).
+
+    ``prefix`` (already normalized, e.g. ``agents/<org_id>/``) is prepended for the
+    managed ``dooers`` backend so blobs land inside the tenant SA's conditioned path.
+    """
     agent = (agent_id or "").strip() or "unknown-agent"
     seg = thread_segment(thread_id)
-    return f"{CHAT_ARTIFACT_PREFIX}/{agent}/{seg}/"
+    return f"{prefix}{CHAT_ARTIFACT_PREFIX}/{agent}/{seg}/"
 
 
 def build_chat_artifact_object_key(
@@ -34,9 +38,10 @@ def build_chat_artifact_object_key(
     thread_id: str | None,
     ref_id: str,
     filename: str,
+    prefix: str = "",
 ) -> str:
-    """Full blob path inside bucket or container."""
+    """Full blob path inside bucket or container (``prefix`` prepended for ``dooers``)."""
     agent = (agent_id or "").strip() or "unknown-agent"
     seg = thread_segment(thread_id)
     rid = (ref_id or "").strip() or "unknown-ref"
-    return f"{CHAT_ARTIFACT_PREFIX}/{agent}/{seg}/{rid}/{safe_filename(filename)}"
+    return f"{prefix}{CHAT_ARTIFACT_PREFIX}/{agent}/{seg}/{rid}/{safe_filename(filename)}"

@@ -21,9 +21,24 @@ _DELETE_MAX_ATTEMPTS = 5
 
 def resolve_chat_artifact_backend(cfg: AgentConfig) -> str:
     pref = (cfg.chat_storage_service or "none").strip().lower()
+    # Managed storage rides the GCS backend; the org-scoping is the object-key prefix.
+    if pref == "dooers":
+        return "gcp"
     if pref in {"none", "gcp", "azure"}:
         return pref
     return "none"
+
+
+def _managed_prefix(cfg: AgentConfig) -> str:
+    """Object-key prefix for the managed ``dooers`` backend (``agents/<org_id>/``), else ''.
+
+    Normalized: no leading slash, exactly one trailing slash. Empty for gcp/azure/none,
+    so plain backends keep their existing keys unchanged.
+    """
+    if (cfg.chat_storage_service or "").strip().lower() != "dooers":
+        return ""
+    p = (getattr(cfg, "dooers_storage_prefix", "") or "").strip().strip("/")
+    return f"{p}/" if p else ""
 
 
 def chat_storage_service_ready(cfg: AgentConfig) -> bool:
@@ -46,6 +61,7 @@ def put_chat_artifact(
         thread_id=thread_id,
         ref_id=ref_id,
         filename=filename,
+        prefix=_managed_prefix(cfg),
     )
     backend = resolve_chat_artifact_backend(cfg)
     uri: str | None = None
@@ -86,6 +102,7 @@ def try_fetch_upload_entry_from_blob(
         thread_id=thread_id,
         ref_id=ref_id,
         filename=filename,
+        prefix=_managed_prefix(cfg),
     )
     backend = resolve_chat_artifact_backend(cfg)
     data: bytes | None = None
@@ -104,6 +121,7 @@ def try_fetch_upload_entry_from_blob(
             thread_id=None,
             ref_id=ref_id,
             filename=filename,
+            prefix=_managed_prefix(cfg),
         )
         if key_nt != key:
             if backend == "gcp":
@@ -262,12 +280,14 @@ def promote_orphan_chat_artifact_if_present(
         thread_id=None,
         ref_id=ref_id,
         filename=filename,
+        prefix=_managed_prefix(cfg),
     )
     dest_key = build_chat_artifact_object_key(
         agent_id=agent_id,
         thread_id=tid,
         ref_id=ref_id,
         filename=filename,
+        prefix=_managed_prefix(cfg),
     )
     if source_key == dest_key:
         return
@@ -354,7 +374,9 @@ def delete_chat_artifacts_for_thread(
     aid = (agent_id or "").strip()
     if not tid or not aid:
         return 0
-    prefix = build_chat_artifact_thread_prefix(agent_id=aid, thread_id=tid)
+    prefix = build_chat_artifact_thread_prefix(
+        agent_id=aid, thread_id=tid, prefix=_managed_prefix(cfg)
+    )
     backend = resolve_chat_artifact_backend(cfg)
     if backend == "gcp":
         n = gcs.delete_blobs_with_prefix((cfg.gcp_storage_bucket or "").strip(), prefix)
@@ -391,6 +413,10 @@ def chat_artifact_object_exists(cfg: AgentConfig, object_key: str) -> bool:
 
 
 def sign_chat_artifact_read_url(cfg: AgentConfig, object_key: str) -> str | None:
+    # Managed 'dooers' storage: the tenant SA has no signBlob/tokenCreator in Phase 1
+    # (direct IO / RAG), so V4 signing would fail — skip it rather than raise.
+    if (cfg.chat_storage_service or "").strip().lower() == "dooers":
+        return None
     ttl = max(1, int(getattr(cfg, "chat_artifact_signed_url_ttl_minutes", 60) or 60))
     backend = resolve_chat_artifact_backend(cfg)
     if backend == "gcp":

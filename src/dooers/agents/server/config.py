@@ -23,9 +23,14 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 
 def _default_chat_storage_service() -> str:
-    """Chat blob backend: ``none`` | ``gcp`` | ``azure`` only. Env: ``CHAT_STORAGE_SERVICE`` (default ``none``)."""
+    """Chat blob backend: ``none`` | ``gcp`` | ``azure`` | ``dooers``. Env: ``CHAT_STORAGE_SERVICE`` (default ``none``).
+
+    ``dooers`` = platform-managed GCS: rides the GCS backend but writes every object
+    under ``DOOERS_STORAGE_PREFIX`` (``agents/<org_id>/``, injected by dooers-push at
+    deploy) so the tenant SA's path-conditioned grant allows it. No password/keys.
+    """
     raw = (os.environ.get("CHAT_STORAGE_SERVICE") or "").strip().lower()
-    if raw in {"none", "gcp", "azure"}:
+    if raw in {"none", "gcp", "azure", "dooers"}:
         return raw
     return "none"
 
@@ -104,6 +109,10 @@ class AgentConfig:
     chat_storage_service: str = field(default_factory=_default_chat_storage_service)
     #: GCS bucket for chat artifacts (typically ``GCP_BUCKET_NAME`` in .env).
     gcp_storage_bucket: str = field(default_factory=lambda: (os.environ.get("GCP_BUCKET_NAME") or "").strip())
+    #: Object-key prefix for ``chat_storage_service="dooers"`` (env ``DOOERS_STORAGE_PREFIX``,
+    #: e.g. ``agents/<org_id>/``). Every managed chat blob is written under it so it falls
+    #: inside the tenant SA's path-conditioned grant. Empty for the plain ``gcp`` backend.
+    dooers_storage_prefix: str = field(default_factory=lambda: (os.environ.get("DOOERS_STORAGE_PREFIX") or "").strip())
     azure_storage_connection_string: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip())
     azure_storage_container: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONTAINER") or "").strip())
     chat_artifact_signed_url_ttl_minutes: int = field(
