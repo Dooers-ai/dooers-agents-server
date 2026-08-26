@@ -46,6 +46,52 @@ async def test_get_token_fetches_and_returns_access_token(client):
 
 
 @pytest.mark.asyncio
+async def test_get_token_supports_rag_audience_and_scopes(client):
+    with respx.mock() as mock:
+        route = mock.post(TOKEN_URL).mock(return_value=_token_response("jwt-rag"))
+        token = await client.get_token(
+            agent_id="agent-1",
+            workspace_id="ws-1",
+            runtime_api_key="key-1",
+            audience="rag-service",
+            scopes=["rag:read", "rag:write"],
+        )
+
+    assert token == "jwt-rag"
+    import json
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["audience"] == "rag-service"
+    assert body["scopes"] == ["rag:read", "rag:write"]
+    assert route.called
+
+
+@pytest.mark.asyncio
+async def test_get_token_caches_separately_per_audience(client):
+    with respx.mock() as mock:
+        mock.post(TOKEN_URL).mock(
+            side_effect=[_token_response("jwt-otel"), _token_response("jwt-rag")]
+        )
+        otel = await client.get_token(
+            agent_id="agent-1",
+            workspace_id="ws-1",
+            runtime_api_key="key-1",
+            audience="otel-service",
+            scopes=["otel:write"],
+        )
+        rag = await client.get_token(
+            agent_id="agent-1",
+            workspace_id="ws-1",
+            runtime_api_key="key-1",
+            audience="rag-service",
+            scopes=["rag:read", "rag:write"],
+        )
+
+    assert otel == "jwt-otel"
+    assert rag == "jwt-rag"
+
+
+@pytest.mark.asyncio
 async def test_get_token_omits_workspace_id_for_personal_chat(client):
     with respx.mock() as mock:
         route = mock.post(TOKEN_URL).mock(return_value=_token_response("jwt-personal"))

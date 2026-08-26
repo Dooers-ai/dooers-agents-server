@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.4] — 2026-08-26
+
+### Added
+
+- **Managed RAG tools (`dooers.tools.rag`).** Handler-turn helpers for upload/search/list/delete against `dooers-service-rag`, binding deterministic agent/workspace/user context outside LLM arguments.
+- **Core JWT auth for RAG.** Transport mints `rag-service` tokens (`rag:read` / `rag:write`) via the agent runtime API key — same identity contract as OTEL.
+
+### Changed
+
+- **`ServiceTokenClient` accepts audience and scopes.** Cache keys include audience/scopes so OTEL and RAG tokens do not collide.
+
+## [0.19.3] — 2026-08-25
+
+### Fixed
+
+- **Observability extra resolves a modern OpenTelemetry stack.** `[observability]` now requires `opentelemetry-api/sdk/exporter>=1.33` and `opentelemetry-instrumentation>=0.54b0`, avoiding the broken combo where OTEL 1.27's instrumentor needs `pkg_resources` that setuptools 84 no longer ships. That failure used to be swallowed, so turn requests still appeared in observability without LLM model/token child spans.
+
+### Changed
+
+- **LLM auto-instrumentation failures are loud.** If OpenAI / Anthropic / OpenAI Agents instrumentors fail to activate, the SDK logs a clear `WARNING` (and exposes `llm_instrumentation_status()`). Creators still only need `pip/uv add "dooers-agents-server[observability]"` — no OTEL imports in agent code.
+
 ## [0.19.2] — 2026-08-20
 
 ### Fixed

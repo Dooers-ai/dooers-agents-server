@@ -23,3 +23,16 @@ class AgentIncoming:
     form_data: dict | None = field(default=None)
     form_cancelled: bool = field(default=False)
     form_event_id: str | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        # Bind platform-owned context outside creator/LLM arguments. Import stays lazy so
+        # handlers that never use managed RAG do not pay a module dependency at startup.
+        from dooers.tools.rag.runtime import bind_execution_context
+
+        bind_execution_context(
+            agent_id=self.context.agent_id,
+            organization_id=self.context.organization_id,
+            workspace_id=self.context.workspace_id,
+            user_id=self.context.user.user_id,
+            channel=self.context.channel,
+        )

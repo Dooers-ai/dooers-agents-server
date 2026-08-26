@@ -33,6 +33,11 @@ def _reset_otel_module_state():
     otel._otel_service_url = ""
     otel._token_client = None
     otel._persistence = None
+    otel._llm_instrumentation = {
+        "anthropic": "pending",
+        "openai": "pending",
+        "openai_agents": "pending",
+    }
 
 
 def test_start_tracker_is_noop_when_otel_disabled():
@@ -180,3 +185,40 @@ async def test_failed_turn_is_still_exported_with_error_status():
         s for rs in parsed.resource_spans for ss in rs.scope_spans for s in ss.spans if s.name == "agent/agent-xyz"
     )
     assert root.status.code == OtlpStatus.STATUS_CODE_ERROR
+
+
+def test_try_instrument_marks_failed_and_warns(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="dooers.agents.server.observability.otel"):
+        otel._try_instrument(
+            "openai",
+            "openinference.instrumentation.openai",
+            "OpenAIInstrumentorThatDoesNotExist",
+        )
+
+    assert otel.llm_instrumentation_status()["openai"] == "failed"
+    assert any("openai instrumentation FAILED" in r.message for r in caplog.records)
+
+
+def test_try_instrument_marks_skipped_on_missing_package():
+    otel._try_instrument(
+        "anthropic",
+        "openinference.instrumentation.this_module_does_not_exist_xyz",
+        "AnthropicInstrumentor",
+    )
+    assert otel.llm_instrumentation_status()["anthropic"] == "skipped"
+
+
+def test_instrument_llm_clients_logs_status_when_any_failed(caplog, monkeypatch):
+    import logging
+
+    def _fake_try(name: str, import_path: str, class_name: str) -> None:
+        otel._llm_instrumentation[name] = "failed" if name == "openai" else "skipped"
+
+    monkeypatch.setattr(otel, "_try_instrument", _fake_try)
+    with caplog.at_level(logging.WARNING, logger="dooers.agents.server.observability.otel"):
+        otel._instrument_llm_clients()
+
+    assert otel.llm_instrumentation_status()["openai"] == "failed"
+    assert any("LLM instrumentation status=" in r.message for r in caplog.records)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -32,6 +32,20 @@ _service_name = "dooers-agent"
 _otel_service_url = ""
 _token_client: ServiceTokenClient | None = None
 _persistence: Any = None
+
+# Per-instrumentor outcome after ``init_otel`` → ``_instrument_llm_clients``.
+# ``active`` = patched; ``skipped`` = optional package absent; ``failed`` = present but broken.
+LlmInstrumentorStatus = Literal["active", "skipped", "failed", "pending"]
+_llm_instrumentation: dict[str, LlmInstrumentorStatus] = {
+    "anthropic": "pending",
+    "openai": "pending",
+    "openai_agents": "pending",
+}
+
+
+def llm_instrumentation_status() -> dict[str, LlmInstrumentorStatus]:
+    """Return a copy of LLM auto-instrumentation status (for health checks / tests)."""
+    return dict(_llm_instrumentation)
 
 
 def _make_turn_export_processor():  # noqa: ANN202
@@ -107,7 +121,11 @@ async def _export_turn(spans: list) -> None:  # noqa: ANN001
         return
 
     token = await _token_client.get_token(
-        agent_id=agent_id, workspace_id=str(workspace_id), runtime_api_key=runtime_api_key
+        agent_id=agent_id,
+        workspace_id=str(workspace_id),
+        runtime_api_key=runtime_api_key,
+        audience="otel-service",
+        scopes=["otel:write"],
     )
     if not token:
         logger.warning("OTEL: could not obtain service token for agent_id=%s — skipping export", agent_id)
@@ -171,28 +189,59 @@ def init_otel(
         logger.exception("OTEL: initialization failed")
 
 
+def _try_instrument(name: str, import_path: str, class_name: str) -> None:
+    """Activate one openinference instrumentor; never raise into the agent path."""
+    try:
+        module = __import__(import_path, fromlist=[class_name])
+        instrumentor_cls = getattr(module, class_name)
+        instrumentor_cls().instrument()
+        _llm_instrumentation[name] = "active"
+        logger.info("OTEL: %s instrumentation active", name)
+    except ImportError as exc:
+        # Optional SDK not installed in this agent (e.g. no anthropic / no openai-agents).
+        _llm_instrumentation[name] = "skipped"
+        logger.debug("OTEL: %s instrumentation skipped (not installed): %s", name, exc)
+    except Exception as exc:
+        # Package present but broken (version skew, missing pkg_resources, etc.).
+        # Must be loud: turn spans still export, so creators otherwise think LLM metrics work.
+        _llm_instrumentation[name] = "failed"
+        logger.warning(
+            "OTEL: %s instrumentation FAILED (%s: %s) — LLM model/token spans will be missing. "
+            "Reinstall with pip/uv: 'dooers-agents-server[observability]' "
+            "(requires opentelemetry-api>=1.33 and a modern setuptools without the old "
+            "pkg_resources-only instrumentation stack).",
+            name,
+            type(exc).__name__,
+            exc,
+        )
+
+
 def _instrument_llm_clients() -> None:
-    try:
-        from openinference.instrumentation.anthropic import AnthropicInstrumentor
-
-        AnthropicInstrumentor().instrument()
-        logger.debug("OTEL: Anthropic instrumentation active")
-    except ImportError:
-        pass
-    try:
-        from openinference.instrumentation.openai import OpenAIInstrumentor
-
-        OpenAIInstrumentor().instrument()
-        logger.debug("OTEL: OpenAI instrumentation active")
-    except ImportError:
-        pass
-    try:
-        from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
-
-        OpenAIAgentsInstrumentor().instrument()
-        logger.debug("OTEL: OpenAI Agents SDK instrumentation active")
-    except ImportError:
-        pass
+    _try_instrument(
+        "anthropic",
+        "openinference.instrumentation.anthropic",
+        "AnthropicInstrumentor",
+    )
+    _try_instrument(
+        "openai",
+        "openinference.instrumentation.openai",
+        "OpenAIInstrumentor",
+    )
+    _try_instrument(
+        "openai_agents",
+        "openinference.instrumentation.openai_agents",
+        "OpenAIAgentsInstrumentor",
+    )
+    status = llm_instrumentation_status()
+    if all(v == "skipped" for v in status.values()):
+        logger.warning(
+            "OTEL: no LLM client instrumentors active (openai/anthropic/openai-agents not installed). "
+            "Turn traces will export without model/token child spans."
+        )
+    elif any(v == "failed" for v in status.values()):
+        logger.warning("OTEL: LLM instrumentation status=%s", status)
+    else:
+        logger.info("OTEL: LLM instrumentation status=%s", status)
 
 
 class _NoOpTracker:
