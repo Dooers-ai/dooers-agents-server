@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.5] — 2026-08-26
+
+### Added
+
+- **Runtime API key env fallback.** RAG and OTEL resolve credentials from `service_secrets.dooers_runtime_api_key` when present, otherwise fall back to `AGENT_SEED_SECRET` (process env or `AgentConfig.agent_seed_secret`). Supports template-as-agent hosts that never receive `settings.seed` for credentials.
+
 ## [0.19.4] — 2026-08-26
 
 ### Added

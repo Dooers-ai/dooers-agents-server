@@ -174,3 +174,65 @@ async def test_get_token_returns_none_on_malformed_response(client):
         token = await client.get_token(agent_id="agent-1", workspace_id="ws-1", runtime_api_key="key-1")
 
     assert token is None
+
+class _FakeSecretsPersistence:
+    def __init__(self, secrets: dict | None = None, *, fail: bool = False):
+        self._secrets = secrets or {}
+        self._fail = fail
+
+    async def get_service_secrets(self, agent_id: str) -> dict:
+        if self._fail:
+            raise RuntimeError("db down")
+        return self._secrets
+
+
+@pytest.mark.asyncio
+async def test_resolve_runtime_api_key_prefers_service_secrets(monkeypatch):
+    from dooers.agents.server.observability.service_token import (
+        RUNTIME_API_KEY_SECRET_NAME,
+        resolve_runtime_api_key,
+    )
+
+    monkeypatch.setenv("AGENT_SEED_SECRET", "env-key-should-not-win")
+    persistence = _FakeSecretsPersistence({RUNTIME_API_KEY_SECRET_NAME: "db-key"})
+    assert await resolve_runtime_api_key(persistence, "agent-1") == "db-key"
+
+
+@pytest.mark.asyncio
+async def test_resolve_runtime_api_key_falls_back_to_agent_seed_secret(monkeypatch):
+    from dooers.agents.server.observability.service_token import resolve_runtime_api_key
+
+    monkeypatch.setenv("AGENT_SEED_SECRET", "env-runtime-key")
+    persistence = _FakeSecretsPersistence({})
+    assert await resolve_runtime_api_key(persistence, "agent-1") == "env-runtime-key"
+
+
+@pytest.mark.asyncio
+async def test_resolve_runtime_api_key_returns_none_when_missing(monkeypatch):
+    from dooers.agents.server.observability.service_token import resolve_runtime_api_key
+
+    monkeypatch.delenv("AGENT_SEED_SECRET", raising=False)
+    persistence = _FakeSecretsPersistence({})
+    assert await resolve_runtime_api_key(persistence, "agent-1") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_runtime_api_key_falls_back_when_secrets_read_fails(monkeypatch):
+    from dooers.agents.server.observability.service_token import resolve_runtime_api_key
+
+    monkeypatch.setenv("AGENT_SEED_SECRET", "env-after-db-error")
+    persistence = _FakeSecretsPersistence(fail=True)
+    assert await resolve_runtime_api_key(persistence, "agent-1") == "env-after-db-error"
+
+
+@pytest.mark.asyncio
+async def test_resolve_uses_configured_process_seed_when_env_empty(monkeypatch):
+    from dooers.agents.server.observability import service_token as st
+
+    monkeypatch.delenv("AGENT_SEED_SECRET", raising=False)
+    st.configure_process_seed_secret("from-agent-config")
+    try:
+        persistence = _FakeSecretsPersistence({})
+        assert await st.resolve_runtime_api_key(persistence, "agent-1") == "from-agent-config"
+    finally:
+        st.configure_process_seed_secret("")

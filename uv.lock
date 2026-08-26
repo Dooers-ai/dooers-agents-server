@@ -428,7 +428,7 @@ wheels = [
 
 [[package]]
 name = "dooers-agents-server"
-version = "0.19.3"
+version = "0.19.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

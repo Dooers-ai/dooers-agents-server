@@ -18,6 +18,7 @@ import httpx
 from dooers.agents.server.observability.service_token import (
     RUNTIME_API_KEY_SECRET_NAME,
     ServiceTokenClient,
+    resolve_runtime_api_key,
 )
 from dooers.agents.server.settings import AGENT_CORE_BASE_URL
 from dooers.tools.rag.errors import RAGToolsError
@@ -60,20 +61,16 @@ async def _core_jwt(*, agent_id: str, workspace_id: str) -> str:
         raise RAGToolsError(
             "RAG requires an active handler turn to mint a Core service token"
         ) from exc
-    try:
-        secrets = await persistence.get_service_secrets(agent_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("RAG: failed to read service_secrets for agent_id=%s", agent_id)
-        raise RAGToolsError("Could not read agent runtime credentials for RAG") from exc
-    runtime_api_key = secrets.get(RUNTIME_API_KEY_SECRET_NAME)
-    if not isinstance(runtime_api_key, str) or not runtime_api_key.strip():
+    runtime_api_key = await resolve_runtime_api_key(persistence, agent_id)
+    if not runtime_api_key:
         raise RAGToolsError(
-            "Missing dooers_runtime_api_key — waiting for settings.seed from Core?"
+            "Missing runtime API key — set AGENT_SEED_SECRET or wait for "
+            f"{RUNTIME_API_KEY_SECRET_NAME} via settings.seed"
         )
     token = await _service_token_client().get_token(
         agent_id=agent_id,
         workspace_id=workspace_id,
-        runtime_api_key=runtime_api_key.strip(),
+        runtime_api_key=runtime_api_key,
         audience=_RAG_AUDIENCE,
         scopes=_RAG_SCOPES,
     )

@@ -23,6 +23,7 @@ import httpx
 from dooers.agents.server.observability.service_token import (
     RUNTIME_API_KEY_SECRET_NAME,
     ServiceTokenClient,
+    resolve_runtime_api_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,13 +86,7 @@ def _make_turn_export_processor():  # noqa: ANN202
 async def _get_runtime_api_key(agent_id: str) -> str | None:
     if _persistence is None:
         return None
-    try:
-        secrets = await _persistence.get_service_secrets(agent_id)
-    except Exception:
-        logger.exception("OTEL: failed to fetch service_secrets for agent_id=%s", agent_id)
-        return None
-    value = secrets.get(RUNTIME_API_KEY_SECRET_NAME)
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    return await resolve_runtime_api_key(_persistence, agent_id)
 
 
 async def _export_turn(spans: list) -> None:  # noqa: ANN001
@@ -113,10 +108,10 @@ async def _export_turn(spans: list) -> None:  # noqa: ANN001
     runtime_api_key = await _get_runtime_api_key(agent_id)
     if not runtime_api_key:
         logger.warning(
-            "OTEL: no %s in service_secrets for agent_id=%s — skipping export "
-            "(waiting for settings.seed from core?)",
-            RUNTIME_API_KEY_SECRET_NAME,
+            "OTEL: no runtime API key for agent_id=%s — skipping export "
+            "(set AGENT_SEED_SECRET or wait for settings.seed / %s in service_secrets)",
             agent_id,
+            RUNTIME_API_KEY_SECRET_NAME,
         )
         return
 

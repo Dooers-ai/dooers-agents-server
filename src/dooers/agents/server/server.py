@@ -94,6 +94,12 @@ class AgentServer:
         self._persistence: Persistence | None = None
         self._initialized = False
 
+        # Template-as-agent: surface AgentConfig.agent_seed_secret to RAG/OTEL credential resolve
+        # (Settings may load AGENT_SEED_SECRET from .env without exporting it into os.environ).
+        from dooers.agents.server.observability.service_token import configure_process_seed_secret
+
+        configure_process_seed_secret(config.agent_seed_secret)
+
         self._registry = ConnectionRegistry()
         self._subscriptions: dict[str, set[str]] = {}  # ws_id -> set of thread_ids
 
