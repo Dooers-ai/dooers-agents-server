@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dooers.agents.server.auth_validation import AuthValidationClient
 from dooers.agents.server.broadcast import BroadcastManager
@@ -42,6 +42,9 @@ from dooers.agents.server.storage.chat_upload_file_policy import (
     enforce_allowed_chat_file_kind,
 )
 from dooers.agents.server.upload_store import UploadStore
+
+if TYPE_CHECKING:
+    from dooers.agents.server.storage.object_store import ObjectStore
 
 logger = logging.getLogger(__name__)
 # Same namespace the Router uses, so handle-loop diagnostics show up in apps that tune `agents`.
@@ -154,6 +157,13 @@ class AgentServer:
     @property
     def upload_store(self) -> UploadStore | None:
         return self._upload_store
+
+    @property
+    def storage(self) -> ObjectStore:
+        """Creator-facing managed object storage (put/get/list/delete), scoped to the org."""
+        from dooers.agents.server.storage.object_store import ObjectStore
+
+        return ObjectStore(self._config)
 
     @property
     def allowed_content_types(self) -> frozenset[str] | None:
