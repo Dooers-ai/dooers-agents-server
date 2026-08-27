@@ -33,6 +33,8 @@ def _safe_key(key: str) -> str:
         raise InvalidStorageKey(f"invalid object key: {key!r}")
     if k == ".." or k.startswith("../") or "/../" in k or k.endswith("/.."):
         raise InvalidStorageKey(f"invalid object key: {key!r}")
+    if k == _INDEX_SUFFIX or k.startswith(".dooers/"):
+        raise InvalidStorageKey(f"invalid object key: {key!r}")
     norm = posixpath.normpath(k)
     if norm != k or norm.startswith(".."):
         raise InvalidStorageKey(f"invalid object key: {key!r}")
@@ -43,7 +45,11 @@ class ObjectStore:
     def __init__(self, cfg: AgentConfig) -> None:
         self._cfg = cfg
         self._bucket = (getattr(cfg, "gcp_storage_bucket", "") or "").strip()
-        self._prefix = (getattr(cfg, "dooers_storage_prefix", "") or "").strip()
+        # Normalized like storage/chat_artifacts.py::_managed_prefix: no leading slash,
+        # exactly one trailing slash (or "" when unset) — avoids `agents/<org_id>rag/a.txt`
+        # if the env prefix ever arrives without its trailing slash.
+        _prefix = (getattr(cfg, "dooers_storage_prefix", "") or "").strip().strip("/")
+        self._prefix = f"{_prefix}/" if _prefix else ""
 
     @property
     def _enabled(self) -> bool:

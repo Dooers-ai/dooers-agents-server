@@ -67,6 +67,42 @@ async def test_key_traversal_rejected():
 
 
 @pytest.mark.asyncio
+async def test_reserved_index_key_rejected():
+    # The bucket-stored manifest itself must never be reachable through the
+    # creator-facing key namespace (no generation check on this path -> would
+    # corrupt the org's index).
+    for bad in [".dooers/object-index.json", ".dooers/anything"]:
+        with pytest.raises(InvalidStorageKey):
+            await ObjectStore(_cfg()).put(bad, b"x")
+
+
+@pytest.mark.asyncio
+async def test_delete_calls_gcs_and_index_then_returns_result():
+    seen = {}
+
+    def _del(bucket, name):
+        seen["name"] = name
+        return True
+
+    with (
+        patch("dooers.agents.server.storage.object_store.gcs.delete_blob", _del),
+        patch("dooers.agents.server.storage.object_store.ObjectIndex.remove") as rm,
+    ):
+        out = await ObjectStore(_cfg()).delete("rag/a.txt")
+    assert seen["name"] == PREFIX + "rag/a.txt"  # gcs sees the prefixed name
+    rm.assert_called_once_with("rag/a.txt")  # index sees the logical key
+    assert out is True  # returns the gcs result
+
+
+@pytest.mark.asyncio
+async def test_delete_none_backend_returns_false_without_gcs():
+    cfg = AgentConfig(database_type="postgres", storage_type="none")
+    with patch("dooers.agents.server.storage.object_store.gcs.delete_blob") as del_mock:
+        assert await ObjectStore(cfg).delete("k") is False
+    del_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_none_backend_put_raises_get_empty():
     cfg = AgentConfig(database_type="postgres", storage_type="none")
     with pytest.raises(StorageNotConfigured):
