@@ -27,6 +27,10 @@ class InvalidStorageKey(ValueError):
     """A logical key that escapes the org prefix or is empty."""
 
 
+class StorageWriteError(RuntimeError):
+    """The GCS upload for a `put()` failed (gcs.upload_bytes_to_blob_name returned None)."""
+
+
 def _safe_key(key: str) -> str:
     k = (key or "").strip()
     if not k or k.startswith("/") or "\\" in k:
@@ -53,7 +57,9 @@ class ObjectStore:
 
     @property
     def _enabled(self) -> bool:
-        return (self._cfg.storage_type or "none") == "dooers" and bool(self._bucket)
+        # Fail closed if the prefix is missing too: without it, objects would land
+        # unscoped at the bucket root instead of under the org's isolated path.
+        return (self._cfg.storage_type or "none") == "dooers" and bool(self._bucket) and bool(self._prefix)
 
     def _index(self) -> ObjectIndex:
         return ObjectIndex(self._bucket, self._prefix + _INDEX_SUFFIX)
@@ -66,6 +72,11 @@ class ObjectStore:
             raise StorageNotConfigured("storage_type is not 'dooers'")
         name = self._blob_name(key)
         uri = await asyncio.to_thread(gcs.upload_bytes_to_blob_name, self._bucket, name, data, content_type)
+        if uri is None:
+            # gcs.upload_bytes_to_blob_name swallows its own errors and returns None on
+            # failure. Surface that as a real error and skip the index write — recording
+            # a key whose bytes never landed would silently lie to list()/get() callers.
+            raise StorageWriteError(f"failed to write object {_safe_key(key)!r} to GCS")
         await asyncio.to_thread(self._index().record, _safe_key(key), len(data), content_type)
         return {"key": _safe_key(key), "uri": uri, "size": len(data)}
 
@@ -83,5 +94,9 @@ class ObjectStore:
         if not self._enabled:
             return False
         ok = await asyncio.to_thread(gcs.delete_blob, self._bucket, self._blob_name(key))
-        await asyncio.to_thread(self._index().remove, _safe_key(key))
+        if ok:
+            # Only drop the index entry once the blob is actually gone (or was already
+            # absent) — on a genuine gcs.delete_blob failure the object may still exist,
+            # so the index entry must stay accurate.
+            await asyncio.to_thread(self._index().remove, _safe_key(key))
         return ok

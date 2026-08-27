@@ -93,3 +93,27 @@ def test_explicit_chat_env_wins_over_follow(monkeypatch):
     monkeypatch.setenv("CHAT_STORAGE_SERVICE", "gcp")
     cfg = AgentConfig(database_type="postgres", storage_type="dooers")
     assert cfg.chat_storage_service == "gcp"  # env set → not overridden
+
+
+def test_warns_when_managed_storage_provisioned_but_storage_type_none(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_BUCKET_NAME", "bkt")
+    monkeypatch.setenv("DOOERS_STORAGE_PREFIX", ORG_PREFIX)
+    with caplog.at_level("WARNING", logger="dooers.agents.server.config"):
+        AgentConfig(database_type="postgres", storage_type="none")
+    assert any("storage_type='none'" in r.message for r in caplog.records)
+
+
+def test_no_warning_when_storage_type_dooers(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_BUCKET_NAME", "bkt")
+    monkeypatch.setenv("DOOERS_STORAGE_PREFIX", ORG_PREFIX)
+    with caplog.at_level("WARNING", logger="dooers.agents.server.config"):
+        AgentConfig(database_type="postgres", storage_type="dooers")
+    assert not any("managed storage is provisioned" in r.message for r in caplog.records)
+
+
+def test_no_warning_when_managed_storage_env_incomplete(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_BUCKET_NAME", "bkt")
+    monkeypatch.delenv("DOOERS_STORAGE_PREFIX", raising=False)
+    with caplog.at_level("WARNING", logger="dooers.agents.server.config"):
+        AgentConfig(database_type="postgres", storage_type="none")
+    assert not any("managed storage is provisioned" in r.message for r in caplog.records)

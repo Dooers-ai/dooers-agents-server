@@ -7,6 +7,7 @@ from dooers.agents.server.storage.object_store import (
     InvalidStorageKey,
     ObjectStore,
     StorageNotConfigured,
+    StorageWriteError,
 )
 
 PREFIX = "agents/e7d3594c-f61f-49c7-a4a0-ca288dd0619e/"
@@ -77,6 +78,20 @@ async def test_reserved_index_key_rejected():
 
 
 @pytest.mark.asyncio
+async def test_put_raises_on_failed_upload_and_skips_index():
+    # gcs.upload_bytes_to_blob_name swallows its own errors and returns None on
+    # failure — put() must not silently record an index entry for bytes that
+    # never landed.
+    with (
+        patch("dooers.agents.server.storage.object_store.gcs.upload_bytes_to_blob_name", return_value=None),
+        patch("dooers.agents.server.storage.object_store.ObjectIndex.record") as rec,
+    ):
+        with pytest.raises(StorageWriteError):
+            await ObjectStore(_cfg()).put("rag/a.txt", b"hi", "text/plain")
+    rec.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_delete_calls_gcs_and_index_then_returns_result():
     seen = {}
 
@@ -95,6 +110,19 @@ async def test_delete_calls_gcs_and_index_then_returns_result():
 
 
 @pytest.mark.asyncio
+async def test_delete_keeps_index_entry_when_gcs_delete_fails():
+    # gcs.delete_blob returns False only on a genuine error (True when deleted or
+    # already absent) — the index must not drop a key whose blob may still exist.
+    with (
+        patch("dooers.agents.server.storage.object_store.gcs.delete_blob", return_value=False),
+        patch("dooers.agents.server.storage.object_store.ObjectIndex.remove") as rm,
+    ):
+        out = await ObjectStore(_cfg()).delete("rag/a.txt")
+    rm.assert_not_called()
+    assert out is False
+
+
+@pytest.mark.asyncio
 async def test_delete_none_backend_returns_false_without_gcs():
     cfg = AgentConfig(database_type="postgres", storage_type="none")
     with patch("dooers.agents.server.storage.object_store.gcs.delete_blob") as del_mock:
@@ -109,3 +137,15 @@ async def test_none_backend_put_raises_get_empty():
         await ObjectStore(cfg).put("k", b"x")
     assert await ObjectStore(cfg).get("k") is None
     assert await ObjectStore(cfg).list() == []
+
+
+@pytest.mark.asyncio
+async def test_missing_prefix_fails_closed_even_with_bucket_and_dooers_type():
+    # Without a prefix, objects would land unscoped at the bucket root instead of
+    # under the org's isolated path — treat that as "not configured" too.
+    cfg = AgentConfig(database_type="postgres", storage_type="dooers", gcp_storage_bucket="bkt", dooers_storage_prefix="")
+    with pytest.raises(StorageNotConfigured):
+        await ObjectStore(cfg).put("k", b"x")
+    assert await ObjectStore(cfg).get("k") is None
+    assert await ObjectStore(cfg).list() == []
+    assert await ObjectStore(cfg).delete("k") is False

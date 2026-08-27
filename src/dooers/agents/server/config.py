@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -144,3 +145,18 @@ class AgentConfig:
         env_set = bool((os.environ.get("CHAT_STORAGE_SERVICE") or "").strip())
         if not env_set and self.chat_storage_service == "none" and self.storage_type == "dooers":
             self.chat_storage_service = "dooers"
+
+        # Managed storage is provisioned (dooers-push injected the bucket + prefix at
+        # deploy) but the creator never opted in via storage_type — agent.storage stays
+        # unconfigured and chat attachments won't ride it either. Log only; behavior is
+        # unchanged (the creator may be intentionally using storage_type="none").
+        if (
+            bool((os.environ.get("GCP_BUCKET_NAME") or "").strip())
+            and bool((os.environ.get("DOOERS_STORAGE_PREFIX") or "").strip())
+            and self.storage_type == "none"
+        ):
+            logging.getLogger(__name__).warning(
+                "managed storage is provisioned (GCP_BUCKET_NAME + DOOERS_STORAGE_PREFIX set) "
+                "but storage_type='none'; set storage_type='dooers' to enable agent.storage "
+                "and managed chat storage."
+            )
