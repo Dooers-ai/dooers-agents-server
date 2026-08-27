@@ -148,3 +148,59 @@ def download_bytes(bucket_name: str, blob_name: str) -> bytes | None:
     except Exception as e:
         logger.debug("GCS download failed for %s: %s", blob_name, e)
         return None
+
+
+def delete_blob(bucket_name: str, blob_name: str) -> bool:
+    """Delete a single object. True if deleted or already absent, False on error."""
+    if not bucket_name.strip() or not blob_name.strip():
+        return False
+    try:
+        from google.cloud import storage  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+    try:
+        blob = storage.Client().bucket(bucket_name.strip()).blob(blob_name.strip())
+        if not blob.exists():
+            return True
+        blob.delete()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("GCS delete failed %s: %s", blob_name, e)
+        return False
+
+
+def read_json_with_generation(bucket_name: str, blob_name: str) -> tuple[dict, int]:
+    """Return (parsed JSON dict, GCS generation). ({}, 0) when the object is absent."""
+    import json
+
+    from google.cloud import storage  # type: ignore[import-untyped]
+
+    blob = storage.Client().bucket(bucket_name.strip()).blob(blob_name.strip())
+    if not blob.exists():
+        return {}, 0
+    raw = blob.download_as_bytes()
+    blob.reload()
+    try:
+        parsed = json.loads(raw or b"{}")
+    except (ValueError, TypeError):
+        parsed = {}
+    return (parsed if isinstance(parsed, dict) else {}), int(blob.generation or 0)
+
+
+def write_json_if_generation(bucket_name: str, blob_name: str, data: dict, generation: int) -> bool:
+    """Write JSON with if_generation_match (0 = create-only). False on precondition failure."""
+    import json
+
+    from google.api_core.exceptions import PreconditionFailed
+    from google.cloud import storage  # type: ignore[import-untyped]
+
+    blob = storage.Client().bucket(bucket_name.strip()).blob(blob_name.strip())
+    try:
+        blob.upload_from_string(
+            json.dumps(data).encode("utf-8"),
+            content_type="application/json",
+            if_generation_match=generation,
+        )
+        return True
+    except PreconditionFailed:
+        return False
