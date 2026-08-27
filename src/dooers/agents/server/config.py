@@ -113,6 +113,11 @@ class AgentConfig:
     #: e.g. ``agents/<org_id>/``). Every managed chat blob is written under it so it falls
     #: inside the tenant SA's path-conditioned grant. Empty for the plain ``gcp`` backend.
     dooers_storage_prefix: str = field(default_factory=lambda: (os.environ.get("DOOERS_STORAGE_PREFIX") or "").strip())
+    #: Object-storage backend for the `agent.storage` API. `dooers` = platform-managed
+    #: GCS (bucket + prefix injected at deploy), symmetric with `database_type`. `none`
+    #: = the object API is unconfigured. The creator manages local/prod themselves
+    #: (e.g. storage_type=os.environ.get("STORAGE_TYPE", "none")).
+    storage_type: Literal["none", "dooers"] = "none"
     azure_storage_connection_string: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip())
     azure_storage_container: str = field(default_factory=lambda: (os.environ.get("AZURE_STORAGE_CONTAINER") or "").strip())
     chat_artifact_signed_url_ttl_minutes: int = field(
@@ -132,3 +137,10 @@ class AgentConfig:
 
     #: Service name on exported spans (env ``OTEL_SERVICE_NAME``). Empty → platform default.
     otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())
+
+    def __post_init__(self) -> None:
+        # Chat attachments follow the object-storage backend unless the creator set
+        # chat storage explicitly (via CHAT_STORAGE_SERVICE env or a non-default value).
+        env_set = bool((os.environ.get("CHAT_STORAGE_SERVICE") or "").strip())
+        if not env_set and self.chat_storage_service == "none" and self.storage_type == "dooers":
+            self.chat_storage_service = "dooers"
