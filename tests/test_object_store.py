@@ -78,6 +78,13 @@ async def test_reserved_index_key_rejected():
 
 
 @pytest.mark.asyncio
+async def test_control_characters_rejected():
+    for bad in ["a\x00b", "a\nb"]:
+        with pytest.raises(InvalidStorageKey):
+            await ObjectStore(_cfg()).put(bad, b"x")
+
+
+@pytest.mark.asyncio
 async def test_put_raises_on_failed_upload_and_skips_index():
     # gcs.upload_bytes_to_blob_name swallows its own errors and returns None on
     # failure — put() must not silently record an index entry for bytes that
@@ -89,6 +96,38 @@ async def test_put_raises_on_failed_upload_and_skips_index():
         with pytest.raises(StorageWriteError):
             await ObjectStore(_cfg()).put("rag/a.txt", b"hi", "text/plain")
     rec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_put_return_includes_content_type():
+    # Harmonized with list()'s entries (key, size, content_type, updated_at).
+    with (
+        patch("dooers.agents.server.storage.object_store.gcs.upload_bytes_to_blob_name", return_value="gs://bkt/x"),
+        patch("dooers.agents.server.storage.object_store.ObjectIndex.record"),
+    ):
+        out = await ObjectStore(_cfg()).put("rag/a.txt", b"hi", "text/plain")
+    assert out["content_type"] == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_put_succeeds_even_if_index_record_raises_internally():
+    # An index-maintenance failure must never fail the object write: the GCS upload
+    # already succeeded by the time the index is touched. Patch the real gcs helper
+    # used inside ObjectIndex._mutate (not ObjectIndex.record itself) so the actual
+    # swallow-and-log behavior in _mutate is exercised end to end.
+    def _up(bucket, name, data, ct):
+        return f"gs://{bucket}/{name}"
+
+    def _read_raises(b, p):
+        raise RuntimeError("index read boom")
+
+    with (
+        patch("dooers.agents.server.storage.object_store.gcs.upload_bytes_to_blob_name", _up),
+        patch("dooers.agents.server.storage.object_index.gcs.read_json_with_generation", _read_raises),
+    ):
+        out = await ObjectStore(_cfg()).put("rag/a.txt", b"hi", "text/plain")
+    assert out["key"] == "rag/a.txt"
+    assert out["uri"] == f"gs://bkt/{PREFIX}rag/a.txt"
 
 
 @pytest.mark.asyncio

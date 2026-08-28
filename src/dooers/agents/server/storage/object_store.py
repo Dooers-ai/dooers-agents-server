@@ -42,6 +42,10 @@ def _safe_key(key: str) -> str:
     norm = posixpath.normpath(k)
     if norm != k or norm.startswith(".."):
         raise InvalidStorageKey(f"invalid object key: {key!r}")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in k):
+        # Turns an opaque StorageWriteError (GCS rejecting the object name) into a
+        # clear, immediate InvalidStorageKey.
+        raise InvalidStorageKey(f"invalid object key: {key!r}")
     return k
 
 
@@ -78,7 +82,9 @@ class ObjectStore:
             # a key whose bytes never landed would silently lie to list()/get() callers.
             raise StorageWriteError(f"failed to write object {_safe_key(key)!r} to GCS")
         await asyncio.to_thread(self._index().record, _safe_key(key), len(data), content_type)
-        return {"key": _safe_key(key), "uri": uri, "size": len(data)}
+        # Harmonized with list()'s entries (key, size, content_type, updated_at): put()
+        # now also returns content_type.
+        return {"key": _safe_key(key), "uri": uri, "size": len(data), "content_type": content_type}
 
     async def get(self, key: str) -> bytes | None:
         if not self._enabled:
