@@ -206,6 +206,8 @@ See [whatsapp.md](whatsapp.md) for `WhatsAppClient`, Studio setup, and troublesh
 
 `size` is one of `small`, `medium`, `large`.
 
+`send.form_text(..., input_type=...)` accepts `text` \| `password` \| `email` \| `number` \| `date`. With `date`, the web client renders a native date picker; submitted values and `default` should be **`YYYY-MM-DD`**.
+
 ---
 
 ## 2. `incoming` — what the user sent

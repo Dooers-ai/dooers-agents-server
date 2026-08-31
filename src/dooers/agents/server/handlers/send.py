@@ -305,7 +305,7 @@ class AgentSend:
         disabled: bool = False,
         placeholder: str | None = None,
         default: str | None = None,
-        input_type: Literal["text", "password", "email", "number"] = "text",
+        input_type: Literal["text", "password", "email", "number", "date"] = "text",
     ) -> dict:
         return {
             "type": "text_input",

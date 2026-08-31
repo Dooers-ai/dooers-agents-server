@@ -264,7 +264,7 @@ class WireS2C_FormTextElement(BaseModel):
     disabled: bool = False
     placeholder: str | None = None
     default: str | None = None
-    input_type: Literal["text", "password", "email", "number"] = "text"
+    input_type: Literal["text", "password", "email", "number", "date"] = "text"
 
 
 class WireS2C_FormTextareaElement(BaseModel):
