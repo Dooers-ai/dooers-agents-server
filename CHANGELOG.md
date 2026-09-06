@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] — 2026-09-06
+
+### Added
+
+- **`AgentConfig.whatsapp_peer_message`** (`ignore` | `register` | `dispatch`, default `register`) for WhatsApp human/`fromMe` peer messages on third-party chats.
+- **`AgentServer.ingest(...)`** — persist a channel message on a thread without running the handler (used by `register`).
+
 ## [0.20.1] — 2026-08-31
 
 ### Added

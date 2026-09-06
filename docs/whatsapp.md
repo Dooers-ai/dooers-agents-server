@@ -42,6 +42,28 @@ Implementação de referência: [`examples/fastapi_whatsapp_webhook.py`](../exam
 
 **Importante:** cada conversa WhatsApp abre ou continua uma **thread própria** no console — não confunda com threads de teste no Studio.
 
+### Mensagens `fromMe` (humano no app / self-chat)
+
+O **tools-whatsapp** classifica:
+
+- echo do bot (id conhecido) → ignora
+- self-chat (`remoteJid` = número da instância) → encaminha como usuário (IA responde)
+- peer (`fromMe` em chat de terceiro) → encaminha; o SDK aplica `AgentConfig.whatsapp_peer_message`:
+
+```python
+AgentConfig(
+    ...,
+    dooers_whatsapp_service=True,
+    whatsapp_peer_message="register",  # ignore | register | dispatch
+)
+```
+
+| Valor | Efeito |
+|-------|--------|
+| `ignore` | Descarta peer |
+| `register` (default) | Grava na thread sem rodar o handler |
+| `dispatch` | Grava e roda o handler (pode responder) |
+
 ## Respostas reativas — `yield send.whatsapp.*`
 
 Quando a mensagem veio do WhatsApp (`incoming.context.channel == "whatsapp"`), o roteamento de destino costuma ser inferido automaticamente — você pode responder sem repetir telefone ou instance id:

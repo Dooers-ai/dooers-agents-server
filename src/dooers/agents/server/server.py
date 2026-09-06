@@ -492,6 +492,69 @@ class AgentServer:
 
         return DispatchStream(pipeline=pipeline, context=context, result=result, tracker=tracker)
 
+    async def ingest(
+        self,
+        agent_id: str,
+        message: str,
+        user: User | None = None,
+        organization_id: str = "",
+        workspace_id: str = "",
+        thread_id: str | None = None,
+        thread_title: str | None = None,
+        content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
+        channel: str = "dooers-platform",
+        channel_meta: dict[str, Any] | None = None,
+        *,
+        actor: str = "assistant",
+        author: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> str:
+        """Persist a channel message on the thread without running the agent handler.
+
+        Used for WhatsApp human/peer outbound (``whatsapp_peer_message="register"``).
+        Returns ``thread_id``.
+        """
+
+        async def _noop_handler(*_args: Any, **_kwargs: Any):
+            if False:  # pragma: no cover
+                yield None
+
+        persistence = await self._ensure_initialized()
+        pipeline = HandlerPipeline(
+            persistence=persistence,
+            broadcast_callback=self._broadcast_dict_to_agent,
+            analytics_collector=self._analytics_collector,
+            settings_broadcaster=self._settings_broadcaster,
+            settings_schema=self._config.settings_schema,
+            assistant_name=self._config.assistant_name,
+            upload_store=self._upload_store,
+            allowed_content_types=self._allowed_content_types,
+            content_policy_denial_message=self._content_policy_denial_message,
+            agent_config=self._config,
+            whatsapp_outbound=None,
+        )
+        context = HandlerContext(
+            handler=_noop_handler,
+            agent_id=agent_id,
+            message=message,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            channel=(channel or "dooers-platform"),
+            channel_meta=channel_meta,
+            user=user or User(user_id=""),
+            thread_id=thread_id,
+            thread_title=thread_title,
+            content=content,
+            data=data,
+            persist_actor=actor,
+            persist_author=author,
+        )
+        result = await pipeline.setup(context)
+        resolved_user = user or User(user_id="")
+        if not result.is_new_thread and (resolved_user.user_id or resolved_user.user_email):
+            await persistence.upsert_thread_participant(result.thread.id, resolved_user)
+        return result.thread.id
+
     async def database(self) -> SqlDatabase:
         """Return app SQL access backed by the SDK-owned persistence pool.
 

@@ -121,6 +121,12 @@ class AgentConfig:
     # When True, ``HandlerPipeline`` runs the built-in Dooers WhatsApp tools HTTP outbound.
     dooers_whatsapp_service: bool = False
 
+    #: How to handle WhatsApp ``fromMe`` peer messages (human outbound on a third-party chat).
+    #: ``ignore`` — drop; ``register`` — persist on the thread without running the handler;
+    #: ``dispatch`` — persist and run the handler (may reply). Self-chat and customer inbound
+    #: always dispatch. Bot echoes are dropped in dooers-service-whatsapp.
+    whatsapp_peer_message: Literal["ignore", "register", "dispatch"] = "register"
+
     #: Base URL of dooers-service-core for minting short-lived ``otel:write`` tokens
     #: (env ``AGENT_CORE_BASE_URL``). Empty → platform default (same pattern as analytics webhook).
     agent_core_base_url: str = field(default_factory=lambda: (os.environ.get("AGENT_CORE_BASE_URL") or "").strip())

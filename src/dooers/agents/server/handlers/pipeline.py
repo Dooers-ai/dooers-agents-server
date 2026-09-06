@@ -142,6 +142,9 @@ class HandlerContext:
     event_type: str = "message"
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
+    #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
+    persist_actor: str = "user"
+    persist_author: str | None = None
 
     def __post_init__(self):
         if self.user is None:
@@ -286,14 +289,19 @@ class HandlerPipeline:
             storage_parts = [WireS2C_TextPart(text=text)]
 
         user_event_id = _generate_id()
+        author = context.persist_author
+        if author is None and context.persist_actor == "user":
+            author = _user_author_display(context.user)
+        elif author is None and context.persist_actor == "assistant":
+            author = self._assistant_name
         user_event = ThreadEvent(
             id=user_event_id,
             thread_id=thread_id,
             run_id=None,
             type=context.event_type,
-            actor="user",
-            author=_user_author_display(context.user),
-            user=context.user,
+            actor=context.persist_actor,  # type: ignore[arg-type]
+            author=author,
+            user=context.user if context.persist_actor == "user" else None,
             content=storage_parts if context.event_type != "form.response" else None,
             data=self._with_inbound_source_data(context.data, context),
             created_at=now,
@@ -1138,6 +1146,13 @@ class HandlerPipeline:
                 instance_id = str(whatsapp.get("instance_id") or "").strip()
                 if instance_id:
                     source["instance_id"] = instance_id
+                if "from_me" in whatsapp:
+                    source["from_me"] = bool(whatsapp.get("from_me"))
+                if "self_chat" in whatsapp:
+                    source["self_chat"] = bool(whatsapp.get("self_chat"))
+                wa_mid = str(whatsapp.get("wa_message_id") or "").strip()
+                if wa_mid:
+                    source["wa_message_id"] = wa_mid
         elif channel == "dooers-public-chat":
             public_chat_label = str(channel_meta.get("public_chat_label") or "").strip()
             if not public_chat_label:
