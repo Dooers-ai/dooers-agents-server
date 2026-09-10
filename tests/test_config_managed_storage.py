@@ -73,3 +73,47 @@ def test_signed_url_skipped_in_dooers_mode():
     # Phase 1: no signBlob/tokenCreator on the tenant SA — signing would fail, so skip.
     cfg = _cfg(chat_storage_service="dooers", dooers_storage_prefix=ORG_PREFIX, gcp_storage_bucket="b")
     assert sign_chat_artifact_read_url(cfg, f"{ORG_PREFIX}chat-artifacts/v1/a1/t1/r1/doc.pdf") is None
+
+
+def test_storage_type_defaults_none():
+    assert AgentConfig(database_type="postgres").storage_type == "none"
+
+
+def test_storage_type_dooers_accepted():
+    assert AgentConfig(database_type="postgres", storage_type="dooers").storage_type == "dooers"
+
+
+def test_chat_follows_storage_type_when_unset(monkeypatch):
+    monkeypatch.delenv("CHAT_STORAGE_SERVICE", raising=False)
+    cfg = AgentConfig(database_type="postgres", storage_type="dooers")
+    assert cfg.chat_storage_service == "dooers"  # followed
+
+
+def test_explicit_chat_env_wins_over_follow(monkeypatch):
+    monkeypatch.setenv("CHAT_STORAGE_SERVICE", "gcp")
+    cfg = AgentConfig(database_type="postgres", storage_type="dooers")
+    assert cfg.chat_storage_service == "gcp"  # env set → not overridden
+
+
+def test_warns_when_managed_storage_provisioned_but_storage_type_none(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_BUCKET_NAME", "bkt")
+    monkeypatch.setenv("DOOERS_STORAGE_PREFIX", ORG_PREFIX)
+    with caplog.at_level("WARNING", logger="dooers.agents.server.config"):
+        AgentConfig(database_type="postgres", storage_type="none")
+    assert any("storage_type='none'" in r.message for r in caplog.records)
+
+
+def test_no_warning_when_storage_type_dooers(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_BUCKET_NAME", "bkt")
+    monkeypatch.setenv("DOOERS_STORAGE_PREFIX", ORG_PREFIX)
+    with caplog.at_level("WARNING", logger="dooers.agents.server.config"):
+        AgentConfig(database_type="postgres", storage_type="dooers")
+    assert not any("managed storage is provisioned" in r.message for r in caplog.records)
+
+
+def test_no_warning_when_managed_storage_env_incomplete(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_BUCKET_NAME", "bkt")
+    monkeypatch.delenv("DOOERS_STORAGE_PREFIX", raising=False)
+    with caplog.at_level("WARNING", logger="dooers.agents.server.config"):
+        AgentConfig(database_type="postgres", storage_type="none")
+    assert not any("managed storage is provisioned" in r.message for r in caplog.records)
