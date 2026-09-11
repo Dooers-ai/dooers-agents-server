@@ -37,6 +37,7 @@ from dooers.agents.server.protocol.frames import (
     C2S_ThreadArtifactsList,
     C2S_ThreadDelete,
     C2S_ThreadList,
+    C2S_ThreadParticipantsAdd,
     C2S_ThreadSubscribe,
     C2S_ThreadUnsubscribe,
     ClientToServer,
@@ -67,6 +68,17 @@ from dooers.agents.server.protocol.frames import (
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
 from dooers.agents.server.protocol.parser import serialize_frame
 from dooers.agents.server.registry import ConnectionRegistry
+from dooers.agents.server.thread_access import (
+    ThreadViewGrantStore,
+    actor_id_is_participant,
+    attach_thread_access,
+    resolve_list_scope,
+    resolve_scope,
+    resolve_thread_access,
+    thread_supervision_mode_from_settings,
+    thread_supervision_requires_reason,
+    user_is_thread_participant,
+)
 from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 
 if TYPE_CHECKING:
@@ -84,60 +96,12 @@ class WebSocketProtocol(Protocol):
     async def close(self, code: int = 1000) -> None: ...
 
 
-def resolve_scope(user: User, *, workspace_id: str = "") -> str:
-    """Resolve thread list scope from user roles.
-
-    Personal chats (empty ``workspace_id``) always use participant-only
-    ``member`` scope — including org/workspace managers — so 1:1 threads
-    are not visible to elevated roles. Shared team visibility applies only
-    when connected inside a real workspace.
-    """
-    if not (workspace_id or "").strip():
-        return "member"
-    if user.system_role == "admin":
-        return "admin"
-    if user.organization_role in ("owner", "manager"):
-        return "organization"
-    if user.workspace_role == "manager":
-        return "workspace"
-    return "member"
-
-
-def _user_is_thread_participant(user: User, thread: Thread) -> bool:
-    """True if the connected user owns or participates in the thread."""
-    identity_ids = {uid for uid in [user.user_id, *(user.identity_ids or [])] if uid}
-    if not identity_ids:
-        return False
-    if thread.owner and thread.owner.user_id and thread.owner.user_id in identity_ids:
-        return True
-    for participant in thread.users or []:
-        if participant.user_id and participant.user_id in identity_ids:
-            return True
-        for iid in participant.identity_ids or []:
-            if iid in identity_ids:
-                return True
-    return False
+# Re-export for tests that still import from router
+_user_is_thread_participant = user_is_thread_participant
 
 
 def _can_access_thread(user: User, thread: Thread, *, connection_workspace_id: str) -> bool:
-    """Personal threads (empty workspace_id) require participation; team threads use connect agent match only at call site."""
-    thread_ws = (thread.workspace_id or "").strip()
-    if not thread_ws:
-        return _user_is_thread_participant(user, thread)
-    # Team / workspace-scoped threads: elevated scopes may see all in that workspace;
-    # members must be participants. Connection workspace should match for shared lists.
-    conn_ws = (connection_workspace_id or "").strip()
-    if conn_ws and thread_ws != conn_ws:
-        # Allow org-wide listing paths when connected with empty personal context skipped above.
-        # When connected to a specific workspace, only that workspace's threads.
-        scope = resolve_scope(user, workspace_id=conn_ws)
-        if scope in ("admin", "organization"):
-            return True
-        return False
-    scope = resolve_scope(user, workspace_id=conn_ws or thread_ws)
-    if scope in ("admin", "organization", "workspace"):
-        return True
-    return _user_is_thread_participant(user, thread)
+    return resolve_thread_access(user, thread, connection_workspace_id=connection_workspace_id).read
 
 
 def _generate_id() -> str:
@@ -200,6 +164,7 @@ class Router:
         hydrate_thread_events_for_client: (Callable[[list[ThreadEvent], Thread], Awaitable[list[ThreadEvent]]] | None) = None,
         agent_config: AgentConfig | None = None,
         whatsapp_outbound: Any = None,
+        view_grants: ThreadViewGrantStore | None = None,
     ):
         self._persistence = persistence
         self._handler = handler
@@ -214,6 +179,7 @@ class Router:
         self._analytics_subscriptions = analytics_subscriptions if analytics_subscriptions is not None else {}
         self._settings_subscriptions = settings_subscriptions if settings_subscriptions is not None else {}
         self._settings_ws_context = settings_ws_context if settings_ws_context is not None else {}
+        self._view_grants = view_grants if view_grants is not None else ThreadViewGrantStore()
 
         self._auth_validator: AuthValidationClient | None = auth_validator
 
@@ -343,6 +309,8 @@ class Router:
                 await self._handle_thread_unsubscribe(ws, frame)
             case C2S_ThreadDelete():
                 await self._handle_thread_delete(ws, frame)
+            case C2S_ThreadParticipantsAdd():
+                await self._handle_thread_participants_add(ws, frame)
             case C2S_EventCreate():
                 await self._handle_event_create(ws, frame)
             case C2S_EventList():
@@ -563,7 +531,7 @@ class Router:
             return
 
         user = self._user or User(user_id="")
-        scope = resolve_scope(user, workspace_id=self._workspace_id)
+        scope = resolve_list_scope(user, workspace_id=self._workspace_id)
         # Build complete identity set for thread filtering
         all_identity_ids = [uid for uid in [user.user_id, *(user.identity_ids or [])] if uid]
         limit = frame.payload.limit or 30
@@ -581,6 +549,10 @@ class Router:
         has_more = len(threads) > limit
         if has_more:
             threads = threads[:limit]
+
+        threads = [
+            attach_thread_access(t, user, connection_workspace_id=self._workspace_id) for t in threads
+        ]
 
         if frame.payload.cursor:
             total_count = 0
@@ -643,14 +615,49 @@ class Router:
             return
 
         user = self._user or User(user_id="")
-        if not _can_access_thread(user, thread, connection_workspace_id=self._workspace_id):
+        access = resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id)
+        if not access.read:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Not a participant of this thread"},
+                error={"code": "FORBIDDEN", "message": "Not allowed to read this thread"},
             )
             return
+
+        # Elevated (non-participant) read may require a same-day grant or access_reason,
+        # depending on threadSupervision mode (strict / operational / open).
+        if not user_is_thread_participant(user, thread):
+            settings_values = await self._persistence.get_settings(self._agent_id)
+            mode = thread_supervision_mode_from_settings(
+                settings_values if isinstance(settings_values, dict) else None
+            )
+            needs_reason = thread_supervision_requires_reason(
+                mode, workspace_id=thread.workspace_id or ""
+            )
+            if needs_reason:
+                has_grant = self._view_grants.has_valid_grant(user.user_id, thread_id)
+                reason = (frame.payload.access_reason or "").strip()
+                if not has_grant:
+                    if not reason:
+                        await self._send_ack(
+                            ws,
+                            frame.id,
+                            ok=False,
+                            error={
+                                "code": "ACCESS_REASON_REQUIRED",
+                                "message": "Provide access_reason to open this thread in supervision mode",
+                            },
+                        )
+                        return
+                    self._view_grants.put_grant(user.user_id, thread_id)
+                    logger.info(
+                        "[agents] elevated thread.view user=%s thread=%s mode=%s reason_len=%d",
+                        user.user_id,
+                        thread_id,
+                        mode,
+                        len(reason),
+                    )
 
         events = await self._persistence.get_events(
             thread_id,
@@ -662,9 +669,10 @@ class Router:
         self._subscribed_threads.add(thread_id)
         self._subscriptions[self._ws_id].add(thread_id)
 
+        thread_out = attach_thread_access(thread, user, connection_workspace_id=self._workspace_id)
         snapshot = S2C_ThreadSnapshot(
             id=_generate_id(),
-            payload=ThreadSnapshotPayload(thread=thread, events=events),
+            payload=ThreadSnapshotPayload(thread=thread_out, events=events),
         )
         await self._send(ws, snapshot)
 
@@ -711,12 +719,13 @@ class Router:
             return
 
         user = self._user or User(user_id="")
-        if not _can_access_thread(user, thread, connection_workspace_id=self._workspace_id):
+        access = resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id)
+        if not access.manage:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Not a participant of this thread"},
+                error={"code": "FORBIDDEN", "message": "Not allowed to delete this thread"},
             )
             return
 
@@ -740,6 +749,12 @@ class Router:
                 )
 
         await self._persistence.delete_thread(thread_id)
+        logger.info(
+            "[agents] thread.delete user=%s thread=%s agent=%s",
+            user.user_id,
+            thread_id,
+            thread.agent_id,
+        )
 
         self._subscribed_threads.discard(thread_id)
         if self._ws_id in self._subscriptions:
@@ -751,6 +766,95 @@ class Router:
         )
         await self._broadcast_to_agent(deleted_frame)
 
+        await self._send_ack(ws, frame.id)
+
+    async def _handle_thread_participants_add(
+        self,
+        ws: WebSocketProtocol,
+        frame: C2S_ThreadParticipantsAdd,
+    ) -> None:
+        if not self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_CONNECTED", "message": "Must connect first"},
+            )
+            return
+
+        thread_id = frame.payload.thread_id
+        thread = await self._persistence.get_thread(thread_id)
+        if not thread:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_FOUND", "message": "Thread not found"},
+            )
+            return
+
+        if thread.agent_id != self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
+            )
+            return
+
+        # Lazy backfill: ensure serving agent is listed as a participant on old rows.
+        if not actor_id_is_participant(self._agent_id, thread):
+            await self._persistence.upsert_thread_participant(
+                thread_id,
+                User(user_id=self._agent_id, user_name=self._assistant_name),
+            )
+            thread = await self._persistence.get_thread(thread_id) or thread
+
+        user = self._user or User(user_id="")
+        access = resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id)
+        if not access.manage:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Not allowed to add participants"},
+            )
+            return
+
+        new_user = frame.payload.user
+        if not (new_user.user_id or new_user.user_email):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "INVALID_PAYLOAD", "message": "Participant needs user_id or user_email"},
+            )
+            return
+
+        await self._persistence.upsert_thread_participant(thread_id, new_user)
+        updated = await self._persistence.get_thread(thread_id)
+        if not updated:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_FOUND", "message": "Thread not found after update"},
+            )
+            return
+
+        logger.info(
+            "[agents] thread.participant.add actor=%s thread=%s added=%s",
+            user.user_id,
+            thread_id,
+            new_user.user_id or new_user.user_email,
+        )
+
+        thread_out = attach_thread_access(updated, user, connection_workspace_id=self._workspace_id)
+        upsert = S2C_ThreadUpsert(
+            id=_generate_id(),
+            payload=ThreadUpsertPayload(thread=thread_out),
+        )
+        await self._broadcast_to_agent(upsert)
         await self._send_ack(ws, frame.id)
 
     async def _handle_event_create(self, ws: WebSocketProtocol, frame: C2S_EventCreate) -> None:
@@ -782,6 +886,39 @@ class Router:
         content_parts = list(frame.payload.event.content)
 
         user = self._user or User(user_id="")
+
+        # Existing threads require write; check before setup so we do not persist a forbidden message.
+        existing_thread_id = (frame.payload.thread_id or "").strip()
+        if existing_thread_id:
+            existing = await self._persistence.get_thread(existing_thread_id)
+            if existing is None:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={"code": "NOT_FOUND", "message": "Thread not found"},
+                )
+                return
+            if existing.agent_id != self._agent_id:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
+                )
+                return
+            access = resolve_thread_access(user, existing, connection_workspace_id=self._workspace_id)
+            if not access.write:
+                await self._send_ack(
+                    ws,
+                    frame.id,
+                    ok=False,
+                    error={
+                        "code": "FORBIDDEN",
+                        "message": "Read-only supervision — add yourself as a participant to send",
+                    },
+                )
+                return
 
         raw_metadata = frame.payload.metadata if isinstance(frame.payload.metadata, dict) else None
         channel, channel_meta = _resolve_channel(raw_metadata)
@@ -848,7 +985,7 @@ class Router:
             self._subscribed_threads.add(result.thread.id)
             self._subscriptions[self._ws_id].add(result.thread.id)
 
-        # Upsert participant into thread's users array
+        # Upsert participant only when the sender has write (participants / new thread owners).
         if user.user_id or user.user_email:
             await self._persistence.upsert_thread_participant(result.thread.id, user)
 
@@ -887,6 +1024,33 @@ class Router:
             return
 
         payload = frame.payload
+        thread = await self._persistence.get_thread(payload.thread_id)
+        if not thread:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_FOUND", "message": "Thread not found"},
+            )
+            return
+        if thread.agent_id != self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
+            )
+            return
+        user = self._user or User(user_id="")
+        if not resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id).read:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Not allowed to read this thread"},
+            )
+            return
+
         limit = payload.limit
         events = await self._persistence.get_events(
             payload.thread_id,
@@ -902,7 +1066,6 @@ class Router:
         # Reverse to chronological order
         events.reverse()
 
-        thread = await self._persistence.get_thread(payload.thread_id)
         events = await self._hydrate_events_for_client(events, thread)
 
         cursor = events[0].id if events and has_more else None
@@ -952,12 +1115,12 @@ class Router:
             return
 
         user = self._user or User(user_id="")
-        if not _can_access_thread(user, thread, connection_workspace_id=self._workspace_id):
+        if not resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id).read:
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
-                error={"code": "FORBIDDEN", "message": "Not a participant of this thread"},
+                error={"code": "FORBIDDEN", "message": "Not allowed to read this thread"},
             )
             return
 

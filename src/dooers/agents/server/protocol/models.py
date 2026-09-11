@@ -482,6 +482,14 @@ class ThreadArtifact(BaseModel):
     user_name: str | None = None
 
 
+class ThreadAccess(BaseModel):
+    """Per-session capabilities for a thread (computed on list/snapshot; not persisted)."""
+
+    read: bool = False
+    write: bool = False
+    manage: bool = False
+
+
 class Thread(BaseModel):
     id: str
     agent_id: str
@@ -494,6 +502,8 @@ class Thread(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_event_at: datetime
+    #: Filled by the router for the connected user; omitted when not applicable.
+    access: ThreadAccess | None = None
 
 
 class Run(BaseModel):

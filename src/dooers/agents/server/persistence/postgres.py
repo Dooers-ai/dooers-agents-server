@@ -480,11 +480,16 @@ class PostgresPersistence:
             conditions.append(f"organization_id = ${idx}")
             params.append(organization_id)
             idx += 1
-            # When connected inside a workspace, stay in that context so personal
-            # threads (workspace_id='') are never listed via org elevation.
+            # Connected inside a workspace → stay in that workspace.
+            # Personal inbox (empty workspace_id) → only 1:1 threads so workspace
+            # chats are not mixed into elevated org supervision lists.
             if (workspace_id or "").strip():
                 conditions.append(f"workspace_id = ${idx}")
                 params.append(workspace_id)
+                idx += 1
+            else:
+                conditions.append(f"(workspace_id = ${idx} OR workspace_id IS NULL)")
+                params.append("")
                 idx += 1
         elif scope == "workspace":
             # Audited 2026-04-14: workspace-scope filters by organization+workspace

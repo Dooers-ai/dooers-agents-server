@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1] — 2026-09-11
+
+### Added
+
+- **Thread supervision modes** (`strict` / `operational` / `open`) via seeded
+  `__dooers_thread_supervision_mode` (or `AGENT_THREAD_SUPERVISION_MODE` env).
+  Controls when elevated subscribe requires `access_reason`:
+  - `strict`: always (default)
+  - `operational`: only personal 1:1 (empty `workspace_id`)
+  - `open`: never
+
+## [0.22.0] — 2026-09-10
+
+### Added
+
+- **Thread access capabilities** (`read` / `write` / `manage`) on list/snapshot via `thread.access`.
+- **Org owner/manager supervision** of personal 1:1 threads (empty `workspace_id`): list + read + manage; write only after joining as participant.
+- **`thread.participants.add`** C2S frame and **`send.add_participant()`** for runtime (agent must be in `users`).
+- **Same-day elevated view grants** in-process (`ThreadViewGrantStore`, TTL end of UTC day). Elevated subscribe requires `access_reason` when no grant exists.
+- New threads include the serving **agent_id** in `users`.
+
+### Changed
+
+- **BREAKING (behavior):** Personal inbox no longer forces `member` list scope for org elevated roles. System admin non-participants are read-only. `event.create` on existing threads requires `write`. `thread.delete` requires `manage`.
+- Organization list scope with empty connection workspace lists **personal threads only**.
+
 ## [0.21.0] — 2026-09-06
 
 ### Added

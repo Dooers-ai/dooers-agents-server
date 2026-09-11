@@ -507,16 +507,24 @@ user = User(
 )
 ```
 
-When listing threads, the SDK resolves the user's highest scope and filters accordingly:
+When listing threads, the SDK resolves the user's highest scope and attaches per-thread
+``access`` (`read` / `write` / `manage`):
 
-| Scope | Condition | Sees |
-|-------|-----------|------|
-| `admin` | `system_role == "admin"` | All threads |
-| `organization` | `organization_role` is `"owner"` or `"manager"` | All threads in the organization |
-| `workspace` | `workspace_role == "manager"` | All threads in the workspace |
-| `member` | Default | Only threads where they are a participant |
+| Scope / access | Condition | Sees / can do |
+|----------------|-----------|---------------|
+| `admin` list | `system_role == "admin"` | All threads (read-only unless participant) |
+| `organization` list | `organization_role` is `"owner"` or `"manager"` | Org threads; personal inbox lists 1:1 only |
+| `workspace` list | `workspace_role == "manager"` | Threads in the connected workspace |
+| `member` list | Default | Only threads where they are a participant |
+| Participant | `user_id` or `agent_id` in `users` | `read` + `write` + `manage` |
+| Org elevated, not participant | owner/manager | `read` + `manage` (write after self-add) |
+| System admin, not participant | `system_role == admin` | `read` only |
 
-Threads track participants automatically — each user who sends a message is added to the thread's `users` list.
+Elevated (non-participant) `thread.subscribe` requires `access_reason` once per UTC day
+(in-memory grant on the agent process). Use `thread.participants.add` or
+`send.add_participant()` to join and gain write.
+
+Threads track participants automatically — each user who sends a message is added to the thread's `users` list. New threads also include the serving agent id.
 
 ## Thread Privacy
 

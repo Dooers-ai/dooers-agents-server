@@ -41,6 +41,7 @@ from dooers.agents.server.storage.chat_upload_file_policy import (
     PERSIST_CHAT_ATTACHMENTS_FIELD,
     enforce_allowed_chat_file_kind,
 )
+from dooers.agents.server.thread_access import ThreadViewGrantStore
 from dooers.agents.server.upload_store import UploadStore
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ class AgentServer:
 
         self._registry = ConnectionRegistry()
         self._subscriptions: dict[str, set[str]] = {}  # ws_id -> set of thread_ids
+        self._view_grants = ThreadViewGrantStore()
 
         self._analytics_subscriptions: dict[str, set[str]] = {}  # agent_id -> set of ws_ids
         self._settings_subscriptions: dict[str, set[str]] = {}  # agent_id -> set of ws_ids
@@ -395,6 +397,7 @@ class AgentServer:
             hydrate_thread_events_for_client=self._hydrate_thread_events_impl,
             agent_config=self._config,
             whatsapp_outbound=self._resolve_whatsapp_outbound(persistence),
+            view_grants=self._view_grants,
         )
 
         try:

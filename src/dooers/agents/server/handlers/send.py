@@ -293,6 +293,27 @@ class AgentSend:
             data={"title": title},
         )
 
+    def add_participant(
+        self,
+        user_id: str,
+        *,
+        user_name: str | None = None,
+        user_email: str | None = None,
+        identity_ids: list[str] | None = None,
+    ) -> AgentEvent:
+        """Add a human participant. Runtime must already be a participant (agent_id in users)."""
+        return AgentEvent(
+            send_type="participant_add",
+            data={
+                "user": {
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "user_email": user_email,
+                    "identity_ids": identity_ids or [],
+                }
+            },
+        )
+
     # --- Form elements ---
 
     @staticmethod

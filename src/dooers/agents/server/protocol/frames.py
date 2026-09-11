@@ -41,6 +41,8 @@ class ThreadListPayload(BaseModel):
 class ThreadSubscribePayload(BaseModel):
     thread_id: str
     after_event_id: str | None = None
+    #: Required for elevated (non-participant) read when no same-day in-memory grant exists.
+    access_reason: str | None = None
 
 
 class ThreadUnsubscribePayload(BaseModel):
@@ -94,6 +96,17 @@ class C2S_ThreadDelete(BaseModel):
     id: str
     type: Literal["thread.delete"]
     payload: ThreadDeletePayload
+
+
+class ThreadParticipantsAddPayload(BaseModel):
+    thread_id: str
+    user: User
+
+
+class C2S_ThreadParticipantsAdd(BaseModel):
+    id: str
+    type: Literal["thread.participants.add"] = "thread.participants.add"
+    payload: ThreadParticipantsAddPayload
 
 
 class C2S_EventCreate(BaseModel):
@@ -250,6 +263,7 @@ ClientToServer = Annotated[
     | C2S_ThreadSubscribe
     | C2S_ThreadUnsubscribe
     | C2S_ThreadDelete
+    | C2S_ThreadParticipantsAdd
     | C2S_EventCreate
     | C2S_EventList
     | C2S_ThreadArtifactsList

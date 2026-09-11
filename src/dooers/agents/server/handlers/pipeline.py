@@ -198,13 +198,14 @@ class HandlerPipeline:
             # the visitor's display name/email so manager views don't show
             # raw `guest:<hex>` ids.
             enriched_user = _enrich_user_from_metadata(context.user, context.metadata)
+            agent_user = User(user_id=context.agent_id, user_name=self._assistant_name)
             thread = Thread(
                 id=thread_id,
                 agent_id=context.agent_id,
                 organization_id=context.organization_id,
                 workspace_id=context.workspace_id,
                 owner=enriched_user,
-                users=[enriched_user],
+                users=[enriched_user, agent_user] if enriched_user.user_id else [agent_user],
                 title=context.thread_title,
                 metadata=context.metadata,
                 created_at=now,
@@ -243,13 +244,14 @@ class HandlerPipeline:
             else:
                 # Auto-create thread for deterministic IDs (e.g., dispatch with pre-computed thread_id)
                 enriched_user = _enrich_user_from_metadata(context.user, context.metadata)
+                agent_user = User(user_id=context.agent_id, user_name=self._assistant_name)
                 thread = Thread(
                     id=thread_id,
                     agent_id=context.agent_id,
                     organization_id=context.organization_id,
                     workspace_id=context.workspace_id,
                     owner=enriched_user,
-                    users=[enriched_user],
+                    users=[enriched_user, agent_user] if enriched_user.user_id else [agent_user],
                     title=context.thread_title,
                     metadata=context.metadata,
                     created_at=now,
@@ -961,7 +963,47 @@ class HandlerPipeline:
                             },
                         )
 
-                if event.send_type != "thread_update":
+                elif event.send_type == "participant_add":
+                    from dooers.agents.server.thread_access import actor_id_is_participant
+
+                    thread = await self._persistence.get_thread(thread_id)
+                    if not thread:
+                        logger.warning("[agents] participant_add: thread %s not found", thread_id)
+                    else:
+                        # Lazy backfill agent on old threads before manage check.
+                        if not actor_id_is_participant(context.agent_id, thread):
+                            await self._persistence.upsert_thread_participant(
+                                thread_id,
+                                User(user_id=context.agent_id, user_name=self._assistant_name),
+                            )
+                            thread = await self._persistence.get_thread(thread_id) or thread
+                        if not actor_id_is_participant(context.agent_id, thread):
+                            logger.warning(
+                                "[agents] participant_add denied: agent %s not a participant of %s",
+                                context.agent_id,
+                                thread_id,
+                            )
+                        else:
+                            raw = event.data.get("user") or {}
+                            new_user = User(
+                                user_id=str(raw.get("user_id") or ""),
+                                user_name=raw.get("user_name"),
+                                user_email=raw.get("user_email"),
+                                identity_ids=list(raw.get("identity_ids") or []),
+                            )
+                            if new_user.user_id or new_user.user_email:
+                                await self._persistence.upsert_thread_participant(thread_id, new_user)
+                                updated = await self._persistence.get_thread(thread_id)
+                                if updated:
+                                    await self._broadcast(
+                                        context.agent_id,
+                                        {
+                                            "type": "thread.upsert",
+                                            "thread": updated,
+                                        },
+                                    )
+
+                if event.send_type not in ("thread_update", "participant_add"):
                     await self._update_thread_last_event(thread_id, event_now)
 
                 yield event

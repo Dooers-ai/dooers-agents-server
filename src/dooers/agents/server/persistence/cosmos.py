@@ -240,11 +240,14 @@ class CosmosPersistence:
         if scope == "organization":
             conditions.append("c.organization_id = @organization_id")
             params.append({"name": "@organization_id", "value": organization_id})
-            # When connected inside a workspace, stay in that context so personal
-            # threads (workspace_id='') are never listed via org elevation.
+            # Connected inside a workspace → stay in that workspace.
+            # Personal inbox (empty workspace_id) → only 1:1 threads.
             if (workspace_id or "").strip():
                 conditions.append("c.workspace_id = @workspace_id")
                 params.append({"name": "@workspace_id", "value": workspace_id})
+            else:
+                conditions.append("(NOT IS_DEFINED(c.workspace_id) OR c.workspace_id = @workspace_id)")
+                params.append({"name": "@workspace_id", "value": ""})
         elif scope == "workspace":
             conditions.append("c.organization_id = @organization_id")
             params.append({"name": "@organization_id", "value": organization_id})
