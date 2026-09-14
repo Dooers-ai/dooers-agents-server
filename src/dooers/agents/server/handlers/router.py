@@ -450,9 +450,9 @@ class Router:
                 self._workspace_id = result.workspace_id
         else:
             # Authenticated path: when an auth validator is configured, the
-            # validator auto-detects JWT vs opaque token. For JWTs the
-            # validation URL is extracted from the token itself; for opaque
-            # tokens the configured auth_validation_url is used.
+            # validator auto-detects JWT vs opaque token. Core-issued JWTs are
+            # verified by the configured core (agent_core_base_url), never by a
+            # URL taken from the token; opaque tokens use auth_validation_url.
             # The webhook response is the sole source of truth — no merging
             # with frame data.
             if self._auth_validator is not None and incoming_user is not None and incoming_user.user_id:

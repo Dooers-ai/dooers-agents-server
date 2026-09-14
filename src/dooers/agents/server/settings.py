@@ -8,11 +8,9 @@ AGENT_CORE_BASE_URL = "https://api.dooers.ai"
 AGENT_OTEL_SERVICE_URL = "https://observability.dooers.ai"
 OTEL_SERVICE_NAME = "dooers-agent"
 
-# Legacy fallback URL. All tokens (dashboard + public-chat) now carry their
-# own validation_url as a signed JWT claim, so this setting is no longer
-# required. The SDK auto-detects JWT tokens and calls the embedded URL.
-# Only set this if you need to support non-JWT opaque tokens from an
-# external system.
+# Legacy fallback URL for non-core opaque tokens only. Core-issued JWTs
+# (dashboard + public-chat) are always verified against AGENT_CORE_BASE_URL;
+# the validation_url claim inside a token is ignored for routing.
 AUTH_VALIDATION_URL: str | None = None
 AUTH_VALIDATION_TIMEOUT = 5.0  # seconds
 
