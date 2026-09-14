@@ -74,8 +74,8 @@ class AgentConfig:
     analytics_batch_size: int | None = None
     analytics_flush_interval: float | None = None
 
-    # Validation URL for public-chat opaque session tokens only. Dashboard (JWT)
-    # tokens carry their own validation URL in the token payload and bypass this.
+    # Validation URL for non-core opaque tokens only. Core-issued JWTs (dashboard
+    # and public-chat) are verified against ``agent_core_base_url`` instead.
     auth_validation_url: str | None = None
     auth_validation_timeout: float = 5.0
 

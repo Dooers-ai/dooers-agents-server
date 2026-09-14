@@ -470,7 +470,7 @@ agent_server = AgentServer(AgentConfig(
 | `database_password` | `AGENT_DATABASE_PASSWORD` |
 | `database_key` | `AGENT_DATABASE_KEY` |
 | `database_ssl` | `AGENT_DATABASE_SSL` |
-| `agent_core_base_url` | `AGENT_CORE_BASE_URL` (optional override; default `https://api.dooers.ai`) |
+| `agent_core_base_url` | `AGENT_CORE_BASE_URL` (default `https://api.dooers.ai`). Also the only core used to validate dashboard and public-chat tokens; set it when running against a local, dev or staging core. |
 | `otel_service_url` | `AGENT_OTEL_SERVICE_URL` (optional override; default `https://observability.dooers.ai`) |
 | `otel_service_name` | `OTEL_SERVICE_NAME` (optional override; default `dooers-agent`) |
 

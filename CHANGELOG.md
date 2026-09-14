@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.2] — 2026-09-14
+
+### Security
+
+- **Core tokens are validated against the configured core only.** Dashboard and
+  public-chat JWTs issued by dooers-service-core are now always sent to
+  `AGENT_CORE_BASE_URL` (default `https://api.dooers.ai`). The `validation_url`
+  claim inside a token no longer selects the destination. Upgrading is strongly
+  recommended.
+
+### Changed
+
+- Agents running against a non-production core (local, dev, staging) must set
+  `AGENT_CORE_BASE_URL` to that core. Agents deployed by the Dooers platform get
+  it injected automatically.
+- `AuthValidationClient` accepts a `core_base_url` argument.
+
 ## [0.22.1] — 2026-09-11
 
 ### Added
