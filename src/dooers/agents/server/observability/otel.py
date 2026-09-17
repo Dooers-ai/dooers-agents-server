@@ -177,6 +177,8 @@ def init_otel(
         _service_name = service_name
         logger.info("OTEL: initialized (otel_service_url=%s, service=%s)", _otel_service_url, service_name)
 
+        # Before the instrumentors: openinference must wrap our wrappers, not the other way around.
+        _install_llm_key_marking()
         _instrument_llm_clients()
     except ImportError as exc:
         logger.warning("OTEL: missing package (%s) — install observability extras", exc)
@@ -237,6 +239,110 @@ def _instrument_llm_clients() -> None:
         logger.warning("OTEL: LLM instrumentation status=%s", status)
     else:
         logger.info("OTEL: LLM instrumentation status=%s", status)
+
+
+# --- Which key paid for each LLM call -------------------------------------------------------
+#
+# Every LLM span gets ``dooers.llm.key_source`` (``dooers`` for a Dooers key, i.e. the call went
+# through the Dooers gateway and is billed to the organization's wallet; ``third_party`` for any
+# other key) and ``dooers.llm.endpoint`` (host of the client's base_url). The key itself is never
+# recorded, not even partially.
+#
+# The tag is written from a wrapper around the clients' low-level ``request``. It must be
+# installed before ``_instrument_llm_clients``: openinference wraps ``OpenAI.request`` too, and
+# only when it wraps our wrapper (not the reverse) does ours run inside its LLM span.
+
+DOOERS_KEY_PREFIX = "dk_live_"
+LLM_KEY_SOURCE_ATTRIBUTE = "dooers.llm.key_source"
+LLM_ENDPOINT_ATTRIBUTE = "dooers.llm.endpoint"
+
+# Only the LLM spans of these instrumentors are tagged. Anything else current at request time —
+# notably the turn's root span — is left alone.
+_LLM_SPAN_SCOPES = frozenset({"openinference.instrumentation.openai", "openinference.instrumentation.anthropic"})
+
+_llm_key_marking_installed = False
+
+
+def _llm_key_source(client: Any) -> str:
+    # Anthropic clients may carry the credential as ``auth_token`` (Bearer) instead of ``api_key``.
+    for name in ("api_key", "auth_token"):
+        value = getattr(client, name, None)
+        if isinstance(value, str) and value.startswith(DOOERS_KEY_PREFIX):
+            return "dooers"
+    return "third_party"
+
+
+def _mark_llm_key(client: Any) -> None:
+    """Tag the current openinference LLM span with the key kind and endpoint. Never raises."""
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+        if not span.is_recording():
+            return
+        scope = getattr(span, "instrumentation_scope", None)
+        if getattr(scope, "name", None) not in _LLM_SPAN_SCOPES:
+            return
+        span.set_attribute(LLM_KEY_SOURCE_ATTRIBUTE, _llm_key_source(client))
+        host = getattr(getattr(client, "base_url", None), "host", None)
+        if isinstance(host, str) and host:
+            span.set_attribute(LLM_ENDPOINT_ATTRIBUTE, host)
+    except Exception:
+        logger.debug("OTEL: could not tag LLM span with its key source", exc_info=True)
+
+
+def _mark_request(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+    try:
+        return wrapped(*args, **kwargs)
+    finally:
+        # After the call: a key given as a callable is only resolved while the request is prepared.
+        _mark_llm_key(instance)
+
+
+async def _mark_async_request(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+    try:
+        return await wrapped(*args, **kwargs)
+    finally:
+        _mark_llm_key(instance)
+
+
+def _mark_stream(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+    # Anthropic's messages.stream() only sends its request on __enter__, after openinference has
+    # left its span, so ``request`` alone would never see it. Tag while stream() runs inside it.
+    _mark_llm_key(getattr(instance, "_client", None))
+    return wrapped(*args, **kwargs)
+
+
+_LLM_KEY_MARKING_TARGETS = (
+    ("openai", "OpenAI.request", _mark_request),
+    ("openai", "AsyncOpenAI.request", _mark_async_request),
+    ("anthropic", "Anthropic.request", _mark_request),
+    ("anthropic", "AsyncAnthropic.request", _mark_async_request),
+    ("anthropic.resources.messages", "Messages.stream", _mark_stream),
+    ("anthropic.resources.messages", "AsyncMessages.stream", _mark_stream),
+    ("anthropic.resources.beta.messages", "Messages.stream", _mark_stream),
+    ("anthropic.resources.beta.messages", "AsyncMessages.stream", _mark_stream),
+)
+
+
+def _install_llm_key_marking() -> None:
+    """Wrap the OpenAI / Anthropic clients (both optional) once per process; never raise."""
+    global _llm_key_marking_installed
+    if _llm_key_marking_installed:
+        return
+    _llm_key_marking_installed = True
+    try:
+        from wrapt import wrap_function_wrapper
+    except ImportError:
+        logger.debug("OTEL: wrapt not installed — LLM key source will not be recorded")
+        return
+    for module, name, wrapper in _LLM_KEY_MARKING_TARGETS:
+        try:
+            wrap_function_wrapper(module, name, wrapper)
+        except ImportError:
+            pass  # that LLM SDK is not installed in this agent
+        except Exception:
+            logger.debug("OTEL: could not wrap %s.%s for LLM key source", module, name, exc_info=True)
 
 
 class _NoOpTracker:

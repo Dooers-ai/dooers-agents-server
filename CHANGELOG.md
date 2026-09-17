@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] — 2026-09-17
+
+### Added
+
+- **Which key paid for each LLM call.** Every OpenAI / Anthropic LLM span (openinference) now carries:
+  - `dooers.llm.key_source` — `dooers` when the client's key is a Dooers key (`dk_live_…`: the call
+    went through the Dooers gateway and is billed to the organization's wallet); `third_party` for
+    any other key (a provider key used directly by the agent).
+  - `dooers.llm.endpoint` — host of the client's `base_url` (e.g. `llm.dooers.ai`, `api.openai.com`).
+
+  The key itself is never recorded, not even partially. Tagging is best-effort: a failure never
+  changes or breaks the LLM call. Covers `OpenAI` / `AsyncOpenAI` / `Anthropic` / `AsyncAnthropic`,
+  including Anthropic `messages.stream()` and keys passed as `auth_token`. No agent code changes —
+  it comes with the `observability` extra.
+
+### Known limitations
+
+- Calls made through the Gemini SDK (`google-genai`) are not instrumented: they have no LLM span,
+  so they carry no key source either.
+- Other client classes (e.g. `AnthropicBedrock`, `AnthropicVertex`) are not tagged.
+
+### Changed
+
+- Dev dependency group now includes `openai` and `anthropic` (the observability tests drive the real
+  clients over a fake HTTP transport). The lockfile moves `openinference-instrumentation-anthropic`
+  to 2.1.5 — 1.x no longer imports with `anthropic` ≥ 1.0.
+
 ## [0.22.1] — 2026-09-11
 
 ### Added

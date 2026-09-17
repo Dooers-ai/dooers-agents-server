@@ -1,6 +1,6 @@
 [project]
 name = "dooers-agents-server"
-version = "0.22.1"
+version = "0.23.0"
 description = "agents-server — Python SDK for building AI agent services"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -91,6 +91,9 @@ pcu = "python scripts/pcu.py check"
 
 [dependency-groups]
 dev = [
+    # LLM client SDKs, only so the observability tests exercise the real clients.
+    "anthropic>=0.84.0",
+    "openai>=1.69.0",
     "poethepoet>=0.42.0",
     "respx>=0.23.1",
     "ruff>=0.15.2",
