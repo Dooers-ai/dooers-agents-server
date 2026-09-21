@@ -40,6 +40,7 @@ observability = [
     "openinference-instrumentation-anthropic>=0.1",
     "openinference-instrumentation-openai>=0.1",
     "openinference-instrumentation-openai-agents>=1.6",
+    "openinference-instrumentation-google-genai>=1.4",
 ]
 cosmos = [
     "azure-cosmos>=4.7.0",
@@ -92,7 +93,9 @@ pcu = "python scripts/pcu.py check"
 [dependency-groups]
 dev = [
     # LLM client SDKs, only so the observability tests exercise the real clients.
+    "aiohttp>=3.9",
     "anthropic>=0.84.0",
+    "google-genai>=2.0",
     "openai>=1.69.0",
     "poethepoet>=0.42.0",
     "respx>=0.23.1",

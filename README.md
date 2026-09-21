@@ -487,14 +487,14 @@ Tracing uses Dooers platform defaults automatically (same idea as the baked anal
 
 Each agent turn is exported as a trace with `agent.id`, `thread.id`, `event.id`, `user.id`, `org.id`, `workspace.id`, and `agent.channel` attributes. LLM calls are auto-instrumented as child spans (model + tokens) via openinference. If an instrumentor fails to load, the SDK logs a **WARNING** — turn requests may still appear without LLM metrics.
 
-Each OpenAI / Anthropic LLM span also says which kind of key paid for the call (the key itself is never recorded):
+Each LLM span also says which kind of key paid for the call, whatever the provider (the key itself is never recorded):
 
 | Attribute | Value |
 |-----------|-------|
-| `dooers.llm.key_source` | `dooers` — a Dooers key (`dk_live_…`): the call went through the Dooers gateway and is billed to the organization's wallet. `third_party` — any other key (a provider key used directly by the agent). |
-| `dooers.llm.endpoint` | Host of the client's `base_url`, e.g. `llm.dooers.ai`, `api.openai.com`. |
+| `dooers.llm.key_source` | `dooers` — a Dooers key (`dk_live_…`): the call went through the Dooers gateway and is billed to the organization's wallet. `third_party` — anything else: another provider's key, or no key at all (e.g. Vertex with Google credentials). |
+| `dooers.llm.endpoint` | Host the request went to, e.g. `llm.dooers.ai`, `api.openai.com`, `generativelanguage.googleapis.com`. |
 
-Calls through the Gemini SDK (`google-genai`) are not instrumented and carry neither attribute.
+Both come from the outgoing HTTP request (httpx, httpx2 or aiohttp), so OpenAI, Anthropic, Gemini (`google-genai`) and the Agents SDK's LiteLLM models (`litellm/gemini/…`, `litellm/anthropic/…`) are all covered. Not covered: calls with no LLM span (e.g. LiteLLM called directly, outside the Agents SDK) and clients on other transports (`requests`, gRPC, websockets).
 
 The agent never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (persisted into `service_secrets` from the plaintext `seed_secret` / `next_seed_secret` on successful `settings.seed` from dooers-service-core) for a short-lived service token (`POST /identity/service-token/agent`, audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-service-otel`. Personal 1:1 chats omit `workspaceId` and mint an org-scoped write token.
 
