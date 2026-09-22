@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] — 2026-09-21
+
+### Added
+
+- **Which key paid for each LLM call, for any provider.** Every LLM span now carries:
+  - `dooers.llm.key_source` — `dooers` when the request carries a Dooers key (`dk_live_…`: the call
+    went through the Dooers gateway and is billed to the organization's wallet); `third_party` for
+    anything else — another provider's key, or no key at all (e.g. Vertex with Google credentials).
+  - `dooers.llm.endpoint` — host the request went to (e.g. `llm.dooers.ai`, `api.openai.com`,
+    `generativelanguage.googleapis.com`).
+
+  Read from the outgoing HTTP request itself (httpx, httpx2 and aiohttp), so it does not depend on
+  the provider or client: OpenAI, Anthropic, Gemini (`google-genai`) and the Agents SDK's LiteLLM
+  models (`litellm/gemini/…`, `litellm/anthropic/…`) are all tagged. The key is looked for in
+  `Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, `api-key` and `?key=`. Only LLM spans are
+  tagged (`openinference.span.kind = LLM`, from any instrumentor); a tool's HTTP call is not.
+  The key itself is never recorded, not even partially. Tagging is best-effort: a failure never
+  changes or breaks the LLM call. No agent code changes — it comes with the `observability` extra.
+- `google-genai` calls are now instrumented (`openinference-instrumentation-google-genai`, in the
+  `observability` extra): they get LLM spans with model and tokens like OpenAI and Anthropic.
+
+### Fixed
+
+- An instrumentor whose client library is not installed was reported `active` (openinference only
+  logs a DependencyConflict and patches nothing); it is now reported `skipped`.
+
+### Known limitations
+
+- A call with no LLM span has nothing to tag: LiteLLM called directly (outside the Agents SDK) and
+  other frameworks without an openinference instrumentor here.
+- Clients that do not send over httpx / httpx2 / aiohttp are not tagged: `requests` (e.g.
+  `google-genai` on Vertex with mTLS client certificates, boto3), gRPC, websockets (Realtime).
+
+### Changed
+
+- Dev dependency group now includes `openai`, `anthropic`, `google-genai` and `aiohttp` (the
+  observability tests drive the real clients over a fake HTTP transport or a local server). The
+  lockfile moves `openinference-instrumentation-anthropic` to 2.1.5 — 1.x no longer imports with
+  `anthropic` ≥ 1.0.
+
 ## [0.22.1] — 2026-09-11
 
 ### Added
