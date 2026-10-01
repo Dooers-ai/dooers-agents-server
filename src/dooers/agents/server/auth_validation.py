@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -36,18 +37,35 @@ def _is_allowed_validation_url(url: str) -> bool:
     return any(host == suffix or host.endswith("." + suffix) for suffix in _ALLOWED_VALIDATION_HOST_SUFFIXES)
 
 
-def _extract_jwt_validation_url(token: str) -> str | None:
-    """Base64-decode the JWT payload and return the validation_url claim, or None."""
+def _jwt_payload(token: str) -> dict[str, Any] | None:
     try:
         parts = token.split(".")
         if len(parts) != 3:
             return None
-        # Add padding
         payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return payload.get("validation_url")
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _extract_jwt_validation_url(token: str) -> str | None:
+    """Base64-decode the JWT payload and return the validation_url claim, or None."""
+    payload = _jwt_payload(token)
+    if payload is None:
+        return None
+    value = payload.get("validation_url")
+    return value if isinstance(value, str) else None
+
+
+def _local_runtime_matches(token: str) -> bool:
+    """A process started by `dooers run` only accepts the handshake minted for its runtime."""
+    expected = os.environ.get("DOOERS_RUNTIME_ID", "").strip()
+    if not expected:
+        return True
+    payload = _jwt_payload(token)
+    actual = payload.get("runtime_id") if payload else None
+    return actual == expected
 
 
 @dataclass
@@ -127,6 +145,9 @@ class AuthValidationClient:
 
         if not body.get("valid"):
             return AuthValidationResult(valid=False, reason=body.get("reason"))
+
+        if not _local_runtime_matches(auth_token):
+            return AuthValidationResult(valid=False, reason="runtime_mismatch")
 
         # Parse the nested ConnectionContext response.
         try:
