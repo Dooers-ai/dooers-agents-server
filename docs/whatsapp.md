@@ -104,6 +104,13 @@ async def handler(incoming, send, memory, analytics, settings):
     wa = WhatsAppClient(instance_id)
 
     templates = await wa.templates.list(status="APPROVED")
+    # Template REJECTED (ou APPROVED/PAUSED): edita no mesmo nome/idioma.
+    # O status volta para PENDING até a Meta aprovar de novo.
+    updated = await wa.templates.update(
+        template_id="123",
+        category="UTILITY",
+        components=[{"type": "BODY", "text": "Olá {{1}}, seu pedido {{2}} saiu para entrega."}],
+    )
     result = await wa.templates.send(
         to_e164="+5511999999999",
         name="hello",

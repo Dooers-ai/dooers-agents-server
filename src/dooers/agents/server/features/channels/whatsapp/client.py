@@ -84,6 +84,29 @@ class WhatsappToolsClient:
         )
         return data if isinstance(data, dict) else {"raw": data}
 
+    async def update_template(
+        self,
+        agent_id: str,
+        instance_id: str,
+        template_id: str,
+        *,
+        components: list[dict[str, Any]],
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit an existing template. Name and language stay the same."""
+        payload: dict[str, Any] = {
+            "instance_id": instance_id,
+            "agent_id": agent_id,
+            "template_id": template_id,
+            "components": components,
+        }
+        if category:
+            payload["category"] = category
+        data = await self._transport.signed_post(
+            agent_id, instance_id, "/agent/templates/update", payload
+        )
+        return data if isinstance(data, dict) else {"raw": data}
+
     async def send_message(self, agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._transport.send_message_payload(agent_id, payload)
 
