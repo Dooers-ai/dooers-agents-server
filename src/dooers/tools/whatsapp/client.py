@@ -121,6 +121,35 @@ class _TemplatesAPI:
         )
         return data if isinstance(data, dict) else {"raw": data}
 
+    async def update(
+        self,
+        template_id: str,
+        instance_id: str | None = None,
+        *,
+        components: list[dict[str, Any]],
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit an existing template. Name and language stay the same.
+
+        Use for REJECTED templates or when Meta asked for different content.
+        Send the full components array. Meta reviews the template again and the
+        status usually becomes PENDING until it is approved. PENDING templates
+        cannot be edited.
+        """
+        iid = _resolve_instance_id(self._default_instance_id, instance_id)
+        payload: dict[str, Any] = {
+            "instance_id": iid,
+            "agent_id": self._agent_id,
+            "template_id": template_id,
+            "components": components,
+        }
+        if category:
+            payload["category"] = category
+        data = await self._transport.signed_post(
+            self._agent_id, iid, "/agent/templates/update", payload
+        )
+        return data if isinstance(data, dict) else {"raw": data}
+
     async def send(
         self,
         instance_id: str | None = None,

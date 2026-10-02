@@ -79,6 +79,43 @@ async def test_whatsapp_client_instances_list_ids_only(tools_base):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_whatsapp_client_template_update(tools_base):
+    route = respx.post(f"{TOOLS_BASE}/api/v1/agent/templates/update").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "tmpl-1",
+                "name": "aviso_supervisor",
+                "status": "PENDING",
+                "category": "UTILITY",
+                "language": "pt_BR",
+                "components": [{"type": "BODY", "text": "novo"}],
+            },
+        )
+    )
+    persistence = FakePersistence(_secrets())
+    tokens = bind_handler_context(persistence=persistence, agent_id=AGENT_ID)
+    try:
+        wa = WhatsAppClient(INSTANCE_ID)
+        result = await wa.templates.update(
+            "tmpl-1",
+            category="UTILITY",
+            components=[{"type": "BODY", "text": "novo"}],
+        )
+    finally:
+        reset_handler_context(tokens)
+
+    assert result["status"] == "PENDING"
+    assert route.called
+    body = json.loads(route.calls[0].request.content.decode("utf-8"))
+    assert body["template_id"] == "tmpl-1"
+    assert body["category"] == "UTILITY"
+    assert body["components"][0]["text"] == "novo"
+    assert "name" not in body
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_whatsapp_client_instances_get(tools_base):
     respx.post(GET_INSTANCE_URL).mock(
         return_value=httpx.Response(
