@@ -8,6 +8,7 @@ from typing import Any
 
 from dooers.agents.server.config import OnSettingsUpdated
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
+from dooers.agents.server.persistence.sanitize import without_nul
 from dooers.agents.server.protocol.models import (
     Run,
     Thread,
@@ -385,7 +386,7 @@ class CosmosPersistence:
         container = self._get_container("events")
         content_json = None
         if event.content:
-            content_json = [self._serialize_content_part(p) for p in event.content]
+            content_json = without_nul([self._serialize_content_part(p) for p in event.content])
 
         doc = {
             "id": event.id,
@@ -399,7 +400,7 @@ class CosmosPersistence:
             "user_name": event.user.user_name,
             "user_email": event.user.user_email,
             "content": content_json,
-            "data": event.data,
+            "data": without_nul(event.data),
             "created_at": event.created_at.isoformat(),
         }
         await container.create_item(doc)

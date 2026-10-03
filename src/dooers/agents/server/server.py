@@ -416,7 +416,12 @@ class AgentServer:
                 await router.route(websocket, frame)
         except Exception as e:
             name = type(e).__name__
-            if name in ("WebSocketDisconnect", "ConnectionClosedOK", "ConnectionClosedError"):
+            if name in (
+                "WebSocketDisconnect",
+                "WebSocketDisconnected",
+                "ConnectionClosedOK",
+                "ConnectionClosedError",
+            ):
                 logger.debug("websocket client disconnected (%s)", name)
             else:
                 _agents.warning(

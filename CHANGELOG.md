@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.2] — 2026-10-03
+
+### Fixed
+
+- Postgres (and Cosmos) `create_event` now strips U+0000 from event `content`/`data` before
+  write. Sandbox tool output can carry a NUL; Postgres `text`/`jsonb` reject it and the turn
+  aborted with `UntranslatableCharacterError`. Existing events without a NUL are unchanged.
+- Treat Starlette `WebSocketDisconnected` as a normal client drop (same as `WebSocketDisconnect`),
+  so a reconnect no longer logs a handle-loop error.
+
 ## [0.23.0] — 2026-09-21
 
 ### Added
