@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.3] — 2026-10-03
+
+### Fixed
+
+- `thread.subscribe` now snapshots the **latest** events (up to 500) and sets
+  `has_more` when older history remains. The previous oldest-first `limit=100`
+  hid the end of long turns (coding tool storms) and broke `event.list` /
+  `loadOlderEvents`, which only pages backward. Reconnect with `after_event_id`
+  still fills only the gap.
+
 ## [0.23.2] — 2026-10-03
 
 ### Fixed
