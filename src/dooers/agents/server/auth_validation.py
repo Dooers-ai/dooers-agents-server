@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -48,6 +49,16 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _local_runtime_matches(token: str) -> bool:
+    """A process started by `dooers run` only accepts the handshake minted for its runtime."""
+    expected = os.environ.get("DOOERS_RUNTIME_ID", "").strip()
+    if not expected:
+        return True
+    payload = _decode_jwt_payload(token)
+    actual = payload.get("runtime_id") if payload else None
+    return actual == expected
 
 
 @dataclass
@@ -146,6 +157,9 @@ class AuthValidationClient:
 
         if not body.get("valid"):
             return AuthValidationResult(valid=False, reason=body.get("reason"))
+
+        if not _local_runtime_matches(auth_token):
+            return AuthValidationResult(valid=False, reason="runtime_mismatch")
 
         # Parse the nested ConnectionContext response.
         try:

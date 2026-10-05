@@ -41,6 +41,7 @@ _llm_instrumentation: dict[str, LlmInstrumentorStatus] = {
     "anthropic": "pending",
     "openai": "pending",
     "openai_agents": "pending",
+    "google_genai": "pending",
 }
 
 
@@ -177,6 +178,8 @@ def init_otel(
         _service_name = service_name
         logger.info("OTEL: initialized (otel_service_url=%s, service=%s)", _otel_service_url, service_name)
 
+        # Before the instrumentors: for Anthropic's stream helper, openinference must wrap ours.
+        _install_llm_key_marking()
         _instrument_llm_clients()
     except ImportError as exc:
         logger.warning("OTEL: missing package (%s) — install observability extras", exc)
@@ -188,8 +191,14 @@ def _try_instrument(name: str, import_path: str, class_name: str) -> None:
     """Activate one openinference instrumentor; never raise into the agent path."""
     try:
         module = __import__(import_path, fromlist=[class_name])
-        instrumentor_cls = getattr(module, class_name)
-        instrumentor_cls().instrument()
+        instrumentor = getattr(module, class_name)()
+        instrumentor.instrument()
+        if getattr(instrumentor, "is_instrumented_by_opentelemetry", True) is False:
+            # The instrumentor is installed but the client it targets is not (it only logs a
+            # DependencyConflict and patches nothing): same outcome as a missing package.
+            _llm_instrumentation[name] = "skipped"
+            logger.debug("OTEL: %s instrumentation skipped (client library not installed)", name)
+            return
         _llm_instrumentation[name] = "active"
         logger.info("OTEL: %s instrumentation active", name)
     except ImportError as exc:
@@ -227,16 +236,180 @@ def _instrument_llm_clients() -> None:
         "openinference.instrumentation.openai_agents",
         "OpenAIAgentsInstrumentor",
     )
+    _try_instrument(
+        "google_genai",
+        "openinference.instrumentation.google_genai",
+        "GoogleGenAIInstrumentor",
+    )
     status = llm_instrumentation_status()
     if all(v == "skipped" for v in status.values()):
         logger.warning(
-            "OTEL: no LLM client instrumentors active (openai/anthropic/openai-agents not installed). "
+            "OTEL: no LLM client instrumentors active (openai/anthropic/openai-agents/google-genai not installed). "
             "Turn traces will export without model/token child spans."
         )
     elif any(v == "failed" for v in status.values()):
         logger.warning("OTEL: LLM instrumentation status=%s", status)
     else:
         logger.info("OTEL: LLM instrumentation status=%s", status)
+
+
+# --- Which key paid for each LLM call -------------------------------------------------------
+#
+# Every LLM span gets ``dooers.llm.key_source`` (``dooers`` for a Dooers key, i.e. the call went
+# through the Dooers gateway and is billed to the organization's wallet; ``third_party`` for any
+# other credential, or none) and ``dooers.llm.endpoint`` (host the request went to). The key
+# itself is never recorded, not even partially.
+#
+# The tag is written where every provider's request passes: the HTTP client. OpenAI, Anthropic,
+# google-genai and LiteLLM (which the Agents SDK uses for Gemini and Claude) all send through
+# httpx (openai >= 3 / anthropic >= 1 through its fork, httpx2) or, for google-genai's async
+# calls, aiohttp — so hooks on those cover every provider without knowing any of their clients.
+# They tag the span current at send time only when it is an LLM span
+# (``openinference.span.kind == "LLM"``, whatever instrumentor opened it).
+
+DOOERS_KEY_PREFIX = "dk_live_"
+LLM_KEY_SOURCE_ATTRIBUTE = "dooers.llm.key_source"
+LLM_ENDPOINT_ATTRIBUTE = "dooers.llm.endpoint"
+
+_SPAN_KIND_ATTRIBUTE = "openinference.span.kind"
+# Where providers put the credential: OpenAI-style bearer, Anthropic, Gemini API, Azure OpenAI.
+_CREDENTIAL_HEADERS = ("x-api-key", "x-goog-api-key", "api-key")
+
+_llm_key_marking_installed = False
+
+
+def _is_dooers_key(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().startswith(DOOERS_KEY_PREFIX)
+
+
+def _key_source(headers: Any, key_param: Any = None) -> str:
+    """``dooers`` if any credential on a request is a Dooers key; ``third_party`` otherwise."""
+    pairs = headers.items() if hasattr(headers, "items") else (headers or ())
+    lowered = {str(name).lower(): value for name, value in pairs}
+    candidates = [lowered.get(name) for name in _CREDENTIAL_HEADERS]
+    scheme, _, token = str(lowered.get("authorization") or "").partition(" ")
+    if scheme.lower() == "bearer":
+        candidates.append(token)
+    # The Gemini API also takes the key as ``?key=``.
+    candidates.append(key_param)
+    return "dooers" if any(_is_dooers_key(value) for value in candidates) else "third_party"
+
+
+def _query_key(params: Any) -> Any:
+    """The ``key`` query parameter out of aiohttp's ``params`` (mapping, pairs or string)."""
+    if params is None:
+        return None
+    if isinstance(params, str):
+        from urllib.parse import parse_qs
+
+        return next(iter(parse_qs(params).get("key", [])), None)
+    if hasattr(params, "get"):
+        return params.get("key")
+    return next((value for name, value in params if name == "key"), None)
+
+
+def _llm_key_source(client: Any) -> str:
+    # Anthropic clients may carry the credential as ``auth_token`` (Bearer) instead of ``api_key``.
+    for name in ("api_key", "auth_token"):
+        if _is_dooers_key(getattr(client, name, None)):
+            return "dooers"
+    return "third_party"
+
+
+def _current_llm_span() -> Any:
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return None
+    attributes = getattr(span, "attributes", None) or {}
+    return span if attributes.get(_SPAN_KIND_ATTRIBUTE) == "LLM" else None
+
+
+def _tag_llm_span(key_source: str, host: Any) -> None:
+    span = _current_llm_span()
+    if span is None:
+        return
+    span.set_attribute(LLM_KEY_SOURCE_ATTRIBUTE, key_source)
+    if isinstance(host, str) and host:
+        span.set_attribute(LLM_ENDPOINT_ATTRIBUTE, host)
+
+
+def _mark_send(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+    # Serves Client.send and AsyncClient.send alike: the tag goes on before the request leaves,
+    # so a call that fails still says which key it used. Never raises into the agent's call.
+    try:
+        request = args[0] if args else kwargs.get("request")
+        if request is not None:
+            _tag_llm_span(_key_source(request.headers, request.url.params.get("key")), request.url.host)
+    except Exception:
+        logger.debug("OTEL: could not tag LLM span with its key source", exc_info=True)
+    return wrapped(*args, **kwargs)
+
+
+def _mark_aiohttp_request(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+    # ClientSession._request(method, url, **kwargs): what every aiohttp verb goes through. The
+    # session's default headers count too — a client may set its key once on the session.
+    try:
+        from yarl import URL
+
+        url = URL(str(args[1] if len(args) > 1 else kwargs.get("str_or_url")))
+        headers = [*getattr(instance, "headers", {}).items(), *_header_pairs(kwargs.get("headers"))]
+        key_param = _query_key(kwargs.get("params")) or url.query.get("key")
+        _tag_llm_span(_key_source(headers, key_param), url.host)
+    except Exception:
+        logger.debug("OTEL: could not tag LLM span with its key source", exc_info=True)
+    return wrapped(*args, **kwargs)
+
+
+def _header_pairs(headers: Any) -> list[tuple[Any, Any]]:
+    if not headers:
+        return []
+    return list(headers.items()) if hasattr(headers, "items") else list(headers)
+
+
+def _mark_stream(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+    # Anthropic's messages.stream() only sends its request on __enter__, after openinference has
+    # left its span, so the send hook sees the turn's span there. Tag while stream() runs inside it.
+    try:
+        client = getattr(instance, "_client", None)
+        _tag_llm_span(_llm_key_source(client), getattr(getattr(client, "base_url", None), "host", None))
+    except Exception:
+        logger.debug("OTEL: could not tag LLM span with its key source", exc_info=True)
+    return wrapped(*args, **kwargs)
+
+
+_LLM_KEY_MARKING_TARGETS = (
+    ("httpx", "Client.send", _mark_send),
+    ("httpx", "AsyncClient.send", _mark_send),
+    ("httpx2", "Client.send", _mark_send),
+    ("httpx2", "AsyncClient.send", _mark_send),
+    ("aiohttp", "ClientSession._request", _mark_aiohttp_request),
+    ("anthropic.resources.messages", "Messages.stream", _mark_stream),
+    ("anthropic.resources.messages", "AsyncMessages.stream", _mark_stream),
+    ("anthropic.resources.beta.messages", "Messages.stream", _mark_stream),
+    ("anthropic.resources.beta.messages", "AsyncMessages.stream", _mark_stream),
+)
+
+
+def _install_llm_key_marking() -> None:
+    """Wrap the HTTP clients (and Anthropic's stream helper) once per process; never raise."""
+    global _llm_key_marking_installed
+    if _llm_key_marking_installed:
+        return
+    _llm_key_marking_installed = True
+    try:
+        from wrapt import wrap_function_wrapper
+    except ImportError:
+        logger.debug("OTEL: wrapt not installed — LLM key source will not be recorded")
+        return
+    for module, name, wrapper in _LLM_KEY_MARKING_TARGETS:
+        try:
+            wrap_function_wrapper(module, name, wrapper)
+        except ImportError:
+            pass  # that client library is not installed in this agent
+        except Exception:
+            logger.debug("OTEL: could not wrap %s.%s for LLM key source", module, name, exc_info=True)
 
 
 class _NoOpTracker:

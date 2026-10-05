@@ -10,6 +10,7 @@ import asyncpg
 
 from dooers.agents.server.config import OnSettingsUpdated
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
+from dooers.agents.server.persistence.sanitize import without_nul
 from dooers.agents.server.protocol.models import (
     Run,
     Thread,
@@ -638,9 +639,11 @@ class PostgresPersistence:
         table = f"{self._prefix}events"
         content_json = None
         if event.content:
-            content_json = json.dumps([self._serialize_content_part(p) for p in event.content])
+            content_json = json.dumps(
+                without_nul([self._serialize_content_part(p) for p in event.content])
+            )
 
-        data_json = json.dumps(event.data) if event.data else None
+        data_json = json.dumps(without_nul(event.data)) if event.data else None
 
         async with self._pool.acquire() as conn:
             await conn.execute(

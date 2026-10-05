@@ -298,6 +298,7 @@ class ThreadSnapshotPayload(BaseModel):
     thread: Thread
     events: list[ThreadEvent]
     runs: list[Run] | None = None
+    has_more: bool = False
 
 
 class EventAppendPayload(BaseModel):

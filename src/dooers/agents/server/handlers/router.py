@@ -108,6 +108,10 @@ def _generate_id() -> str:
     return str(uuid.uuid4())
 
 
+# Latest page on first subscribe. Older events come from event.list / loadOlderEvents.
+_THREAD_SNAPSHOT_LIMIT = 500
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -659,11 +663,30 @@ class Router:
                         len(reason),
                     )
 
-        events = await self._persistence.get_events(
-            thread_id,
-            after_event_id=frame.payload.after_event_id,
-            limit=100,
-        )
+        after_event_id = frame.payload.after_event_id
+        if after_event_id:
+            # Gap recovery after reconnect: only events newer than the last one
+            # the client already has. Do not rewrite older-page pagination.
+            events = await self._persistence.get_events(
+                thread_id,
+                after_event_id=after_event_id,
+                limit=_THREAD_SNAPSHOT_LIMIT,
+                order="asc",
+            )
+            has_more = False
+        else:
+            # Chat opens at the tail. Oldest-first + limit hid the rest of long
+            # coding turns (tool.call/result storms) and broke load-older, which
+            # only pages backward.
+            events = await self._persistence.get_events(
+                thread_id,
+                limit=_THREAD_SNAPSHOT_LIMIT + 1,
+                order="desc",
+            )
+            has_more = len(events) > _THREAD_SNAPSHOT_LIMIT
+            if has_more:
+                events = events[:_THREAD_SNAPSHOT_LIMIT]
+            events.reverse()
         events = await self._hydrate_events_for_client(events, thread)
 
         self._subscribed_threads.add(thread_id)
@@ -672,7 +695,7 @@ class Router:
         thread_out = attach_thread_access(thread, user, connection_workspace_id=self._workspace_id)
         snapshot = S2C_ThreadSnapshot(
             id=_generate_id(),
-            payload=ThreadSnapshotPayload(thread=thread_out, events=events),
+            payload=ThreadSnapshotPayload(thread=thread_out, events=events, has_more=has_more),
         )
         await self._send(ws, snapshot)
 
