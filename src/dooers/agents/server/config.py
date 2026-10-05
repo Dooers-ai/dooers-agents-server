@@ -75,7 +75,8 @@ class AgentConfig:
     analytics_flush_interval: float | None = None
 
     # Validation URL for non-core opaque tokens only. Core-issued JWTs (dashboard
-    # and public-chat) are verified against ``agent_core_base_url`` instead.
+    # and public-chat) are verified against ``agent_core_base_url`` when set,
+    # otherwise against a known Dooers core.
     auth_validation_url: str | None = None
     auth_validation_timeout: float = 5.0
 

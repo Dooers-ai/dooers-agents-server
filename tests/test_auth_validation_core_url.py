@@ -7,7 +7,11 @@ import httpx
 import pytest
 import respx
 
-from dooers.agents.server.auth_validation import AuthValidationClient
+from dooers.agents.server.auth_validation import (
+    DASHBOARD_VALIDATION_PATH,
+    PUBLIC_CHAT_VALIDATION_PATH,
+    AuthValidationClient,
+)
 
 CORE = "https://core.test"
 LEGACY = "https://legacy.test/validate-connection"
@@ -145,3 +149,96 @@ async def test_invalid_core_base_url_fails_closed_without_network(bad_base):
 def test_default_core_base_url_is_platform_core():
     client = AuthValidationClient(url=LEGACY)
     assert client.core_base_url == "https://api.dooers.ai"
+
+
+# --- Backwards compatibility when AGENT_CORE_BASE_URL is not configured -------------------------
+
+DEV_CORE = "https://api-v2.dev.dooers.ai"
+PROD_DASHBOARD_URL = f"https://api.dooers.ai{DASHBOARD_VALIDATION_PATH}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("core_origin", ["https://api.dooers.ai", DEV_CORE, "https://api.dev.dooers.ai"])
+async def test_unconfigured_client_keeps_using_a_known_dooers_core_from_the_token(core_origin):
+    """Agents without AGENT_CORE_BASE_URL (e.g. `dooers run` against dev) keep working."""
+    client = AuthValidationClient(url=LEGACY)
+    expected = f"{core_origin}{DASHBOARD_VALIDATION_PATH}"
+    token = _jwt({"iss": "dooers-service-core", "worker_id": "agent-1", "validation_url": expected})
+    try:
+        with respx.mock() as mock:
+            route = mock.post(expected).mock(return_value=httpx.Response(200, json=_dashboard_context()))
+            result = await _validate(client, token)
+        assert route.called
+        assert result.valid is True
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_client_keeps_public_chat_on_a_known_dev_core():
+    client = AuthValidationClient(url=LEGACY)
+    expected = f"{DEV_CORE}{PUBLIC_CHAT_VALIDATION_PATH}"
+    token = _jwt({"iss": "dooers-service-core", "session_token": "s", "agent_id": "agent-1", "validation_url": expected})
+    try:
+        with respx.mock() as mock:
+            route = mock.post(expected).mock(return_value=httpx.Response(200, json={"valid": False, "reason": "expired"}))
+            await _validate(client, token)
+        assert route.called
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "claimed",
+    [
+        "https://elsewhere.test/api/v2/identity/validate-agent-session",
+        "http://api.dooers.ai/api/v2/identity/validate-agent-session",
+        "https://api.dooers.ai:8443/api/v2/identity/validate-agent-session",
+        "https://api.dooers.ai/some/other/path",
+        "https://user@api.dooers.ai/api/v2/identity/validate-agent-session",
+    ],
+)
+async def test_unconfigured_client_sends_anything_else_to_the_default_core(claimed):
+    client = AuthValidationClient(url=LEGACY)
+    token = _jwt({"iss": "dooers-service-core", "worker_id": "agent-1", "validation_url": claimed})
+    try:
+        with respx.mock(assert_all_called=False) as mock:
+            default = mock.post(PROD_DASHBOARD_URL).mock(return_value=httpx.Response(200, json={"valid": False, "reason": "invalid_token"}))
+            other = mock.route().mock(return_value=httpx.Response(200, json=_dashboard_context()))
+            result = await _validate(client, token)
+        assert default.called
+        assert not other.called
+        assert result.valid is False
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_configured_core_wins_over_another_known_core_in_the_token():
+    client = AuthValidationClient(url=LEGACY, core_base_url="https://api.dooers.ai")
+    token = _jwt({"iss": "dooers-service-core", "worker_id": "agent-1", "validation_url": f"{DEV_CORE}{DASHBOARD_VALIDATION_PATH}"})
+    try:
+        with respx.mock(assert_all_called=False) as mock:
+            prod = mock.post(PROD_DASHBOARD_URL).mock(return_value=httpx.Response(200, json={"valid": False}))
+            dev = mock.post(f"{DEV_CORE}{DASHBOARD_VALIDATION_PATH}").mock(return_value=httpx.Response(200, json=_dashboard_context()))
+            await _validate(client, token)
+        assert prod.called
+        assert not dev.called
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_runtime_binding_still_applies(monkeypatch):
+    monkeypatch.setenv("DOOERS_RUNTIME_ID", "rt-1")
+    client = AuthValidationClient(url=LEGACY, core_base_url=CORE)
+    token = _jwt({"iss": "dooers-service-core", "worker_id": "agent-1", "runtime_id": "rt-other"})
+    try:
+        with respx.mock() as mock:
+            mock.post(DASHBOARD_URL).mock(return_value=httpx.Response(200, json=_dashboard_context()))
+            result = await _validate(client, token)
+        assert result.valid is False
+        assert result.reason == "runtime_mismatch"
+    finally:
+        await client.close()

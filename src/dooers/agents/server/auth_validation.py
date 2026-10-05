@@ -19,6 +19,18 @@ CORE_ISSUER = "dooers-service-core"
 DASHBOARD_VALIDATION_PATH = "/api/v2/identity/validate-agent-session"
 PUBLIC_CHAT_VALIDATION_PATH = "/api/v2/public-chats/validate-session"
 
+# Dooers core deployments. Used only when the operator did not set
+# AGENT_CORE_BASE_URL, so agents that never configured it keep validating
+# against the core that issued the token (production or development). Exact
+# origins only: no wildcard, no other dooers.ai host.
+KNOWN_CORE_ORIGINS = frozenset(
+    {
+        "https://api.dooers.ai",
+        "https://api-v2.dev.dooers.ai",
+        "https://api.dev.dooers.ai",
+    }
+)
+
 
 def _normalize_core_base_url(value: str) -> str | None:
     """Return the core base URL without a trailing slash, or None when unusable."""
@@ -32,6 +44,22 @@ def _normalize_core_base_url(value: str) -> str | None:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return None
     return base
+
+
+def _known_core_validation_url(claimed: object, path: str) -> str | None:
+    """Return the claimed URL only if it is exactly ``<known core origin><path>``."""
+    if not isinstance(claimed, str):
+        return None
+    try:
+        parsed = urlparse(claimed)
+    except ValueError:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.params:
+        return None
+    origin = f"{parsed.scheme}://{parsed.netloc}".lower()
+    if origin not in KNOWN_CORE_ORIGINS or parsed.path != path:
+        return None
+    return f"{origin}{path}"
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
@@ -79,17 +107,21 @@ class AuthValidationResult:
 
 
 class AuthValidationClient:
-    def __init__(self, url: str, timeout: float = 5.0, core_base_url: str = AGENT_CORE_BASE_URL):
+    def __init__(self, url: str, timeout: float = 5.0, core_base_url: str | None = None):
         """
         Args:
             url: operator-configured validation URL for opaque (non-core) tokens.
             timeout: HTTP timeout in seconds.
-            core_base_url: base URL of dooers-service-core. Core-issued JWTs are
-                always verified here, whatever ``validation_url`` the token claims.
+            core_base_url: base URL of dooers-service-core. When set, core-issued
+                JWTs are verified only there, whatever ``validation_url`` the token
+                claims. When ``None``, the platform default is used, and a token
+                whose ``validation_url`` is exactly a known Dooers core endpoint
+                keeps validating against that core.
         """
         self._url = url
         self._timeout = timeout
-        self._core_base_url = _normalize_core_base_url(core_base_url)
+        self._core_configured = core_base_url is not None
+        self._core_base_url = _normalize_core_base_url(core_base_url if core_base_url is not None else AGENT_CORE_BASE_URL)
         self._client = httpx.AsyncClient(timeout=timeout)
 
     @property
@@ -109,9 +141,10 @@ class AuthValidationClient:
         workspace_id: str = "",
         user_id: str | None = None,
     ) -> AuthValidationResult:
-        # Core-issued JWTs are verified by the configured core only. The token's
-        # own validation_url claim is unsigned from the SDK's point of view, so it
-        # must never choose the destination.
+        # Core-issued JWTs are verified by a core the SDK trusts. The token's own
+        # validation_url claim is unsigned from the SDK's point of view, so it may
+        # only select among known Dooers cores (when the operator configured none),
+        # never an arbitrary host.
         if auth_token:
             payload = _decode_jwt_payload(auth_token)
             if payload is not None and payload.get("iss") == CORE_ISSUER:
@@ -121,8 +154,10 @@ class AuthValidationClient:
                 path = PUBLIC_CHAT_VALIDATION_PATH if "session_token" in payload else DASHBOARD_VALIDATION_PATH
                 validation_url = f"{self._core_base_url}{path}"
                 claimed = payload.get("validation_url")
+                if not self._core_configured:
+                    validation_url = _known_core_validation_url(claimed, path) or validation_url
                 if isinstance(claimed, str) and claimed != validation_url:
-                    logger.warning("[auth-validation] token validation_url differs from configured core; using configured core")
+                    logger.warning("[auth-validation] token validation_url is not a trusted core; using %s", validation_url)
                 return await self._validate_jwt(auth_token=auth_token, validation_url=validation_url)
 
         # Fallback: opaque session tokens use the configured auth_validation_url.

@@ -9,8 +9,8 @@ AGENT_OTEL_SERVICE_URL = "https://observability.dooers.ai"
 OTEL_SERVICE_NAME = "dooers-agent"
 
 # Legacy fallback URL for non-core opaque tokens only. Core-issued JWTs
-# (dashboard + public-chat) are always verified against AGENT_CORE_BASE_URL;
-# the validation_url claim inside a token is ignored for routing.
+# (dashboard + public-chat) are verified against AGENT_CORE_BASE_URL when set,
+# otherwise against a known Dooers core (see auth_validation.KNOWN_CORE_ORIGINS).
 AUTH_VALIDATION_URL: str | None = None
 AUTH_VALIDATION_TIMEOUT = 5.0  # seconds
 
