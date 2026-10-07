@@ -1,6 +1,6 @@
 [project]
 name = "dooers-agents-server"
-version = "0.23.3"
+version = "0.23.4"
 description = "agents-server — Python SDK for building AI agent services"
 readme = "README.md"
 requires-python = ">=3.11"

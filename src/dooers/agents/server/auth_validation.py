@@ -11,51 +11,72 @@ from urllib.parse import urlparse
 import httpx
 
 from dooers.agents.server.protocol.models import ConnectionContext, User
+from dooers.agents.server.settings import AGENT_CORE_BASE_URL
 
 logger = logging.getLogger("agents")
 
-# Temporary defense: the validation_url claim is unsigned from the SDK's
-# perspective, so an honest client could be tricked into forging a token that
-# points the SDK at an attacker-controlled host. Allow only https URLs whose
-# host is dooers.ai or a subdomain. A real fix (signature verification or a
-# trusted authoritative resolver) is coming with the upcoming auth rework.
-_ALLOWED_VALIDATION_HOST_SUFFIXES = ("dooers.ai",)
+CORE_ISSUER = "dooers-service-core"
+DASHBOARD_VALIDATION_PATH = "/api/v2/identity/validate-agent-session"
+PUBLIC_CHAT_VALIDATION_PATH = "/api/v2/public-chats/validate-session"
+
+# Dooers core deployments. Used only when the operator did not set
+# AGENT_CORE_BASE_URL, so agents that never configured it keep validating
+# against the core that issued the token (production or development). Exact
+# origins only: no wildcard, no other dooers.ai host.
+KNOWN_CORE_ORIGINS = frozenset(
+    {
+        "https://api.dooers.ai",
+        "https://api-v2.dev.dooers.ai",
+        "https://api.dev.dooers.ai",
+    }
+)
 
 
-def _is_allowed_validation_url(url: str) -> bool:
+def _normalize_core_base_url(value: str) -> str | None:
+    """Return the core base URL without a trailing slash, or None when unusable."""
+    base = (value or "").strip().rstrip("/")
+    if not base:
+        return None
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(base)
     except ValueError:
-        return False
-    if parsed.scheme != "https":
-        return False
-    if parsed.username or parsed.password:
-        return False
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return False
-    return any(host == suffix or host.endswith("." + suffix) for suffix in _ALLOWED_VALIDATION_HOST_SUFFIXES)
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    return base
 
 
-def _jwt_payload(token: str) -> dict[str, Any] | None:
+def _known_core_validation_url(claimed: object, path: str) -> str | None:
+    """Return the claimed URL only if it is exactly ``<known core origin><path>``."""
+    if not isinstance(claimed, str):
+        return None
+    try:
+        parsed = urlparse(claimed)
+    except ValueError:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.params:
+        return None
+    origin = f"{parsed.scheme}://{parsed.netloc}".lower()
+    if origin not in KNOWN_CORE_ORIGINS or parsed.path != path:
+        return None
+    return f"{origin}{path}"
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
+    """Decode a JWT payload WITHOUT verifying it.
+
+    The result is untrusted. It is only used to pick which fixed core endpoint
+    verifies the token; it must never decide where the token is sent.
+    """
     try:
         parts = token.split(".")
         if len(parts) != 3:
             return None
-        payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
-
-
-def _extract_jwt_validation_url(token: str) -> str | None:
-    """Base64-decode the JWT payload and return the validation_url claim, or None."""
-    payload = _jwt_payload(token)
-    if payload is None:
-        return None
-    value = payload.get("validation_url")
-    return value if isinstance(value, str) else None
+    return payload if isinstance(payload, dict) else None
 
 
 def _local_runtime_matches(token: str) -> bool:
@@ -63,7 +84,7 @@ def _local_runtime_matches(token: str) -> bool:
     expected = os.environ.get("DOOERS_RUNTIME_ID", "").strip()
     if not expected:
         return True
-    payload = _jwt_payload(token)
+    payload = _decode_jwt_payload(token)
     actual = payload.get("runtime_id") if payload else None
     return actual == expected
 
@@ -86,10 +107,26 @@ class AuthValidationResult:
 
 
 class AuthValidationClient:
-    def __init__(self, url: str, timeout: float = 5.0):
+    def __init__(self, url: str, timeout: float = 5.0, core_base_url: str | None = None):
+        """
+        Args:
+            url: operator-configured validation URL for opaque (non-core) tokens.
+            timeout: HTTP timeout in seconds.
+            core_base_url: base URL of dooers-service-core. When set, core-issued
+                JWTs are verified only there, whatever ``validation_url`` the token
+                claims. When ``None``, the platform default is used, and a token
+                whose ``validation_url`` is exactly a known Dooers core endpoint
+                keeps validating against that core.
+        """
         self._url = url
         self._timeout = timeout
+        self._core_configured = core_base_url is not None
+        self._core_base_url = _normalize_core_base_url(core_base_url if core_base_url is not None else AGENT_CORE_BASE_URL)
         self._client = httpx.AsyncClient(timeout=timeout)
+
+    @property
+    def core_base_url(self) -> str | None:
+        return self._core_base_url
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -104,14 +141,24 @@ class AuthValidationClient:
         workspace_id: str = "",
         user_id: str | None = None,
     ) -> AuthValidationResult:
-        # JWT tokens carry their own validation_url claim — use it when present.
+        # Core-issued JWTs are verified by a core the SDK trusts. The token's own
+        # validation_url claim is unsigned from the SDK's point of view, so it may
+        # only select among known Dooers cores (when the operator configured none),
+        # never an arbitrary host.
         if auth_token:
-            jwt_url = _extract_jwt_validation_url(auth_token)
-            if jwt_url:
-                if not _is_allowed_validation_url(jwt_url):
-                    logger.warning("[auth-validation] rejected validation_url host: %s", jwt_url)
-                    return AuthValidationResult(valid=False, reason="validation_url_not_allowed")
-                return await self._validate_jwt(auth_token=auth_token, validation_url=jwt_url)
+            payload = _decode_jwt_payload(auth_token)
+            if payload is not None and payload.get("iss") == CORE_ISSUER:
+                if self._core_base_url is None:
+                    logger.error("[auth-validation] core base URL is not configured; rejecting core token")
+                    return AuthValidationResult(valid=False, reason="core_base_url_not_configured")
+                path = PUBLIC_CHAT_VALIDATION_PATH if "session_token" in payload else DASHBOARD_VALIDATION_PATH
+                validation_url = f"{self._core_base_url}{path}"
+                claimed = payload.get("validation_url")
+                if not self._core_configured:
+                    validation_url = _known_core_validation_url(claimed, path) or validation_url
+                if isinstance(claimed, str) and claimed != validation_url:
+                    logger.warning("[auth-validation] token validation_url is not a trusted core; using %s", validation_url)
+                return await self._validate_jwt(auth_token=auth_token, validation_url=validation_url)
 
         # Fallback: opaque session tokens use the configured auth_validation_url.
         return await self._validate_legacy(
@@ -124,7 +171,7 @@ class AuthValidationClient:
         )
 
     async def _validate_jwt(self, *, auth_token: str, validation_url: str) -> AuthValidationResult:
-        """Validate a dashboard JWT by POSTing it to the URL embedded in the token."""
+        """Validate a core-issued JWT by POSTing it to a fixed endpoint on the configured core."""
         try:
             response = await self._client.post(validation_url, json={"token": auth_token})
         except httpx.HTTPError as e:

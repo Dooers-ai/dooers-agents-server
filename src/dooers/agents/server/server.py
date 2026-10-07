@@ -305,6 +305,8 @@ class AgentServer:
         self._auth_validator = AuthValidationClient(
             url=self._config.auth_validation_url or "",
             timeout=self._config.auth_validation_timeout,
+            # None → platform default plus known Dooers cores (see auth_validation).
+            core_base_url=self._config.agent_core_base_url or None,
         )
 
         if self._config.guest_thread_cleanup_interval_seconds > 0:
