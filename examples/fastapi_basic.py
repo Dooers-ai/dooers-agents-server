@@ -13,6 +13,9 @@ agent_server = AgentServer(
 
 
 async def echo_agent(incoming, send, memory, analytics, settings):
+    # Hard-cut example: stay silent when a human queue owns the thread.
+    if getattr(incoming.context, "queue", None) not in (None, "agent"):
+        return
     yield send.run_start(agent_id="echo")
     yield send.text(f"You said: {incoming.message}")
     yield send.update_thread(title=incoming.message[:60])

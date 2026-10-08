@@ -18,4 +18,5 @@ class AgentContext:
     user: User = field(default_factory=lambda: User(user_id=""))
     thread_title: str | None = field(default=None)
     thread_created_at: datetime | None = field(default=None)
+    queue: str | None = None
     chat_context: ChatContext | None = None

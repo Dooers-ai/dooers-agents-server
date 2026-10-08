@@ -36,6 +36,7 @@ class ConnectPayload(BaseModel):
 class ThreadListPayload(BaseModel):
     cursor: str | None = None
     limit: int | None = None
+    queue: str | None = None
 
 
 class ThreadSubscribePayload(BaseModel):
@@ -62,6 +63,8 @@ class EventCreatePayload(BaseModel):
     event: EventCreateEventPayload
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
+    #: Used only when ``thread_id`` is omitted (new thread). Ignored otherwise.
+    queue: str | None = None
 
 
 class C2S_Connect(BaseModel):
@@ -107,6 +110,17 @@ class C2S_ThreadParticipantsAdd(BaseModel):
     id: str
     type: Literal["thread.participants.add"] = "thread.participants.add"
     payload: ThreadParticipantsAddPayload
+
+
+class ThreadUpdatePayload(BaseModel):
+    thread_id: str
+    queue: str | None = None
+
+
+class C2S_ThreadUpdate(BaseModel):
+    id: str
+    type: Literal["thread.update"] = "thread.update"
+    payload: ThreadUpdatePayload
 
 
 class C2S_EventCreate(BaseModel):
@@ -264,6 +278,7 @@ ClientToServer = Annotated[
     | C2S_ThreadUnsubscribe
     | C2S_ThreadDelete
     | C2S_ThreadParticipantsAdd
+    | C2S_ThreadUpdate
     | C2S_EventCreate
     | C2S_EventList
     | C2S_ThreadArtifactsList

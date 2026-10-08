@@ -83,6 +83,7 @@ class AuthValidationResult:
     agent_owner_user_id: str | None = None
     can_configure_settings: bool = False
     organization_plan: str = "free"
+    workspace_queues: list[str] = field(default_factory=list)
 
 
 class AuthValidationClient:
@@ -128,7 +129,11 @@ class AuthValidationClient:
         try:
             response = await self._client.post(validation_url, json={"token": auth_token})
         except httpx.HTTPError as e:
-            logger.warning("[auth-validation] JWT transport error: %s", e)
+            logger.warning(
+                "[auth-validation] JWT transport error: %s: %s",
+                type(e).__name__,
+                e or repr(e),
+            )
             return AuthValidationResult(valid=False, reason="transport_error")
 
         if response.status_code >= 500:
@@ -183,6 +188,7 @@ class AuthValidationClient:
             agent_owner_user_id=ctx.agent.owner_user_id,
             can_configure_settings=ctx.agent.can_configure_settings,
             organization_plan=ctx.organization.plan,
+            workspace_queues=list(ctx.workspace.queues or []),
         )
 
     async def _validate_legacy(
@@ -263,6 +269,7 @@ class AuthValidationClient:
                 agent_owner_user_id=ctx.agent.owner_user_id,
                 can_configure_settings=ctx.agent.can_configure_settings,
                 organization_plan=ctx.organization.plan,
+                workspace_queues=list(ctx.workspace.queues or []),
             )
 
         # Legacy flat response shape (backwards compatibility).

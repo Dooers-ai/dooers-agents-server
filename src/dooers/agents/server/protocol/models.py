@@ -15,6 +15,7 @@ EventType = Literal[
     "form",
     "form.response",
     "chart",
+    "thread.update",
 ]
 ChartType = Literal["bar", "bar_horizontal", "stacked_bar", "line", "area", "pie", "donut", "scatter"]
 RunStatus = Literal["running", "succeeded", "failed", "canceled"]
@@ -424,6 +425,8 @@ class ConnectionOrganization(BaseModel):
 class ConnectionWorkspace(BaseModel):
     id: str
     role: str = "member"
+    #: Catalog slugs from Core for this workspace (empty when personal / older Core).
+    queues: list[str] = []
 
 
 class ConnectionAgent(BaseModel):
@@ -499,6 +502,7 @@ class Thread(BaseModel):
     users: list[User] = []
     title: str | None = None
     metadata: dict[str, Any] | None = None
+    queue: str | None = None
     created_at: datetime
     updated_at: datetime
     last_event_at: datetime
