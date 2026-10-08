@@ -28,7 +28,13 @@ from dooers.agents.server.protocol.frames import (
     S2C_ThreadUpsert,
     ThreadUpsertPayload,
 )
-from dooers.agents.server.protocol.models import Thread, ThreadEvent, User, WireC2S_ContentPart
+from dooers.agents.server.protocol.models import (
+    Thread,
+    ThreadEvent,
+    User,
+    WireC2S_ContentPart,
+    WorkspaceQueueCatalog,
+)
 from dooers.agents.server.protocol.parser import parse_frame, serialize_frame
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.repository import Repository
@@ -47,6 +53,11 @@ from dooers.agents.server.upload_store import UploadStore
 logger = logging.getLogger(__name__)
 # Same namespace the Router uses, so handle-loop diagnostics show up in apps that tune `agents`.
 _agents = logging.getLogger("agents")
+
+
+def _catalog_slugs(queues: list[WorkspaceQueueCatalog] | None) -> list[str] | None:
+    slugs = [queue.slug for queue in (queues or []) if queue.slug]
+    return slugs or None
 
 
 def _build_persistence(config: AgentConfig) -> Persistence:
@@ -448,6 +459,7 @@ class AgentServer:
         content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
         channel: str = "dooers-platform",
         channel_meta: dict[str, Any] | None = None,
+        queues: list[WorkspaceQueueCatalog] | None = None,
     ) -> DispatchStream:
         persistence = await self._ensure_initialized()
 
@@ -477,6 +489,8 @@ class AgentServer:
             thread_id=thread_id,
             thread_title=thread_title,
             content=content,
+            queues=list(queues or []),
+            allowed_queues=_catalog_slugs(queues),
         )
 
         result = await pipeline.setup(context)
@@ -514,6 +528,7 @@ class AgentServer:
         content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
         channel: str = "dooers-platform",
         channel_meta: dict[str, Any] | None = None,
+        queues: list[WorkspaceQueueCatalog] | None = None,
         *,
         actor: str = "assistant",
         author: str | None = None,
@@ -558,6 +573,8 @@ class AgentServer:
             data=data,
             persist_actor=actor,
             persist_author=author,
+            queues=list(queues or []),
+            allowed_queues=_catalog_slugs(queues),
         )
         result = await pipeline.setup(context)
         resolved_user = user or User(user_id="")

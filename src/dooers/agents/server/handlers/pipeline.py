@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -20,6 +20,7 @@ from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.persistence.base import Persistence
+from dooers.agents.server.thread_queue import queue_for_create, resolve_thread_queue
 from dooers.agents.server.protocol.models import (
     AudioPart,
     ChatContext,
@@ -27,6 +28,7 @@ from dooers.agents.server.protocol.models import (
     ContentPart,
     DocumentPart,
     ImagePart,
+    WorkspaceQueueCatalog,
     Run,
     TextPart,
     Thread,
@@ -142,6 +144,12 @@ class HandlerContext:
     event_type: str = "message"
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
+    #: Requested queue on ``event.create`` for a new thread (None = unqueued).
+    queue: str | None = None
+    #: Catalog slugs from Core for this workspace connection (empty = no catalog).
+    allowed_queues: list[str] | None = None
+    #: Handshake queue roster copied onto ``incoming.context.queues``.
+    queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
     #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
     persist_actor: str = "user"
     persist_author: str | None = None
@@ -208,6 +216,11 @@ class HandlerPipeline:
                 users=[enriched_user, agent_user] if enriched_user.user_id else [agent_user],
                 title=context.thread_title,
                 metadata=context.metadata,
+                queue=queue_for_create(
+                    context.queue,
+                    workspace_id=context.workspace_id,
+                    allowed=context.allowed_queues,
+                ),
                 created_at=now,
                 updated_at=now,
                 last_event_at=now,
@@ -254,6 +267,11 @@ class HandlerPipeline:
                     users=[enriched_user, agent_user] if enriched_user.user_id else [agent_user],
                     title=context.thread_title,
                     metadata=context.metadata,
+                    queue=queue_for_create(
+                        context.queue,
+                        workspace_id=context.workspace_id,
+                        allowed=context.allowed_queues,
+                    ),
                     created_at=now,
                     updated_at=now,
                     last_event_at=now,
@@ -349,6 +367,8 @@ class HandlerPipeline:
             user=context.user,
             thread_title=thread.title,
             thread_created_at=thread.created_at,
+            queue=thread.queue,
+            queues=list(context.queues),
             chat_context=context.chat_context,
         )
         incoming = AgentIncoming(
@@ -953,6 +973,46 @@ class HandlerPipeline:
                     if thread:
                         if event.data.get("title") is not None:
                             thread.title = event.data["title"]
+                        previous_queue = thread.queue
+                        if "queue" in event.data:
+                            try:
+                                thread.queue = resolve_thread_queue(
+                                    event.data.get("queue"),
+                                    workspace_id=thread.workspace_id,
+                                    allowed=context.allowed_queues,
+                                )
+                            except ValueError:
+                                logger.warning(
+                                    "[agents] thread_update rejected queue=%s thread=%s",
+                                    event.data.get("queue"),
+                                    thread_id,
+                                )
+                            else:
+                                if thread.queue != previous_queue:
+                                    queue_event = ThreadEvent(
+                                        id=_generate_id(),
+                                        thread_id=thread_id,
+                                        run_id=current_run_id,
+                                        type="thread.update",
+                                        actor="system",
+                                        author=self._assistant_name,
+                                        user=User(user_id=context.agent_id, user_name=self._assistant_name),
+                                        data={
+                                            "field": "queue",
+                                            "from": previous_queue,
+                                            "to": thread.queue,
+                                        },
+                                        created_at=event_now,
+                                    )
+                                    await self._persistence.create_event(queue_event)
+                                    await self._broadcast(
+                                        context.agent_id,
+                                        {
+                                            "type": "event.append",
+                                            "thread_id": thread_id,
+                                            "events": [queue_event],
+                                        },
+                                    )
                         thread.updated_at = event_now
                         await self._persistence.update_thread(thread)
                         await self._broadcast(

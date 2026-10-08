@@ -287,10 +287,15 @@ class AgentSend:
             data={"event_id": event_id, "content": content},
         )
 
-    def update_thread(self, *, title: str | None = None) -> AgentEvent:
+    def update_thread(self, *, title: str | None = None, queue: str | None = None) -> AgentEvent:
+        data: dict[str, Any] = {}
+        if title is not None:
+            data["title"] = title
+        if queue is not None:
+            data["queue"] = queue
         return AgentEvent(
             send_type="thread_update",
-            data={"title": title},
+            data=data,
         )
 
     def add_participant(

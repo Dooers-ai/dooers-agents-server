@@ -11,6 +11,7 @@ from dooers.agents.server.protocol.frames import (
     ThreadUpsertPayload,
 )
 from dooers.agents.server.protocol.models import Actor, ContentPart, Thread, ThreadEvent, User
+from dooers.agents.server.thread_queue import queue_for_create
 from dooers.agents.server.protocol.parser import serialize_frame
 
 if TYPE_CHECKING:
@@ -102,6 +103,7 @@ class BroadcastManager:
         organization_id: str = "",
         workspace_id: str = "",
         title: str | None = None,
+        queue: str | None = None,
     ) -> tuple[Thread, int]:
         now = _now()
         owner = user or User(user_id="")
@@ -113,6 +115,7 @@ class BroadcastManager:
             owner=owner,
             users=[owner] if owner.user_id else [],
             title=title,
+            queue=queue_for_create(queue, workspace_id=workspace_id),
             created_at=now,
             updated_at=now,
             last_event_at=now,

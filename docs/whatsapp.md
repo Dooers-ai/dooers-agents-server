@@ -40,6 +40,8 @@ Quando um usuário envia mensagem no WhatsApp, a plataforma encaminha o evento p
 
 Implementação de referência: [`examples/fastapi_whatsapp_webhook.py`](../examples/fastapi_whatsapp_webhook.py).
 
+O payload HMAC traz o mesmo snapshot de filas do handshake (`queues` + `queue_catalog`). Passe para `dispatch(..., queues=parse_inbound_queue_catalog(body))` para preencher `incoming.context.queues` / `members_for_queue()`. WhatsApp **não** abre WebSocket de sessão.
+
 **Importante:** cada conversa WhatsApp abre ou continua uma **thread própria** no console — não confunda com threads de teste no Studio.
 
 ### Mensagens `fromMe` (humano no app / self-chat)

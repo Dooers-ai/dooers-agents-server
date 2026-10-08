@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Actor = Literal["user", "assistant", "system", "tool"]
 EventType = Literal[
@@ -15,6 +15,7 @@ EventType = Literal[
     "form",
     "form.response",
     "chart",
+    "thread.update",
 ]
 ChartType = Literal["bar", "bar_horizontal", "stacked_bar", "line", "area", "pie", "donut", "scatter"]
 RunStatus = Literal["running", "succeeded", "failed", "canceled"]
@@ -421,9 +422,51 @@ class ConnectionOrganization(BaseModel):
     plan: str = "free"
 
 
+class WorkspaceQueueMember(BaseModel):
+    """Person linked to a workspace queue — roster for agent transfer."""
+
+    user_id: str
+    user_name: str | None = None
+    user_email: str | None = None
+    identity_ids: list[str] = []
+    claims: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceQueueCatalog(BaseModel):
+    slug: str
+    name: str = ""
+    members: list[WorkspaceQueueMember] = Field(default_factory=list)
+
+
 class ConnectionWorkspace(BaseModel):
     id: str
     role: str = "member"
+    #: Slugs only — kept as ``list[str]`` so older SDKs can still parse connect.
+    queues: list[str] = Field(default_factory=list)
+    #: Roster (members/claims). Ignored by SDKs that only know ``queues``.
+    queue_catalog: list[WorkspaceQueueCatalog] = Field(default_factory=list)
+
+    @field_validator("queues", mode="before")
+    @classmethod
+    def coerce_queue_slugs(cls, value: object) -> object:
+        if not value:
+            return []
+        if not isinstance(value, list):
+            return []
+        slugs: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                slugs.append(item)
+            elif isinstance(item, dict):
+                slug = item.get("slug")
+                if isinstance(slug, str) and slug.strip():
+                    slugs.append(slug)
+        return slugs
+
+    def catalog(self) -> list[WorkspaceQueueCatalog]:
+        if self.queue_catalog:
+            return list(self.queue_catalog)
+        return [WorkspaceQueueCatalog(slug=slug, name=slug) for slug in self.queues]
 
 
 class ConnectionAgent(BaseModel):
@@ -499,6 +542,7 @@ class Thread(BaseModel):
     users: list[User] = []
     title: str | None = None
     metadata: dict[str, Any] | None = None
+    queue: str | None = None
     created_at: datetime
     updated_at: datetime
     last_event_at: datetime
