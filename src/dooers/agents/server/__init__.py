@@ -58,6 +58,8 @@ from dooers.agents.server.protocol.models import (
     Thread,
     ThreadEvent,
     User,
+    WorkspaceQueueCatalog,
+    WorkspaceQueueMember,
     WireC2S_AudioPart,
     WireC2S_ContactPart,
     WireC2S_ContentPart,
@@ -101,6 +103,8 @@ __all__ = [
     "Repository",
     # Protocol models
     "User",
+    "WorkspaceQueueCatalog",
+    "WorkspaceQueueMember",
     "ChatContext",
     "ContentPart",
     "TextPart",

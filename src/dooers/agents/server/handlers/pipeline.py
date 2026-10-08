@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -28,6 +28,7 @@ from dooers.agents.server.protocol.models import (
     ContentPart,
     DocumentPart,
     ImagePart,
+    WorkspaceQueueCatalog,
     Run,
     TextPart,
     Thread,
@@ -143,10 +144,12 @@ class HandlerContext:
     event_type: str = "message"
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
-    #: Requested queue on ``event.create`` for a new thread (None = workspace default).
+    #: Requested queue on ``event.create`` for a new thread (None = unqueued).
     queue: str | None = None
     #: Catalog slugs from Core for this workspace connection (empty = no catalog).
     allowed_queues: list[str] | None = None
+    #: Handshake queue roster copied onto ``incoming.context.queues``.
+    queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
     #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
     persist_actor: str = "user"
     persist_author: str | None = None
@@ -365,6 +368,7 @@ class HandlerPipeline:
             thread_title=thread.title,
             thread_created_at=thread.created_at,
             queue=thread.queue,
+            queues=list(context.queues),
             chat_context=context.chat_context,
         )
         incoming = AgentIncoming(

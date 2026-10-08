@@ -131,6 +131,9 @@ incoming.context.organization_id     # str
 incoming.context.workspace_id        # str
 incoming.context.thread_title        # str | None
 incoming.context.thread_created_at   # datetime | None
+incoming.context.queue               # str | None — current thread queue slug
+incoming.context.queues              # list[WorkspaceQueueCatalog] — handshake roster
+incoming.context.members_for_queue() # members of the current queue (or pass a slug)
 
 # User (incoming.context.user)
 incoming.context.user.user_id             # str

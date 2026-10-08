@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from dooers.agents.server.protocol.models import ConnectionContext, User
+from dooers.agents.server.protocol.models import ConnectionContext, User, WorkspaceQueueCatalog
 
 logger = logging.getLogger("agents")
 
@@ -83,7 +83,7 @@ class AuthValidationResult:
     agent_owner_user_id: str | None = None
     can_configure_settings: bool = False
     organization_plan: str = "free"
-    workspace_queues: list[str] = field(default_factory=list)
+    workspace_queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
 
 
 class AuthValidationClient:

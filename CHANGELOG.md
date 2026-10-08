@@ -11,8 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Workspace **thread queues**: optional `Thread.queue` slug (null when unset).
   `thread.list` accepts `queue`. New `thread.update` frame (write/manage)
-  and `send.update_thread(queue=...)`. Core catalog slugs arrive on connect as
-  `workspace.queues` and unknown slugs are rejected when the catalog is present.
+  and `send.update_thread(queue=...)`. Core catalog arrives on connect as
+  `workspace.queues` (`slug`, `name`, `members` with `user_id` / name / email /
+  `identity_ids` / primitive SSO `claims`) and is copied to
+  `incoming.context.queues` each turn. Unknown slugs are rejected when the
+  catalog is present.
 - Timeline event `thread.update` when the queue changes.
 - `event.create` accepts optional `queue` for a new thread. Omit it (or pass
   null) to leave the thread unqueued — including in a workspace.

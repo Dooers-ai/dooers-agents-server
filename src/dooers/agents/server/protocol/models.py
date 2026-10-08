@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Actor = Literal["user", "assistant", "system", "tool"]
 EventType = Literal[
@@ -422,11 +422,42 @@ class ConnectionOrganization(BaseModel):
     plan: str = "free"
 
 
+class WorkspaceQueueMember(BaseModel):
+    """Person linked to a workspace queue — roster for agent transfer."""
+
+    user_id: str
+    user_name: str | None = None
+    user_email: str | None = None
+    identity_ids: list[str] = []
+    claims: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceQueueCatalog(BaseModel):
+    slug: str
+    name: str = ""
+    members: list[WorkspaceQueueMember] = Field(default_factory=list)
+
+
 class ConnectionWorkspace(BaseModel):
     id: str
     role: str = "member"
-    #: Catalog slugs from Core for this workspace (empty when personal / older Core).
-    queues: list[str] = []
+    #: Handshake catalog (empty when personal / older Core).
+    queues: list[WorkspaceQueueCatalog] = Field(default_factory=list)
+
+    @field_validator("queues", mode="before")
+    @classmethod
+    def coerce_queue_catalog(cls, value: object) -> object:
+        if not value:
+            return []
+        if not isinstance(value, list):
+            return []
+        coerced: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                coerced.append({"slug": item, "name": item, "members": []})
+            else:
+                coerced.append(item)
+        return coerced
 
 
 class ConnectionAgent(BaseModel):

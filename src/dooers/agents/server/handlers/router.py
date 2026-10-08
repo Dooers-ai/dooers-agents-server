@@ -67,7 +67,7 @@ from dooers.agents.server.protocol.frames import (
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
 )
-from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
+from dooers.agents.server.protocol.models import Thread, ThreadEvent, User, WorkspaceQueueCatalog
 from dooers.agents.server.protocol.parser import serialize_frame
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.thread_access import (
@@ -108,6 +108,11 @@ def _can_access_thread(user: User, thread: Thread, *, connection_workspace_id: s
 
 def _generate_id() -> str:
     return str(uuid.uuid4())
+
+
+def _queue_catalog_slugs(queues: list[WorkspaceQueueCatalog]) -> list[str] | None:
+    slugs = [queue.slug for queue in queues if queue.slug]
+    return slugs or None
 
 
 # Latest page on first subscribe. Older events come from event.list / loadOlderEvents.
@@ -195,7 +200,7 @@ class Router:
         self._user: User | None = None
         self._organization_id: str = ""
         self._workspace_id: str = ""
-        self._workspace_queues: list[str] = []
+        self._workspace_queues: list[WorkspaceQueueCatalog] = []
         self._agent_owner_user_id: str | None = None
         self._can_configure_settings: bool = False
         self._subscribed_threads: set[str] = set()
@@ -936,7 +941,7 @@ class Router:
             new_queue = resolve_thread_queue(
                 frame.payload.queue,
                 workspace_id=thread.workspace_id,
-                allowed=self._workspace_queues or None,
+                allowed=_queue_catalog_slugs(self._workspace_queues),
             )
         except ValueError as exc:
             await self._send_ack(
@@ -1066,7 +1071,8 @@ class Router:
             metadata=raw_metadata if not frame.payload.thread_id else None,
             chat_context=frame.payload.chat_context,
             queue=frame.payload.queue if not frame.payload.thread_id else None,
-            allowed_queues=self._workspace_queues or None,
+            allowed_queues=_queue_catalog_slugs(self._workspace_queues),
+            queues=list(self._workspace_queues),
         )
 
         try:
