@@ -1,3 +1,4 @@
+from dooers.agents.server.features.channels.whatsapp.inbound_catalog import parse_inbound_queue_catalog
 from dooers.agents.server.handlers.context import AgentContext
 from dooers.agents.server.protocol.models import ConnectionWorkspace, WorkspaceQueueCatalog
 
@@ -64,3 +65,25 @@ def test_members_for_queue_uses_current_thread_slug():
     assert context.members_for_queue("missing") == []
     context.queue = None
     assert context.members_for_queue() == []
+
+
+def test_parse_inbound_queue_catalog_reads_hmac_payload():
+    queues = parse_inbound_queue_catalog(
+        {
+            "queues": ["human"],
+            "queue_catalog": [
+                {
+                    "slug": "human",
+                    "name": "Recepção",
+                    "members": [{"user_id": "u1", "user_name": "Ana"}],
+                }
+            ],
+        }
+    )
+    assert queues[0].name == "Recepção"
+    assert queues[0].members[0].user_id == "u1"
+
+
+def test_parse_inbound_queue_catalog_empty_when_missing():
+    assert parse_inbound_queue_catalog({}) == []
+    assert parse_inbound_queue_catalog(None) == []
