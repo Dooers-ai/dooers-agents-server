@@ -441,23 +441,32 @@ class WorkspaceQueueCatalog(BaseModel):
 class ConnectionWorkspace(BaseModel):
     id: str
     role: str = "member"
-    #: Handshake catalog (empty when personal / older Core).
-    queues: list[WorkspaceQueueCatalog] = Field(default_factory=list)
+    #: Slugs only — kept as ``list[str]`` so older SDKs can still parse connect.
+    queues: list[str] = Field(default_factory=list)
+    #: Roster (members/claims). Ignored by SDKs that only know ``queues``.
+    queue_catalog: list[WorkspaceQueueCatalog] = Field(default_factory=list)
 
     @field_validator("queues", mode="before")
     @classmethod
-    def coerce_queue_catalog(cls, value: object) -> object:
+    def coerce_queue_slugs(cls, value: object) -> object:
         if not value:
             return []
         if not isinstance(value, list):
             return []
-        coerced: list[object] = []
+        slugs: list[str] = []
         for item in value:
-            if isinstance(item, str):
-                coerced.append({"slug": item, "name": item, "members": []})
-            else:
-                coerced.append(item)
-        return coerced
+            if isinstance(item, str) and item.strip():
+                slugs.append(item)
+            elif isinstance(item, dict):
+                slug = item.get("slug")
+                if isinstance(slug, str) and slug.strip():
+                    slugs.append(slug)
+        return slugs
+
+    def catalog(self) -> list[WorkspaceQueueCatalog]:
+        if self.queue_catalog:
+            return list(self.queue_catalog)
+        return [WorkspaceQueueCatalog(slug=slug, name=slug) for slug in self.queues]
 
 
 class ConnectionAgent(BaseModel):

@@ -158,7 +158,10 @@ class AuthValidationClient:
         try:
             ctx = ConnectionContext(**body)
         except Exception:
-            logger.warning("[auth-validation] failed to parse ConnectionContext from JWT response")
+            logger.warning(
+                "[auth-validation] failed to parse ConnectionContext from JWT response",
+                exc_info=True,
+            )
             return AuthValidationResult(valid=False, reason="bad_context")
 
         user = User(
@@ -188,7 +191,7 @@ class AuthValidationClient:
             agent_owner_user_id=ctx.agent.owner_user_id,
             can_configure_settings=ctx.agent.can_configure_settings,
             organization_plan=ctx.organization.plan,
-            workspace_queues=list(ctx.workspace.queues or []),
+            workspace_queues=ctx.workspace.catalog(),
         )
 
     async def _validate_legacy(
@@ -240,7 +243,10 @@ class AuthValidationClient:
             try:
                 ctx = ConnectionContext(**body)
             except Exception:
-                logger.warning("[auth-validation] failed to parse ConnectionContext from legacy response")
+                logger.warning(
+                    "[auth-validation] failed to parse ConnectionContext from legacy response",
+                    exc_info=True,
+                )
                 return AuthValidationResult(valid=False, reason="bad_context")
 
             user = User(
@@ -269,7 +275,7 @@ class AuthValidationClient:
                 agent_owner_user_id=ctx.agent.owner_user_id,
                 can_configure_settings=ctx.agent.can_configure_settings,
                 organization_plan=ctx.organization.plan,
-                workspace_queues=list(ctx.workspace.queues or []),
+                workspace_queues=ctx.workspace.catalog(),
             )
 
         # Legacy flat response shape (backwards compatibility).
