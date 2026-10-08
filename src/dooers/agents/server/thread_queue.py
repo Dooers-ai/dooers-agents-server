@@ -5,17 +5,12 @@ from __future__ import annotations
 import re
 
 QUEUE_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-DEFAULT_WORKSPACE_QUEUE = "agent"
 #: ``thread.list`` sentinel — not a valid slug; means ``queue IS NULL``.
 UNQUEUED_LIST_FILTER = "__none__"
 
 
 class QueueValidationError(ValueError):
     """Invalid queue on create or ``thread.update``."""
-
-
-def default_thread_queue(workspace_id: str | None) -> str | None:
-    return DEFAULT_WORKSPACE_QUEUE if (workspace_id or "").strip() else None
 
 
 def is_unqueued_list_filter(value: str | None) -> bool:
@@ -30,13 +25,11 @@ def queue_for_create(
 ) -> str | None:
     """Queue to persist on a newly created thread.
 
-    ``requested is None`` uses the workspace default (``agent``) or ``None``
-    on personal threads. An explicit value is validated like ``thread.update``.
+    ``requested is None`` leaves the thread unqueued. An explicit value is
+    validated like ``thread.update``.
     """
     if requested is None:
-        requested = default_thread_queue(workspace_id)
-        if requested is None:
-            return None
+        return None
     return resolve_thread_queue(requested, workspace_id=workspace_id, allowed=allowed)
 
 
@@ -58,13 +51,13 @@ def resolve_thread_queue(
     *,
     workspace_id: str | None,
     allowed: list[str] | tuple[str, ...] | None = None,
-    allow_clear: bool = False,
 ) -> str | None:
     """Validate a queue write.
 
     Personal threads (empty workspace) cannot have a queue.
-    Workspace threads require a slug. When Core sent a catalog, the slug
-    must be in that list; otherwise any well-formed slug is accepted.
+    Workspace threads may be unqueued (``None``). When Core sent a catalog,
+    a non-null slug must be in that list; otherwise any well-formed slug is
+    accepted.
     """
     slug = normalize_queue_slug(value)
     workspace = (workspace_id or "").strip()
@@ -73,9 +66,7 @@ def resolve_thread_queue(
             raise QueueValidationError("queue not allowed on personal threads")
         return None
     if slug is None:
-        if allow_clear:
-            return None
-        raise QueueValidationError("workspace threads require a queue")
+        return None
     if allowed:
         if slug not in set(allowed):
             raise QueueValidationError("unknown queue")

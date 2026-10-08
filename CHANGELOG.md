@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Workspace **thread queues**: `Thread.queue` slug, default `agent` on workspace
-  threads. `thread.list` accepts `queue`. New `thread.update` frame (write/manage)
+- Workspace **thread queues**: optional `Thread.queue` slug (null when unset).
+  `thread.list` accepts `queue`. New `thread.update` frame (write/manage)
   and `send.update_thread(queue=...)`. Core catalog slugs arrive on connect as
   `workspace.queues` and unknown slugs are rejected when the catalog is present.
 - Timeline event `thread.update` when the queue changes.
-- `event.create` accepts optional `queue` for a new thread. `repository.create_thread`
-  and dispatch auto-create use the same default (`agent` in a workspace).
+- `event.create` accepts optional `queue` for a new thread. Omit it (or pass
+  null) to leave the thread unqueued — including in a workspace.
 - `thread.list` `queue=__none__` returns threads with no queue.
 
 ## [0.23.3] — 2026-10-03
