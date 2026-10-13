@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.1] — 2026-10-13
+
+### Fixed
+
+- `thread.upsert` now includes each connection's own `access` (`read` / `write` /
+  `manage`). Live creates, queue moves, and participant changes no longer omit
+  access or copy the actor's flags onto every socket. List and snapshot were
+  already per connection; the wire shape is unchanged.
+
 ## [0.24.0] — 2026-10-08
 
 ### Added

@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from dooers.agents.server.auth_validation import AuthValidationClient
-from dooers.agents.server.broadcast import BroadcastManager
+from dooers.agents.server.broadcast import BroadcastManager, broadcast_thread_upsert
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
@@ -25,8 +25,6 @@ from dooers.agents.server.protocol.frames import (
     RunUpsertPayload,
     S2C_EventAppend,
     S2C_RunUpsert,
-    S2C_ThreadUpsert,
-    ThreadUpsertPayload,
 )
 from dooers.agents.server.protocol.models import (
     Thread,
@@ -683,10 +681,8 @@ class AgentServer:
         payload_type = payload.get("type")
 
         if payload_type == "thread.upsert":
-            frame = S2C_ThreadUpsert(
-                id=str(uuid.uuid4()),
-                payload=ThreadUpsertPayload(thread=payload["thread"]),
-            )
+            await broadcast_thread_upsert(self._registry, agent_id, payload["thread"])
+            return
         elif payload_type == "event.append":
             evs = payload["events"]
             tid = payload["thread_id"]

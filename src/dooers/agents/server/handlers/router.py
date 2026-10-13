@@ -13,13 +13,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 import bcrypt
 
 from dooers.agents.server.auth_validation import AuthValidationClient
+from dooers.agents.server.broadcast import broadcast_thread_upsert
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.agents.server.features.settings.models import SettingsFieldVisibility
 from dooers.agents.server.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
 from dooers.agents.server.persistence.base import Persistence
-from dooers.agents.server.thread_queue import QueueValidationError
 from dooers.agents.server.protocol.frames import (
     AckPayload,
     C2S_AnalyticsSubscribe,
@@ -40,8 +40,8 @@ from dooers.agents.server.protocol.frames import (
     C2S_ThreadList,
     C2S_ThreadParticipantsAdd,
     C2S_ThreadSubscribe,
-    C2S_ThreadUpdate,
     C2S_ThreadUnsubscribe,
+    C2S_ThreadUpdate,
     ClientToServer,
     EventAppendPayload,
     EventListResultPayload,
@@ -75,12 +75,12 @@ from dooers.agents.server.thread_access import (
     actor_id_is_participant,
     attach_thread_access,
     resolve_list_scope,
-    resolve_scope,
     resolve_thread_access,
     thread_supervision_mode_from_settings,
     thread_supervision_requires_reason,
     user_is_thread_participant,
 )
+from dooers.agents.server.thread_queue import QueueValidationError
 from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 
 if TYPE_CHECKING:
@@ -265,6 +265,9 @@ class Router:
         """Broadcast a frame to all connections for the current agent."""
         if not self._agent_id:
             return
+        if isinstance(frame, S2C_ThreadUpsert):
+            await broadcast_thread_upsert(self._registry, self._agent_id, frame.payload.thread)
+            return
         message = serialize_frame(frame)
         await self._registry.broadcast(self._agent_id, message)
 
@@ -280,10 +283,8 @@ class Router:
         payload_type = payload.get("type")
 
         if payload_type == "thread.upsert":
-            frame = S2C_ThreadUpsert(
-                id=_generate_id(),
-                payload=ThreadUpsertPayload(thread=payload["thread"]),
-            )
+            await broadcast_thread_upsert(self._registry, agent_id, payload["thread"])
+            return
         elif payload_type == "event.append":
             evs = payload["events"]
             tid = payload["thread_id"]
@@ -528,7 +529,12 @@ class Router:
                 self._rate_limits = {}
 
         self._ws = ws
-        await self._registry.register(self._agent_id, ws)
+        await self._registry.register(
+            self._agent_id,
+            ws,
+            user=self._user or User(user_id=""),
+            workspace_id=self._workspace_id,
+        )
         self._subscriptions[self._ws_id] = set()
         await self._send_ack(
             ws,

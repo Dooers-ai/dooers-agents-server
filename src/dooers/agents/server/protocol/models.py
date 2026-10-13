@@ -526,7 +526,7 @@ class ThreadArtifact(BaseModel):
 
 
 class ThreadAccess(BaseModel):
-    """Per-session capabilities for a thread (computed on list/snapshot; not persisted)."""
+    """Per-session capabilities for a thread (computed on list/snapshot/upsert; not persisted)."""
 
     read: bool = False
     write: bool = False
