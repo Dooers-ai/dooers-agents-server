@@ -65,6 +65,49 @@ def generate_signed_get_url(
         return None
 
 
+def generate_signed_get_url_via_iam(
+    bucket_name: str,
+    blob_name: str,
+    *,
+    expiration_minutes: int = 60,
+) -> str | None:
+    """V4 signed GET using the runtime service account (``iam.signBlob``).
+
+    Cloud Run has no JSON key. The ADC access token plus the SA email makes
+    ``generate_signed_url`` call ``signBlob`` instead of a local signer. The
+    SA must hold ``iam.serviceAccounts.signBlob`` on itself.
+    """
+    if not bucket_name.strip() or not blob_name.strip():
+        return None
+    try:
+        import google.auth
+        from google.auth.transport import requests as google_auth_requests
+        from google.cloud import storage
+    except ImportError:
+        logger.warning("google-cloud-storage is not installed; skipping IAM signed URL")
+        return None
+    try:
+        source, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        if not getattr(source, "token", None) or not getattr(source, "valid", False):
+            source.refresh(google_auth_requests.Request())
+        email = getattr(source, "service_account_email", None) or ""
+        if not email or email == "default":
+            logger.warning("GCS IAM signed URL skipped: runtime SA email unavailable")
+            return None
+        client = storage.Client(credentials=source)
+        blob = client.bucket(bucket_name.strip()).blob(blob_name.strip())
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=expiration_minutes),
+            method="GET",
+            service_account_email=email,
+            access_token=source.token,
+        )
+    except Exception as e:
+        logger.warning("GCS IAM signed URL failed for %s: %s", blob_name, e)
+        return None
+
+
 def delete_blobs_with_prefix(bucket_name: str, prefix: str) -> int:
     """Delete all objects whose names start with ``prefix``. Returns count deleted."""
     bn = bucket_name.strip()
