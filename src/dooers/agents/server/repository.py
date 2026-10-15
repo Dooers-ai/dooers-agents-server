@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from dooers.agents.server.protocol.models import ContentPart, Run, Thread, ThreadEvent, User
+from dooers.agents.server.thread_queue import queue_for_create
 
 if TYPE_CHECKING:
     from dooers.agents.server.persistence.base import Persistence
@@ -57,6 +58,7 @@ class Repository:
         workspace_id: str = "",
         user: User | None = None,
         title: str | None = None,
+        queue: str | None = None,
     ) -> Thread:
         now = _now()
         owner = user or User(user_id="")
@@ -68,6 +70,7 @@ class Repository:
             owner=owner,
             users=[owner] if owner.user_id else [],
             title=title,
+            queue=queue_for_create(queue, workspace_id=workspace_id),
             created_at=now,
             updated_at=now,
             last_event_at=now,
@@ -81,6 +84,8 @@ class Repository:
             return None
         if "title" in updates:
             thread.title = updates["title"]
+        if "queue" in updates:
+            thread.queue = updates["queue"]
         thread.updated_at = _now()
         await self._persistence.update_thread(thread)
         return thread

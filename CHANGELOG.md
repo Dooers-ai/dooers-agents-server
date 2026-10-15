@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.2] — 2026-10-14
+
+### Added
+
+- Managed chat storage (`chat_storage_service="dooers"`) mints a V4 read URL
+  for audio, image, and document replay. Signing uses the runtime service
+  account (`iam.signBlob`), and the object key includes `DOOERS_STORAGE_PREFIX`
+  so the URL stays inside the org's bucket grant. Keys outside that prefix are
+  not signed. Creator-managed `gcp` / `azure` buckets are unchanged.
+
+## [0.24.1] — 2026-10-13
+
+### Fixed
+
+- `thread.upsert` now includes each connection's own `access` (`read` / `write` /
+  `manage`). Live creates, queue moves, and participant changes no longer omit
+  access or copy the actor's flags onto every socket. List and snapshot were
+  already per connection; the wire shape is unchanged.
+
+## [0.24.0] — 2026-10-08
+
+### Added
+
+- Workspace **thread queues**: optional `Thread.queue` slug (null when unset).
+  `thread.list` accepts `queue`. New `thread.update` frame (write/manage)
+  and `send.update_thread(queue=...)`. Core catalog arrives on connect as
+  `workspace.queues` (slug list, unchanged for older SDKs) plus
+  `workspace.queue_catalog` (`slug`, `name`, `members` with `user_id` / name /
+  email / `identity_ids` / primitive SSO `claims`). The roster is copied to
+  `incoming.context.queues` each turn. Unknown slugs are rejected when the
+  catalog is present.
+- Timeline event `thread.update` when the queue changes.
+- `event.create` accepts optional `queue` for a new thread. Omit it (or pass
+  null) to leave the thread unqueued — including in a workspace.
+- `thread.list` `queue=__none__` returns threads with no queue.
+- WhatsApp inbound HMAC may include the same `queues` / `queue_catalog`
+  snapshot. Pass it through `parse_inbound_queue_catalog(body)` into
+  `dispatch(..., queues=)` / `ingest(..., queues=)` so
+  `incoming.context.queues` is populated without a WebSocket handshake.
+
 ## [0.23.4] — 2026-10-05
 
 ### Security

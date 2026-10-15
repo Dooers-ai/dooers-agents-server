@@ -8,6 +8,7 @@ from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.protocol.models import Thread, ThreadEvent
 from dooers.agents.server.storage.chat_artifact_keys import build_chat_artifact_object_key
 from dooers.agents.server.storage.chat_artifacts import (
+    _managed_prefix,
     chat_artifact_object_exists,
     chat_storage_service_ready,
     sign_chat_artifact_read_url,
@@ -41,17 +42,20 @@ def _hydrate_media_part(
         return part
     fn = _default_filename_for_part(str(pt), getattr(part, "filename", None))
     try:
+        prefix = _managed_prefix(cfg)
         key = build_chat_artifact_object_key(
             agent_id=agent_id,
             thread_id=thread_id,
             ref_id=str(ref_id),
             filename=fn,
+            prefix=prefix,
         )
         key_nt = build_chat_artifact_object_key(
             agent_id=agent_id,
             thread_id=None,
             ref_id=str(ref_id),
             filename=fn,
+            prefix=prefix,
         )
         # Prefer signing only when ``blob.exists()`` succeeds so we do not mint GET
         # URLs for missing thread keys. Some bucket/IAM setups deny ``exists()`` to

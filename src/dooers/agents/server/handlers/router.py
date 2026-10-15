@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import bcrypt
 
 from dooers.agents.server.auth_validation import AuthValidationClient
+from dooers.agents.server.broadcast import broadcast_thread_upsert
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.agents.server.features.settings.models import SettingsFieldVisibility
@@ -40,6 +41,7 @@ from dooers.agents.server.protocol.frames import (
     C2S_ThreadParticipantsAdd,
     C2S_ThreadSubscribe,
     C2S_ThreadUnsubscribe,
+    C2S_ThreadUpdate,
     ClientToServer,
     EventAppendPayload,
     EventListResultPayload,
@@ -65,7 +67,7 @@ from dooers.agents.server.protocol.frames import (
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
 )
-from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
+from dooers.agents.server.protocol.models import Thread, ThreadEvent, User, WorkspaceQueueCatalog
 from dooers.agents.server.protocol.parser import serialize_frame
 from dooers.agents.server.public_session import PublicSessionBinding, PublicSessionSocket, public_session_current
 from dooers.agents.server.registry import ConnectionRegistry
@@ -74,12 +76,12 @@ from dooers.agents.server.thread_access import (
     actor_id_is_participant,
     attach_thread_access,
     resolve_list_scope,
-    resolve_scope,
     resolve_thread_access,
     thread_supervision_mode_from_settings,
     thread_supervision_requires_reason,
     user_is_thread_participant,
 )
+from dooers.agents.server.thread_queue import QueueValidationError
 from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 
 if TYPE_CHECKING:
@@ -107,6 +109,11 @@ def _can_access_thread(user: User, thread: Thread, *, connection_workspace_id: s
 
 def _generate_id() -> str:
     return str(uuid.uuid4())
+
+
+def _queue_catalog_slugs(queues: list[WorkspaceQueueCatalog]) -> list[str] | None:
+    slugs = [queue.slug for queue in queues if queue.slug]
+    return slugs or None
 
 
 # Latest page on first subscribe. Older events come from event.list / loadOlderEvents.
@@ -194,6 +201,7 @@ class Router:
         self._user: User | None = None
         self._organization_id: str = ""
         self._workspace_id: str = ""
+        self._workspace_queues: list[WorkspaceQueueCatalog] = []
         self._agent_owner_user_id: str | None = None
         self._can_configure_settings: bool = False
         self._public_session: PublicSessionBinding | None = None
@@ -264,6 +272,9 @@ class Router:
         """Broadcast a frame to all connections for the current agent."""
         if not self._agent_id:
             return
+        if isinstance(frame, S2C_ThreadUpsert):
+            await broadcast_thread_upsert(self._registry, self._agent_id, frame.payload.thread)
+            return
         message = serialize_frame(frame)
         await self._registry.broadcast(self._agent_id, message)
 
@@ -279,10 +290,8 @@ class Router:
         payload_type = payload.get("type")
 
         if payload_type == "thread.upsert":
-            frame = S2C_ThreadUpsert(
-                id=_generate_id(),
-                payload=ThreadUpsertPayload(thread=payload["thread"]),
-            )
+            await broadcast_thread_upsert(self._registry, agent_id, payload["thread"])
+            return
         elif payload_type == "event.append":
             evs = payload["events"]
             tid = payload["thread_id"]
@@ -348,6 +357,8 @@ class Router:
                 await self._handle_thread_delete(ws, frame)
             case C2S_ThreadParticipantsAdd():
                 await self._handle_thread_participants_add(ws, frame)
+            case C2S_ThreadUpdate():
+                await self._handle_thread_update(ws, frame)
             case C2S_EventCreate():
                 await self._handle_event_create(ws, frame)
             case C2S_EventList():
@@ -524,6 +535,7 @@ class Router:
             # fall back via truthiness ("" or frame_ws would pick frame_ws).
             if result.workspace_id is not None:
                 self._workspace_id = result.workspace_id
+            self._workspace_queues = list(result.workspace_queues or [])
         else:
             # Authenticated path: when an auth validator is configured, the
             # validator auto-detects JWT vs opaque token. Core-issued JWTs are
@@ -579,6 +591,7 @@ class Router:
                 # Empty string is a valid personal/direct-chat workspace.
                 if result.workspace_id is not None:
                     self._workspace_id = result.workspace_id
+                self._workspace_queues = list(result.workspace_queues or [])
                 self._agent_owner_user_id = result.agent_owner_user_id
                 self._can_configure_settings = result.can_configure_settings
                 self._rate_limits = result.rate_limits or {}
@@ -598,7 +611,12 @@ class Router:
         self._registered_ws = (PublicSessionSocket(ws, self._public_session_current,
             lambda: self._reject_public_session(ws, _generate_id()))
             if self._public_session is not None else ws)
-        await self._registry.register(self._agent_id, self._registered_ws)
+        await self._registry.register(
+            self._agent_id,
+            self._registered_ws,
+            user=self._user or User(user_id=""),
+            workspace_id=self._workspace_id,
+        )
         self._subscriptions[self._ws_id] = set()
         await self._send_ack(
             ws,
@@ -631,6 +649,7 @@ class Router:
             scope=scope,
             user_email=user.user_email,
             identity_ids=all_identity_ids or None,
+            queue=frame.payload.queue,
         )
         has_more = len(threads) > limit
         if has_more:
@@ -651,6 +670,7 @@ class Router:
                 scope=scope,
                 user_email=user.user_email,
                 identity_ids=all_identity_ids or None,
+                queue=frame.payload.queue,
             )
 
         last = threads[-1] if has_more else None
@@ -962,6 +982,95 @@ class Router:
         await self._broadcast_to_agent(upsert)
         await self._send_ack(ws, frame.id)
 
+    async def _handle_thread_update(self, ws: WebSocketProtocol, frame: C2S_ThreadUpdate) -> None:
+        if not self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_CONNECTED", "message": "Must connect first"},
+            )
+            return
+
+        thread_id = frame.payload.thread_id
+        thread = await self._persistence.get_thread(thread_id)
+        if not thread:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_FOUND", "message": "Thread not found"},
+            )
+            return
+
+        if thread.agent_id != self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Thread belongs to different agent"},
+            )
+            return
+
+        user = self._user or User(user_id="")
+        access = resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id)
+        if not (access.write or access.manage):
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Not allowed to update this thread"},
+            )
+            return
+
+        from dooers.agents.server.thread_queue import resolve_thread_queue
+
+        try:
+            new_queue = resolve_thread_queue(
+                frame.payload.queue,
+                workspace_id=thread.workspace_id,
+                allowed=_queue_catalog_slugs(self._workspace_queues),
+            )
+        except ValueError as exc:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "INVALID_PAYLOAD", "message": str(exc)},
+            )
+            return
+
+        previous_queue = thread.queue
+        if new_queue != previous_queue:
+            thread.queue = new_queue
+            thread.updated_at = datetime.now(UTC)
+            await self._persistence.update_thread(thread)
+            queue_event = ThreadEvent(
+                id=_generate_id(),
+                thread_id=thread_id,
+                type="thread.update",
+                actor="system",
+                author=user.user_name or user.user_email or user.user_id,
+                user=user,
+                data={"field": "queue", "from": previous_queue, "to": new_queue},
+                created_at=datetime.now(UTC),
+            )
+            await self._persistence.create_event(queue_event)
+            await self._broadcast_to_agent(
+                S2C_EventAppend(
+                    id=_generate_id(),
+                    payload=EventAppendPayload(thread_id=thread_id, events=[queue_event]),
+                )
+            )
+
+        thread_out = attach_thread_access(thread, user, connection_workspace_id=self._workspace_id)
+        upsert = S2C_ThreadUpsert(
+            id=_generate_id(),
+            payload=ThreadUpsertPayload(thread=thread_out),
+        )
+        await self._broadcast_to_agent(upsert)
+        await self._send_ack(ws, frame.id)
+
     async def _handle_event_create(self, ws: WebSocketProtocol, frame: C2S_EventCreate) -> None:
         if not self._agent_id:
             await self._send_ack(
@@ -1049,6 +1158,9 @@ class Router:
             event_type=frame.payload.event.type,
             metadata=raw_metadata if not frame.payload.thread_id else None,
             chat_context=frame.payload.chat_context,
+            queue=frame.payload.queue if not frame.payload.thread_id else None,
+            allowed_queues=_queue_catalog_slugs(self._workspace_queues),
+            queues=list(self._workspace_queues),
         )
 
         try:
@@ -1067,6 +1179,14 @@ class Router:
                 frame.id,
                 ok=False,
                 error={"code": "UNSUPPORTED_CONTENT_TYPE", "message": str(e)},
+            )
+            return
+        except QueueValidationError as e:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "INVALID_PAYLOAD", "message": str(e)},
             )
             return
         except ValueError:

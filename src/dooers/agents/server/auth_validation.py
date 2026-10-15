@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from dooers.agents.server.protocol.models import ConnectionContext, User
+from dooers.agents.server.protocol.models import ConnectionContext, User, WorkspaceQueueCatalog
 from dooers.agents.server.settings import AGENT_CORE_BASE_URL
 
 logger = logging.getLogger("agents")
@@ -104,6 +104,7 @@ class AuthValidationResult:
     agent_owner_user_id: str | None = None
     can_configure_settings: bool = False
     organization_plan: str = "free"
+    workspace_queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
 
 
 class AuthValidationClient:
@@ -175,7 +176,11 @@ class AuthValidationClient:
         try:
             response = await self._client.post(validation_url, json={"token": auth_token})
         except httpx.HTTPError as e:
-            logger.warning("[auth-validation] JWT transport error: %s", e)
+            logger.warning(
+                "[auth-validation] JWT transport error: %s: %s",
+                type(e).__name__,
+                e or repr(e),
+            )
             return AuthValidationResult(valid=False, reason="transport_error")
 
         if response.status_code >= 500:
@@ -200,7 +205,10 @@ class AuthValidationClient:
         try:
             ctx = ConnectionContext(**body)
         except Exception:
-            logger.warning("[auth-validation] failed to parse ConnectionContext from JWT response")
+            logger.warning(
+                "[auth-validation] failed to parse ConnectionContext from JWT response",
+                exc_info=True,
+            )
             return AuthValidationResult(valid=False, reason="bad_context")
 
         user = User(
@@ -230,6 +238,7 @@ class AuthValidationClient:
             agent_owner_user_id=ctx.agent.owner_user_id,
             can_configure_settings=ctx.agent.can_configure_settings,
             organization_plan=ctx.organization.plan,
+            workspace_queues=ctx.workspace.catalog(),
         )
 
     async def _validate_legacy(
@@ -281,7 +290,10 @@ class AuthValidationClient:
             try:
                 ctx = ConnectionContext(**body)
             except Exception:
-                logger.warning("[auth-validation] failed to parse ConnectionContext from legacy response")
+                logger.warning(
+                    "[auth-validation] failed to parse ConnectionContext from legacy response",
+                    exc_info=True,
+                )
                 return AuthValidationResult(valid=False, reason="bad_context")
 
             user = User(
@@ -310,6 +322,7 @@ class AuthValidationClient:
                 agent_owner_user_id=ctx.agent.owner_user_id,
                 can_configure_settings=ctx.agent.can_configure_settings,
                 organization_plan=ctx.organization.plan,
+                workspace_queues=ctx.workspace.catalog(),
             )
 
         # Legacy flat response shape (backwards compatibility).

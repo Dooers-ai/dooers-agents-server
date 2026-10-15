@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dooers.agents.server.features.channels.whatsapp.config import tools_base_url
+from dooers.agents.server.features.channels.whatsapp.inbound_catalog import parse_inbound_queue_catalog
 from dooers.agents.server.features.channels.whatsapp.thread_id import normalize_e164, whatsapp_thread_id
 from dooers.agents.server.features.channels.whatsapp.tool_hmac import (
     dooers_whatsapp_hmac_key_fingerprint,
@@ -28,6 +29,7 @@ __all__ = [
     "dooers_whatsapp_hmac_key_fingerprint",
     "normalize_e164",
     "parse_dooers_whatsapp_instance_hmac_map",
+    "parse_inbound_queue_catalog",
     "tools_base_url",
     "verify_dooers_whatsapp_tool_inbound_signature",
     "verify_dooers_whatsapp_tool_inbound_with_persistence",

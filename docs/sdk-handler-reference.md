@@ -37,7 +37,11 @@ Dataclass; **só atributos**, sem métodos próprios.
 | `user` | `User` | Utilizador (ver tabela seguinte). |
 | `thread_title` | `str \| None` | Título do thread, se existir. |
 | `thread_created_at` | `datetime \| None` | Data de criação do thread. |
+| `queue` | `str \| None` | Slug da fila desta thread (`None` se não houver fila). |
+| `queues` | `list[WorkspaceQueueCatalog]` | Catálogo do workspace (handshake). Cada item: `slug`, `name`, `members`. |
 | `chat_context` | `ChatContext \| None` | Hints de execução deste turno (`event.create.chat_context`). Hoje: `llm_model`. |
+
+`incoming.context.members_for_queue()` devolve os membros da fila atual (ou de um slug passado). Cada membro tem `user_id`, `user_name`, `user_email`, `identity_ids`, `claims`.
 
 ### `incoming.context.chat_context` (`ChatContext`)
 

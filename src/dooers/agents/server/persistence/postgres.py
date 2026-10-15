@@ -18,6 +18,7 @@ from dooers.agents.server.protocol.models import (
     User,
     deserialize_s2c_part,
 )
+from dooers.agents.server.thread_queue import is_unqueued_list_filter
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,14 @@ class PostgresPersistence:
                 ALTER TABLE {threads_table} ADD COLUMN IF NOT EXISTS metadata JSONB
             """)
 
+            await conn.execute(f"""
+                ALTER TABLE {threads_table} ADD COLUMN IF NOT EXISTS queue TEXT
+            """)
+            await conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}threads_queue
+                    ON {threads_table}(agent_id, workspace_id, queue)
+            """)
+
             # Migrate legacy user_id column for existing databases
             await conn.execute(f"""
                 ALTER TABLE {threads_table} DROP COLUMN IF EXISTS user_id
@@ -330,8 +339,8 @@ class PostgresPersistence:
             await conn.execute(
                 f"""
                 INSERT INTO {table}
-                    (id, agent_id, organization_id, workspace_id, owner, users, title, metadata, created_at, updated_at, last_event_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    (id, agent_id, organization_id, workspace_id, owner, users, title, metadata, queue, created_at, updated_at, last_event_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 thread.id,
                 thread.agent_id,
@@ -341,6 +350,7 @@ class PostgresPersistence:
                 users_json,
                 thread.title,
                 metadata_json,
+                thread.queue,
                 thread.created_at,
                 thread.updated_at,
                 thread.last_event_at,
@@ -384,6 +394,7 @@ class PostgresPersistence:
             users=[User(**u) for u in users_data],
             title=row["title"],
             metadata=metadata_raw,
+            queue=row["queue"] if "queue" in row.keys() else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_event_at=row["last_event_at"],
@@ -402,14 +413,15 @@ class PostgresPersistence:
                 f"""
                 UPDATE {table}
                 SET organization_id = $1, workspace_id = $2, owner = $3, users = $4,
-                    title = $5, updated_at = $6, last_event_at = $7
-                WHERE id = $8
+                    title = $5, queue = $6, updated_at = $7, last_event_at = $8
+                WHERE id = $9
                 """,
                 thread.organization_id,
                 thread.workspace_id,
                 owner_json,
                 users_json,
                 thread.title,
+                thread.queue,
                 thread.updated_at,
                 thread.last_event_at,
                 thread.id,
@@ -546,6 +558,7 @@ class PostgresPersistence:
         scope: str = "member",
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
+        queue: str | None = None,
     ) -> int:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -566,6 +579,12 @@ class PostgresPersistence:
             params,
             idx,
         )
+        if is_unqueued_list_filter(queue):
+            conditions.append("(queue IS NULL OR queue = '')")
+        elif queue:
+            conditions.append(f"queue = ${idx}")
+            params.append(queue)
+            idx += 1
 
         where = " AND ".join(conditions)
         query = f"SELECT COUNT(*) FROM {table} WHERE {where}"
@@ -584,6 +603,7 @@ class PostgresPersistence:
         scope: str = "member",
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
+        queue: str | None = None,
     ) -> list[Thread]:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -604,6 +624,12 @@ class PostgresPersistence:
             params,
             idx,
         )
+        if is_unqueued_list_filter(queue):
+            conditions.append("(queue IS NULL OR queue = '')")
+        elif queue:
+            conditions.append(f"queue = ${idx}")
+            params.append(queue)
+            idx += 1
 
         if cursor:
             if "|" in cursor:
