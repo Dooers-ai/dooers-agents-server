@@ -31,3 +31,7 @@ class HandlerError(Exception):
     def __init__(self, message: str, original: Exception | None = None):
         super().__init__(message)
         self.original = original
+
+
+class ThreadManagementModeError(DispatchError):
+    """Entrada/histórico legado indisponível neste servidor configurado Maestro."""

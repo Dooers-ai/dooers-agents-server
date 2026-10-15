@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,24 @@ _turn_agent_id: ContextVar[str | None] = ContextVar(
     "dooers_whatsapp_turn_agent_id",
     default=None,
 )
+
+
+_scope_guard: ContextVar[Callable[[], bool] | None] = ContextVar("dooers_whatsapp_scope_guard", default=None)
+
+
+def bind_handler_scope_guard(guard: Callable[[], bool]) -> Token:
+    """Guarda opt-in; não modifica assinatura/tupla do binding legado."""
+    return _scope_guard.set(guard)
+
+
+def reset_handler_scope_guard(token: Token) -> None:
+    _scope_guard.reset(token)
+
+
+def _assert_scope_guard() -> None:
+    guard = _scope_guard.get()
+    if guard is not None and not guard():
+        raise WhatsAppRuntimeError("Private handler scope is not active in this task")
 
 
 class WhatsAppRuntimeError(RuntimeError):
@@ -40,18 +59,16 @@ def reset_handler_context(tokens: tuple[Token, Token]) -> None:
 
 
 def require_persistence() -> Persistence:
+    _assert_scope_guard()
     persistence = _turn_persistence.get()
     if persistence is None:
-        raise WhatsAppRuntimeError(
-            "WhatsAppClient requires an active handler turn (use inside handler or dispatch)"
-        )
+        raise WhatsAppRuntimeError("WhatsAppClient requires an active handler turn (use inside handler or dispatch)")
     return persistence
 
 
 def require_agent_id() -> str:
+    _assert_scope_guard()
     agent_id = (_turn_agent_id.get() or "").strip()
     if not agent_id:
-        raise WhatsAppRuntimeError(
-            "WhatsAppClient requires an active handler turn (use inside handler or dispatch)"
-        )
+        raise WhatsAppRuntimeError("WhatsAppClient requires an active handler turn (use inside handler or dispatch)")
     return agent_id

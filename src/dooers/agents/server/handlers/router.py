@@ -67,6 +67,7 @@ from dooers.agents.server.protocol.frames import (
 )
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
 from dooers.agents.server.protocol.parser import serialize_frame
+from dooers.agents.server.public_session import PublicSessionBinding, PublicSessionSocket, public_session_current
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.thread_access import (
     ThreadViewGrantStore,
@@ -195,6 +196,9 @@ class Router:
         self._workspace_id: str = ""
         self._agent_owner_user_id: str | None = None
         self._can_configure_settings: bool = False
+        self._public_session: PublicSessionBinding | None = None
+        self._public_session_closed = False
+        self._registered_ws: WebSocketProtocol | None = None
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
@@ -228,8 +232,11 @@ class Router:
 
     async def _send(self, ws: WebSocketProtocol, frame: ServerToClient) -> None:
         """Send a frame; ignore closed sockets (client often disconnects after PATCH before slow hooks finish)."""
+        if self._public_session_closed:
+            raise PermissionError("PUBLIC_SESSION_REJECTED")
         try:
-            await ws.send_text(serialize_frame(frame))
+            target = self._registered_ws if self._public_session is not None else ws
+            await target.send_text(serialize_frame(frame))
         except RuntimeError as e:
             if "close" in str(e).lower():
                 return
@@ -302,6 +309,32 @@ class Router:
 
     async def route(self, ws: WebSocketProtocol, frame: ClientToServer) -> None:
         self._ws = ws
+        if isinstance(frame, C2S_Connect) and self._public_session is not None:
+            # Identity/scope changes use a fresh transport/Router, not a second
+            # connect that could leave the previous registry binding installed.
+            await self._reject_public_session(ws, frame.id)
+            return
+        if not isinstance(frame, C2S_Connect):
+            if self._public_session_closed:
+                await self._send_public_denial(ws, frame.id)
+                return
+            if self._public_session is not None and not await self._public_session_current():
+                await self._reject_public_session(ws, frame.id)
+                return
+        if (
+            self._agent_config is not None
+            and self._agent_config.thread_management == "maestro"
+            and isinstance(
+                frame,
+                (C2S_ThreadList, C2S_ThreadSubscribe, C2S_ThreadUnsubscribe, C2S_ThreadDelete,
+                 C2S_ThreadParticipantsAdd, C2S_EventCreate, C2S_EventList, C2S_ThreadArtifactsList, C2S_Feedback),
+            )
+        ):
+            await self._send_ack(
+                ws, frame.id, ok=False,
+                error={"code": "THREAD_MANAGEMENT_MISMATCH", "message": "Use the Maestro API for this thread."},
+            )
+            return
         match frame:
             case C2S_Connect():
                 await self._handle_connect(ws, frame)
@@ -344,6 +377,41 @@ class Router:
             case C2S_Ping():
                 await self._handle_ping(ws, frame)
 
+    async def _public_session_current(self) -> bool:
+        binding = self._public_session
+        if self._public_session_closed or binding is None:
+            return False
+        current = await public_session_current(binding, self._auth_validator)
+        # A concurrent denial wins even if this authority request started first
+        # and eventually returns a formerly valid result.
+        return bool(current and not self._public_session_closed and self._public_session is binding)
+
+    async def _send_public_denial(self, ws: WebSocketProtocol, ack_id: str) -> None:
+        # This is the only raw transport bypass after the public latch closes.
+        # Its fixed payload contains no application/content/private scope data.
+        frame = S2C_Ack(id=_generate_id(), payload=AckPayload(ack_id=ack_id, ok=False,
+            error={"code": "CONNECTION_REJECTED", "message": "Public session is no longer authorized."}))
+        await asyncio.wait_for(ws.send_text(serialize_frame(frame)), timeout=1.0)
+
+    async def _reject_public_session(self, ws: WebSocketProtocol, frame_id: str) -> None:
+        if self._public_session_closed:
+            return
+        # Latch before callbacks: callback failure never permits another frame.
+        self._public_session_closed = True
+        self._public_session = None
+        try:
+            await self._send_public_denial(ws, frame_id)
+        finally:
+            try:
+                await asyncio.wait_for(self.cleanup(), timeout=1.0)
+            finally:
+                close = getattr(ws, "close", None)
+                if callable(close):
+                    try:
+                        await asyncio.wait_for(close(code=1008), timeout=1.0)
+                    except Exception:
+                        pass
+
     async def _handle_ping(self, ws: WebSocketProtocol, frame: C2S_Ping) -> None:
         await self._send(
             ws,
@@ -358,7 +426,7 @@ class Router:
             self._ws_id in self._analytics_subscriptions.get(self._agent_id or "", set()),
         )
         if self._agent_id:
-            await self._registry.unregister(self._agent_id, self._ws)
+            await self._registry.unregister(self._agent_id, self._registered_ws or self._ws)
 
             if self._agent_id in self._analytics_subscriptions:
                 self._analytics_subscriptions[self._agent_id].discard(self._ws_id)
@@ -378,6 +446,10 @@ class Router:
             del self._subscriptions[self._ws_id]
 
     async def _handle_connect(self, ws: WebSocketProtocol, frame: C2S_Connect) -> None:
+        if self._public_session_closed:
+            await self._send_public_denial(ws, frame.id)
+            return
+        self._public_session = None
         # Reset per-connection rate-limit state so a second C2S_Connect on the
         # same session starts clean.
         self._rate_limits = {}
@@ -515,8 +587,18 @@ class Router:
                 self._user = incoming_user
                 self._rate_limits = {}
 
+        if self._user is not None and self._user.connection_type in {"guest", "public_authenticated"}:
+            binding = PublicSessionBinding(frame.payload.auth_token or "", self._agent_id,
+                self._user.user_id, self._organization_id, self._workspace_id, self._user.connection_type)
+            if not binding.token:
+                await self._reject_public_session(ws, frame.id)
+                return
+            self._public_session = binding
         self._ws = ws
-        await self._registry.register(self._agent_id, ws)
+        self._registered_ws = (PublicSessionSocket(ws, self._public_session_current,
+            lambda: self._reject_public_session(ws, _generate_id()))
+            if self._public_session is not None else ws)
+        await self._registry.register(self._agent_id, self._registered_ws)
         self._subscriptions[self._ws_id] = set()
         await self._send_ack(
             ws,
@@ -1335,14 +1417,14 @@ class Router:
         self._settings_ws_context[self._ws_id] = {
             "agent_id": agent_id,
             "audience": audience,
-            "ws": ws,
+            "ws": self._registered_ws if self._public_session is not None else ws,
         }
 
         if self._settings_broadcaster:
             values = await self._persistence.get_settings(agent_id)
             await self._settings_broadcaster.broadcast_snapshot_to_ws(
                 agent_id=agent_id,
-                ws=ws,
+                ws=self._registered_ws if self._public_session is not None else ws,
                 schema=self._settings_schema,
                 values=values,
                 audience=audience,

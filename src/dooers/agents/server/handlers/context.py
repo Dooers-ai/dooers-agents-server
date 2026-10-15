@@ -1,3 +1,8 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dooers.agents.server.maestro.context import MaestroExecutionContext
+
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -12,10 +17,12 @@ class AgentContext:
     agent_id: str
     event_id: str
     organization_id: str = ""
-    workspace_id: str = ""
+    workspace_id: str | None = ""
     channel: str = "dooers-platform"
     channel_meta: dict | None = None
-    user: User = field(default_factory=lambda: User(user_id=""))
+    user: User | None = field(default_factory=lambda: User(user_id=""))
     thread_title: str | None = field(default=None)
     thread_created_at: datetime | None = field(default=None)
     chat_context: ChatContext | None = None
+
+    maestro: "MaestroExecutionContext | None" = None

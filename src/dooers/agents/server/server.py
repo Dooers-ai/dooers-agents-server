@@ -89,6 +89,7 @@ def _build_persistence(config: AgentConfig) -> Persistence:
 
 class AgentServer:
     def __init__(self, config: AgentConfig):
+        config.validate_thread_management()
         self._config = config
         self._allowed_content_types = normalize_allowed_content_types(config.allowed_content_types)
         self._content_policy_denial_message = (config.content_policy_denial_message or "").strip() or None
@@ -187,6 +188,7 @@ class AgentServer:
         Durable write runs only when creator ``persist_chat_attachments``, ops
         ``store_chat_uploads``, and configured GCS/Azure are all satisfied.
         """
+        self._config.require_agent_thread_management()
         aid = (agent_id or "").strip()
         if not aid:
             raise ValueError("agent_id is required")
@@ -309,7 +311,7 @@ class AgentServer:
             core_base_url=self._config.agent_core_base_url or None,
         )
 
-        if self._config.guest_thread_cleanup_interval_seconds > 0:
+        if self._config.thread_management == "agent" and self._config.guest_thread_cleanup_interval_seconds > 0:
             self._guest_cleanup_task = asyncio.create_task(
                 self._run_guest_cleanup_loop(),
                 name="dooers-guest-thread-cleanup",
@@ -449,6 +451,7 @@ class AgentServer:
         channel: str = "dooers-platform",
         channel_meta: dict[str, Any] | None = None,
     ) -> DispatchStream:
+        self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
 
         pipeline = HandlerPipeline(
@@ -525,6 +528,8 @@ class AgentServer:
         Returns ``thread_id``.
         """
 
+        self._config.require_agent_thread_management()
+
         async def _noop_handler(*_args: Any, **_kwargs: Any):
             if False:  # pragma: no cover
                 yield None
@@ -580,10 +585,12 @@ class AgentServer:
         return SqlDatabase(persistence)
 
     async def repository(self) -> Repository:
+        self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
         return Repository(persistence)
 
     async def memory(self, thread_id: str) -> AgentMemory:
+        self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
         return AgentMemory(thread_id=thread_id, persistence=persistence)
 

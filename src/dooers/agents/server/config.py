@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from dooers.agents.server.maestro.config import MaestroConfig, MaestroConfigurationError
 from dooers.agents.server.settings import (
     GUEST_THREAD_CLEANUP_INTERVAL_SECONDS,
     GUEST_THREAD_TTL_SECONDS,
@@ -139,3 +140,26 @@ class AgentConfig:
 
     #: Service name on exported spans (env ``OTEL_SERVICE_NAME``). Empty → platform default.
     otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())
+
+    # Opt-in explícito: o banco acima continua privado para settings/analytics.
+    thread_management: Literal["agent", "maestro"] = "agent"
+    maestro: MaestroConfig | None = None
+
+    def validate_thread_management(self) -> None:
+        if not isinstance(self.thread_management, str) or self.thread_management not in {"agent", "maestro"}:
+            raise MaestroConfigurationError("THREAD_MANAGEMENT_INVALID")
+        if self.maestro is not None and not isinstance(self.maestro, MaestroConfig):
+            raise MaestroConfigurationError("MAESTRO_CONFIG_INVALID")
+        if self.thread_management == "maestro":
+            if self.maestro is None:
+                raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
+            self.maestro.validate_startup()
+
+    def __post_init__(self) -> None:
+        self.validate_thread_management()
+
+    def require_agent_thread_management(self) -> None:
+        if self.thread_management != "agent":
+            from dooers.agents.server.exceptions import ThreadManagementModeError
+
+            raise ThreadManagementModeError("THREAD_MANAGEMENT_MISMATCH")

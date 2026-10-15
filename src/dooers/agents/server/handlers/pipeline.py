@@ -187,6 +187,8 @@ class HandlerPipeline:
         self._whatsapp_outbound = whatsapp_outbound
 
     async def setup(self, context: HandlerContext) -> PipelineResult:
+        if self._agent_config is not None:
+            self._agent_config.require_agent_thread_management()
         now = _now()
         thread_id = context.thread_id
         is_new_thread = False
@@ -355,6 +357,7 @@ class HandlerPipeline:
             message=message,
             content=handler_content,
             context=agent_context,
+            _bind_runtime_context=False,
         )
 
         # Populate form response fields if this is a form.response event
@@ -402,6 +405,7 @@ class HandlerPipeline:
             agent_id=context.agent_id,
         )
         try:
+            incoming.bind_runtime_context()
             async for event in _handler_event_stream():
                 event_now = _now()
 
@@ -1091,7 +1095,10 @@ class HandlerPipeline:
 
             raise HandlerError(str(e), original=e) from e
         finally:
-            reset_handler_context(runtime_tokens)
+            try:
+                incoming.reset_runtime_context()
+            finally:
+                reset_handler_context(runtime_tokens)
 
     async def _dispatch_whatsapp_outbound(self, event: AgentEvent, context: HandlerContext) -> None:
         if not self._whatsapp_outbound:

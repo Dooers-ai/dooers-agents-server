@@ -1,0 +1,1878 @@
+[
+  {
+    "id": "usage-e00-vector",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "f78ab5f8e1295aa6a918d5cb8de057cb86d0c6e361fd2d1c6ba36fa54a8f1169"
+    },
+    "valid": true
+  },
+  {
+    "id": "usage-invalid-attempt",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "0",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "357fc7608079dbae14011f85f649f6fe4f08e3ca67b49ff2dfc859642079d9d5"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-attempt",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": 1,
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "033cf3197ced8f3c74dcc81edb1de1b0d23c6a4915780ff5e551ee400a714249"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-provider_key_source",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "byok",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "82909523889c984bb17a4d4c2e98d1ea28a725c106012735970fa862d6b997e1"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-provider_id",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "https://provider.invalid",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "b75d0392a5d437960c6da5878d7ef8889868a55eca68bc47a0609764693b94d6"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-units",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": null,
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "42b645219135757b81155001fff02e7f17c80e02a2133ba3d57cb2375e660f82"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-content_sha256",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-usage_id",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "wrong",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "18679f7dfcb7ee4a39a0ec8166f3f79ef2a081a02e3b81b9cfec582b6b7f06e9"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-effect_key",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": "maestro:v1:effect:wrong:initial:0",
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "b77d5b7aabbbe6c656290bfa31c014c14de50d4bb365311c0d13e64f4bcdcff6"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-reasoning_tokens",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "4",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "791df925e0e2234a88a03de4379a2d8a92f679fb05c320d9714c23b750ab5450"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-invalid-unknown",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "f78ab5f8e1295aa6a918d5cb8de057cb86d0c6e361fd2d1c6ba36fa54a8f1169",
+      "unknown": "private"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-count-input_tokens-1.2",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "1.2"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "7acb1a3457217b792d747f8216eff007b0f88ae1e86b4a63b54696b6989f8b69"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-count-input_tokens-01",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "01"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "0f0f6817448b154facd2b329b14f33cdc784dafaf9b39e3c07893ff208ffc4a5"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-count-input_tokens-1e2",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "1e2"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "bcf279d3d99534cbe717b6070a13b8ead5ef2c2e93abbfa1175bfed692a82b09"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-count-input_audio_seconds-1.20",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "1.20"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "5cfe29f8a288cd46019f28d77c5f703bc13dcf8669e62859555049aa6c168c21"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-count-output_tokens--1",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "-1"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "03057348b222348e9e3a45c8382d12311f47dc0874a196d6f66387a58d9b9829"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-unsorted-units",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "a9c3540f0a244a5fa3673ce28a793acddcfe03c523daa28336ee02279b127d2e"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-duplicate-unit",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "0cff8b423946f2f2d71ddc55f9bd6648a3cc77a041979f448c0fcfa5a4161cbf"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-audio-fraction",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "1.25"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "053bc48eb3e2fdc044d5048e19932c70b91696a75b57bcf5eac9f60908b5089d"
+    },
+    "valid": true
+  },
+  {
+    "id": "usage-unknown-not-zero",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "unknown",
+      "provider_outcome": "unknown",
+      "units": null,
+      "reasoning_tokens": null,
+      "prompt_tokens_total": null,
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "61e69bd17bc8cac0e12b3ff165527ff051b62e2723a53860218ce492ba06249f"
+    },
+    "valid": true
+  },
+  {
+    "id": "usage-unknown-zero-rejected",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": null,
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "unknown",
+      "provider_outcome": "unknown",
+      "units": null,
+      "reasoning_tokens": "0",
+      "prompt_tokens_total": null,
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "2267444f2e11738bd76d78d2dd00f949b18f3a2659a731f976aed2fadb2e9ed3"
+    },
+    "valid": false
+  },
+  {
+    "id": "usage-effect-binding",
+    "schema": "Candidate.Usage",
+    "data": {
+      "format_version": "maestro.usage.v1",
+      "usage_id": "maestro:v1:usage:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+      "provider_operation_id": "00000000-0000-4000-8000-000000000002",
+      "organization_id": "00000000-0000-4000-8000-000000000001",
+      "workspace_id": null,
+      "thread_id": "00000000-0000-4000-8000-000000000003",
+      "recipient_participant_id": "00000000-0000-4000-8000-000000000004",
+      "instance_agent_id": "00000000-0000-4000-8000-000000000005",
+      "delivery_id": "00000000-0000-4000-8000-000000000006",
+      "phase_id": "initial",
+      "execution_id": "00000000-0000-4000-8000-000000000007",
+      "attempt": "1",
+      "effect_key": "maestro:v1:effect:00000000-0000-4000-8000-000000000006:initial:0",
+      "provider_id": "sandbox",
+      "provider_account_ref": "account-1",
+      "provider_request_ref": null,
+      "model_id": "model-synthetic",
+      "operation_kind": "llm",
+      "service_tier": "standard",
+      "provider_key_source": "dooers",
+      "measurement": "measured",
+      "provider_outcome": "succeeded",
+      "units": [
+        [
+          "cache_read_tokens",
+          "0"
+        ],
+        [
+          "cache_write_1h_tokens",
+          "0"
+        ],
+        [
+          "cache_write_tokens",
+          "0"
+        ],
+        [
+          "input_audio_seconds",
+          "0"
+        ],
+        [
+          "input_audio_tokens",
+          "0"
+        ],
+        [
+          "input_characters",
+          "0"
+        ],
+        [
+          "input_image_tokens",
+          "0"
+        ],
+        [
+          "input_images",
+          "0"
+        ],
+        [
+          "input_tokens",
+          "12"
+        ],
+        [
+          "output_audio_seconds",
+          "0"
+        ],
+        [
+          "output_audio_tokens",
+          "0"
+        ],
+        [
+          "output_image_tokens",
+          "0"
+        ],
+        [
+          "output_images",
+          "0"
+        ],
+        [
+          "output_tokens",
+          "3"
+        ]
+      ],
+      "reasoning_tokens": "1",
+      "prompt_tokens_total": "12",
+      "billing_organization_id": "00000000-0000-4000-8000-000000000001",
+      "commercial_decision_id": "00000000-0000-4000-8000-000000000008",
+      "policy_version": "sandbox-v1",
+      "content_sha256": "25cf2a5b677306f5f0f344b244c045042fec0516c8fbb78c84cff7e7f0765e1b"
+    },
+    "valid": true
+  }
+]

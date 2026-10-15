@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from dooers.agents.server.features.settings.models import SettingsFieldType
 
 if TYPE_CHECKING:
@@ -65,3 +67,36 @@ def apply_chat_llm_override(
     if effort:
         out = {**out, "reasoning_effort": effort}
     return out
+
+
+# Maestro options are explicit public declarations. Legacy SettingsSchema values,
+# defaults, provider keys and legacy reasoning aliases never enter this schema.
+
+MaestroEffort = Literal["minimal", "low", "medium", "high", "max"]
+
+
+class PublicModelOption(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model: str = Field(min_length=1, max_length=128, pattern=r"^[!-~]+$")
+    efforts: tuple[MaestroEffort, ...] = Field(default=(), max_length=5)
+
+    @model_validator(mode="after")
+    def distinct_efforts(self):
+        if len(set(self.efforts)) != len(self.efforts):
+            raise ValueError("Duplicate effort")
+        return self
+
+
+class PublicOptionsSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    schema_version: Literal[1] = 1
+    version: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    models: tuple[PublicModelOption, ...] = Field(min_length=1, max_length=100)
+    max_options_per_participant: Literal[1] = 1
+    application_supported: Literal[False] = False
+
+    @model_validator(mode="after")
+    def distinct_models(self):
+        if len({item.model for item in self.models}) != len(self.models):
+            raise ValueError("Duplicate model")
+        return self
