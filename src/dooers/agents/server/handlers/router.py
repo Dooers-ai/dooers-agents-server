@@ -206,6 +206,7 @@ class Router:
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
+        self._closed = False
 
         self._hydrate_thread_events = hydrate_thread_events_for_client
         self._agent_config = agent_config
@@ -224,6 +225,11 @@ class Router:
             agent_config=agent_config,
             whatsapp_outbound=whatsapp_outbound,
         )
+
+    @property
+    def closed(self) -> bool:
+        """True once this router closed the socket (rejected handshake); stop reading from it."""
+        return self._closed
 
     async def _hydrate_events_for_client(
         self,
@@ -407,6 +413,7 @@ class Router:
 
         logger.info("[agents] connect rejected agent=%s code=%s reason=%s", agent_id, code, message)
         await self._send_ack(ws, frame_id, ok=False, error={"code": code, "message": message})
+        self._closed = True
         try:
             await ws.close(code=1008)
         except Exception:

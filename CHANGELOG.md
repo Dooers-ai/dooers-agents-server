@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A rejected handshake no longer leaves session state; the socket is closed.
   Rejections are logged with agent, code and reason.
+- `AgentServer.handle` exits cleanly after a rejected handshake instead of
+  logging an error.
 
 ## [0.24.2] — 2026-10-14
 

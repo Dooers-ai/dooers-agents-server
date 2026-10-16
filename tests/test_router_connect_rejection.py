@@ -11,6 +11,7 @@ import pytest_asyncio
 import respx
 
 from dooers.agents.server.auth_validation import AuthValidationClient
+from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.handlers.router import Router
 from dooers.agents.server.protocol.frames import (
     C2S_Connect,
@@ -23,6 +24,7 @@ from dooers.agents.server.protocol.frames import (
 )
 from dooers.agents.server.protocol.models import User
 from dooers.agents.server.registry import ConnectionRegistry
+from dooers.agents.server.server import AgentServer
 
 
 class FakeWebSocket:
@@ -41,6 +43,25 @@ class FakeWebSocket:
         self.closed_with = code
         if self._raise_on_close:
             raise RuntimeError("Cannot call close once a close message has been sent")
+
+
+class WebSocketDisconnect(Exception):
+    pass
+
+
+class ScriptedWebSocket(FakeWebSocket):
+    """Hands out queued frames; like Starlette, refuses to read once closed."""
+
+    def __init__(self, frames: list[str]) -> None:
+        super().__init__()
+        self._frames = list(frames)
+
+    async def receive_text(self) -> str:
+        if self.closed_with is not None:
+            raise RuntimeError('WebSocket is not connected. Need to call "accept" first.')
+        if not self._frames:
+            raise WebSocketDisconnect()
+        return self._frames.pop(0)
 
 
 async def _noop_handler(on, send, memory, analytics, settings):  # pragma: no cover
@@ -212,3 +233,26 @@ async def test_rejection_is_logged_without_token(validator, caplog):
     messages = [r.getMessage() for r in caplog.records]
     assert any("connect rejected" in m and "agent-1" in m and "invalid_token" in m for m in messages)
     assert not any("secret-token-value" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_handle_exits_cleanly_after_a_rejected_handshake(caplog, monkeypatch):
+    server = AgentServer(AgentConfig(database_type="postgres"))
+    server._ensure_initialized = AsyncMock(return_value=AsyncMock())
+    cleaned: list[Router] = []
+    original_cleanup = Router.cleanup
+
+    async def spy_cleanup(self: Router) -> None:
+        cleaned.append(self)
+        await original_cleanup(self)
+
+    monkeypatch.setattr(Router, "cleanup", spy_cleanup)
+    ws = ScriptedWebSocket([_connect_frame(user_id="").model_dump_json()])
+
+    with caplog.at_level(logging.DEBUG):
+        await server.handle(ws, _noop_handler)
+
+    assert _last_ack(ws)["payload"]["error"]["code"] == "ANONYMOUS_NOT_ALLOWED"
+    assert ws.closed_with == 1008
+    assert not any("WebSocket handle loop error" in r.getMessage() for r in caplog.records)
+    assert len(cleaned) == 1
