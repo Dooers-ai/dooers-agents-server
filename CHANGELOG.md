@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.3] — 2026-10-16
+
+### Fixed
+
+- A rejected handshake no longer leaves session state; the socket is closed.
+  Rejections are logged with agent, code and reason.
+
 ## [0.24.2] — 2026-10-14
 
 ### Added
