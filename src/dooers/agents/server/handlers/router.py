@@ -361,6 +361,15 @@ class Router:
             S2C_Pong(id=_generate_id(), payload={}),
         )
 
+    def _discard_feature_subscriptions(self, agent_id: str) -> None:
+        """Remove this socket from the analytics/settings subscription maps for ``agent_id``."""
+        for subscriptions in (self._analytics_subscriptions, self._settings_subscriptions):
+            if agent_id in subscriptions:
+                subscriptions[agent_id].discard(self._ws_id)
+                if not subscriptions[agent_id]:
+                    del subscriptions[agent_id]
+        self._settings_ws_context.pop(self._ws_id, None)
+
     async def cleanup(self) -> None:
         logger.info(
             "[agents] router cleanup: ws=%s, agent=%s, had_analytics_sub=%s",
@@ -371,16 +380,7 @@ class Router:
         if self._agent_id:
             await self._registry.unregister(self._agent_id, self._ws)
 
-            if self._agent_id in self._analytics_subscriptions:
-                self._analytics_subscriptions[self._agent_id].discard(self._ws_id)
-                if not self._analytics_subscriptions[self._agent_id]:
-                    logger.info("[agents] analytics subscriptions emptied for agent %s — deleting key", self._agent_id)
-                    del self._analytics_subscriptions[self._agent_id]
-
-            if self._agent_id in self._settings_subscriptions:
-                self._settings_subscriptions[self._agent_id].discard(self._ws_id)
-                if not self._settings_subscriptions[self._agent_id]:
-                    del self._settings_subscriptions[self._agent_id]
+            self._discard_feature_subscriptions(self._agent_id)
 
         self._settings_ws_context.pop(self._ws_id, None)
         self._event_timestamps.clear()
@@ -392,6 +392,7 @@ class Router:
         """Refuse a handshake: drop any session state, ack the error and close the socket."""
         if self._agent_id:
             await self._registry.unregister(self._agent_id, ws)
+            self._discard_feature_subscriptions(self._agent_id)
         self._ws = None
         self._agent_id = None
         self._user = None

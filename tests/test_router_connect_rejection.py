@@ -109,7 +109,7 @@ async def test_rejected_dashboard_connect_leaves_no_session(validator):
 
     with respx.mock() as mock:
         _reject_mock(mock)
-        await router._handle_connect(ws, _connect_frame(user_id="victim"))
+        await router._handle_connect(ws, _connect_frame(user_id="user-1"))
 
     ack = _last_ack(ws)
     assert ack["payload"]["ok"] is False
@@ -139,7 +139,7 @@ async def test_frames_after_rejection_are_not_connected(validator):
 
     with respx.mock() as mock:
         _reject_mock(mock)
-        await router._handle_connect(ws, _connect_frame(user_id="victim"))
+        await router._handle_connect(ws, _connect_frame(user_id="user-1"))
 
     await router.route(ws, C2S_ThreadList(id="f2", type="thread.list", payload=ThreadListPayload()))
     ack = _last_ack(ws)
@@ -172,6 +172,9 @@ async def test_second_rejected_connect_drops_previous_session(validator):
         await router._handle_connect(ws, _connect_frame(user_id=""))
     assert _last_ack(ws)["payload"]["ok"] is True
     assert router._registry.get_connection_count("agent-1") == 1
+    router._analytics_subscriptions.setdefault("agent-1", set()).add(router._ws_id)
+    router._settings_subscriptions.setdefault("agent-1", set()).add(router._ws_id)
+    router._settings_ws_context[router._ws_id] = {}
 
     with respx.mock() as mock:
         _reject_mock(mock)
@@ -180,6 +183,9 @@ async def test_second_rejected_connect_drops_previous_session(validator):
     assert router._registry.get_connection_count("agent-1") == 0
     assert router._agent_id is None
     assert router._ws_id not in router._subscriptions
+    assert router._analytics_subscriptions == {}
+    assert router._settings_subscriptions == {}
+    assert router._ws_id not in router._settings_ws_context
 
 
 @pytest.mark.asyncio
@@ -189,7 +195,7 @@ async def test_rejection_survives_a_socket_that_is_already_closed(validator):
 
     with respx.mock() as mock:
         _reject_mock(mock)
-        await router._handle_connect(ws, _connect_frame(user_id="victim"))
+        await router._handle_connect(ws, _connect_frame(user_id="user-1"))
 
     assert _last_ack(ws)["payload"]["ok"] is False
 
@@ -201,7 +207,7 @@ async def test_rejection_is_logged_without_token(validator, caplog):
 
     with caplog.at_level(logging.INFO, logger="agents"), respx.mock() as mock:
         _reject_mock(mock)
-        await router._handle_connect(ws, _connect_frame(user_id="victim", token="secret-token-value"))
+        await router._handle_connect(ws, _connect_frame(user_id="user-1", token="secret-token-value"))
 
     messages = [r.getMessage() for r in caplog.records]
     assert any("connect rejected" in m and "agent-1" in m and "invalid_token" in m for m in messages)
