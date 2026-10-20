@@ -206,6 +206,7 @@ class Router:
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
         self._event_timestamps: deque[float] = deque()
+        self._closed = False
 
         self._hydrate_thread_events = hydrate_thread_events_for_client
         self._agent_config = agent_config
@@ -224,6 +225,11 @@ class Router:
             agent_config=agent_config,
             whatsapp_outbound=whatsapp_outbound,
         )
+
+    @property
+    def closed(self) -> bool:
+        """True once this router closed the socket (rejected handshake); stop reading from it."""
+        return self._closed
 
     async def _hydrate_events_for_client(
         self,
@@ -361,6 +367,15 @@ class Router:
             S2C_Pong(id=_generate_id(), payload={}),
         )
 
+    def _discard_feature_subscriptions(self, agent_id: str) -> None:
+        """Remove this socket from the analytics/settings subscription maps for ``agent_id``."""
+        for subscriptions in (self._analytics_subscriptions, self._settings_subscriptions):
+            if agent_id in subscriptions:
+                subscriptions[agent_id].discard(self._ws_id)
+                if not subscriptions[agent_id]:
+                    del subscriptions[agent_id]
+        self._settings_ws_context.pop(self._ws_id, None)
+
     async def cleanup(self) -> None:
         logger.info(
             "[agents] router cleanup: ws=%s, agent=%s, had_analytics_sub=%s",
@@ -371,16 +386,7 @@ class Router:
         if self._agent_id:
             await self._registry.unregister(self._agent_id, self._ws)
 
-            if self._agent_id in self._analytics_subscriptions:
-                self._analytics_subscriptions[self._agent_id].discard(self._ws_id)
-                if not self._analytics_subscriptions[self._agent_id]:
-                    logger.info("[agents] analytics subscriptions emptied for agent %s — deleting key", self._agent_id)
-                    del self._analytics_subscriptions[self._agent_id]
-
-            if self._agent_id in self._settings_subscriptions:
-                self._settings_subscriptions[self._agent_id].discard(self._ws_id)
-                if not self._settings_subscriptions[self._agent_id]:
-                    del self._settings_subscriptions[self._agent_id]
+            self._discard_feature_subscriptions(self._agent_id)
 
         self._settings_ws_context.pop(self._ws_id, None)
         self._event_timestamps.clear()
@@ -388,82 +394,96 @@ class Router:
         if self._ws_id in self._subscriptions:
             del self._subscriptions[self._ws_id]
 
+    async def _reject_connect(self, ws: WebSocketProtocol, frame_id: str, code: str, message: str, *, agent_id: str | None = None) -> None:
+        """Refuse a handshake: drop any session state, ack the error and close the socket."""
+        if self._agent_id:
+            await self._registry.unregister(self._agent_id, ws)
+            self._discard_feature_subscriptions(self._agent_id)
+        self._ws = None
+        self._agent_id = None
+        self._user = None
+        self._organization_id = ""
+        self._workspace_id = ""
+        self._workspace_queues = []
+        self._agent_owner_user_id = None
+        self._can_configure_settings = False
+        self._rate_limits = {}
+        self._subscriptions.pop(self._ws_id, None)
+        self._subscribed_threads.clear()
+
+        logger.info("[agents] connect rejected agent=%s code=%s reason=%s", agent_id, code, message)
+        await self._send_ack(ws, frame_id, ok=False, error={"code": code, "message": message})
+        self._closed = True
+        try:
+            await ws.close(code=1008)
+        except Exception:
+            pass
+
     async def _handle_connect(self, ws: WebSocketProtocol, frame: C2S_Connect) -> None:
         # Reset per-connection rate-limit state so a second C2S_Connect on the
         # same session starts clean.
         self._rate_limits = {}
         self._event_timestamps.clear()
 
-        self._agent_id = frame.payload.agent_id
-        self._organization_id = frame.payload.organization_id
-        self._workspace_id = frame.payload.workspace_id
+        agent_id = frame.payload.agent_id
+        organization_id = frame.payload.organization_id
+        workspace_id = frame.payload.workspace_id
         incoming_user = frame.payload.user
 
         is_anonymous = not (incoming_user and incoming_user.user_id)
 
+        user: User | None
+        rate_limits: dict[str, Any] = {}
+        agent_owner_user_id: str | None = None
+        can_configure_settings = False
+        workspace_queues: list[WorkspaceQueueCatalog] = []
+
         if is_anonymous:
             if self._auth_validator is None:
-                await self._send_ack(
-                    ws,
-                    frame.id,
-                    ok=False,
-                    error={
-                        "code": "ANONYMOUS_NOT_ALLOWED",
-                        "message": "Anonymous connections are not accepted on this server",
-                    },
+                await self._reject_connect(
+                    ws, frame.id, "ANONYMOUS_NOT_ALLOWED", "Anonymous connections are not accepted on this server", agent_id=agent_id
                 )
                 return
 
             result = await self._auth_validator.validate(
                 auth_token=frame.payload.auth_token,
-                agent_id=self._agent_id,
+                agent_id=agent_id,
                 guest_user_id=(incoming_user.user_id if incoming_user else ""),
-                organization_id=self._organization_id,
-                workspace_id=self._workspace_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
             )
             if not result.valid or result.user is None:
-                await self._send_ack(
-                    ws,
-                    frame.id,
-                    ok=False,
-                    error={
-                        "code": "CONNECTION_REJECTED",
-                        "message": result.reason or "rejected",
-                    },
-                )
+                await self._reject_connect(ws, frame.id, "CONNECTION_REJECTED", result.reason or "rejected", agent_id=agent_id)
                 return
-            if result.agent_id and result.agent_id != self._agent_id:
-                await self._send_ack(
-                    ws,
-                    frame.id,
-                    ok=False,
-                    error={"code": "CONNECTION_REJECTED", "message": "agent session does not match connection"},
+            if result.agent_id and result.agent_id != agent_id:
+                await self._reject_connect(
+                    ws, frame.id, "CONNECTION_REJECTED", "agent session does not match connection", agent_id=agent_id
                 )
                 return
 
-            self._user = result.user
+            user = result.user
             # For guest visitors, the webhook has no display info to return —
             # the visitor's name/email/phone exist only on the pre-chat form,
             # which the frontend carries in the connect frame. Merge those
             # display fields in. Identity (user_id), roles, and org/workspace
             # still come from the webhook; this only fills in visible labels.
-            if self._user.connection_type == "guest" and incoming_user is not None:
+            if user.connection_type == "guest" and incoming_user is not None:
                 patches: dict[str, Any] = {}
-                if not self._user.user_name and incoming_user.user_name:
+                if not user.user_name and incoming_user.user_name:
                     patches["user_name"] = incoming_user.user_name
-                if not self._user.user_email and incoming_user.user_email:
+                if not user.user_email and incoming_user.user_email:
                     patches["user_email"] = incoming_user.user_email
                 if patches:
-                    self._user = self._user.model_copy(update=patches)
-            self._rate_limits = result.rate_limits
-            self._agent_owner_user_id = result.agent_owner_user_id
-            self._can_configure_settings = result.can_configure_settings
-            self._organization_id = result.organization_id or frame.payload.organization_id
+                    user = user.model_copy(update=patches)
+            rate_limits = result.rate_limits
+            agent_owner_user_id = result.agent_owner_user_id
+            can_configure_settings = result.can_configure_settings
+            organization_id = result.organization_id or organization_id
             # Empty string is a valid personal/direct-chat workspace; do not
             # fall back via truthiness ("" or frame_ws would pick frame_ws).
             if result.workspace_id is not None:
-                self._workspace_id = result.workspace_id
-            self._workspace_queues = list(result.workspace_queues or [])
+                workspace_id = result.workspace_id
+            workspace_queues = list(result.workspace_queues or [])
         else:
             # Authenticated path: when an auth validator is configured, the
             # validator auto-detects JWT vs opaque token. Core-issued JWTs are
@@ -475,62 +495,50 @@ class Router:
                 try:
                     result = await self._auth_validator.validate(
                         auth_token=frame.payload.auth_token,
-                        agent_id=self._agent_id,
+                        agent_id=agent_id,
                         guest_user_id="",
-                        organization_id=self._organization_id,
-                        workspace_id=self._workspace_id,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
                         user_id=incoming_user.user_id,
                     )
                 except Exception:
                     logger.exception("[agents] dashboard auth validation raised")
-                    await self._send_ack(
-                        ws,
-                        frame.id,
-                        ok=False,
-                        error={
-                            "code": "CONNECTION_REJECTED",
-                            "message": "auth validation error",
-                        },
-                    )
+                    await self._reject_connect(ws, frame.id, "CONNECTION_REJECTED", "auth validation error", agent_id=agent_id)
                     return
 
                 if not result.valid or result.user is None:
-                    await self._send_ack(
-                        ws,
-                        frame.id,
-                        ok=False,
-                        error={
-                            "code": "CONNECTION_REJECTED",
-                            "message": result.reason or "rejected",
-                        },
-                    )
+                    await self._reject_connect(ws, frame.id, "CONNECTION_REJECTED", result.reason or "rejected", agent_id=agent_id)
                     return
-                if result.agent_id and result.agent_id != self._agent_id:
-                    await self._send_ack(
-                        ws,
-                        frame.id,
-                        ok=False,
-                        error={"code": "CONNECTION_REJECTED", "message": "agent session does not match connection"},
+                if result.agent_id and result.agent_id != agent_id:
+                    await self._reject_connect(
+                        ws, frame.id, "CONNECTION_REJECTED", "agent session does not match connection", agent_id=agent_id
                     )
                     return
 
-                self._user = result.user
-                self._organization_id = result.organization_id or self._organization_id
+                user = result.user
+                organization_id = result.organization_id or organization_id
                 # Empty string is a valid personal/direct-chat workspace.
                 if result.workspace_id is not None:
-                    self._workspace_id = result.workspace_id
-                self._workspace_queues = list(result.workspace_queues or [])
-                self._agent_owner_user_id = result.agent_owner_user_id
-                self._can_configure_settings = result.can_configure_settings
-                self._rate_limits = result.rate_limits or {}
+                    workspace_id = result.workspace_id
+                workspace_queues = list(result.workspace_queues or [])
+                agent_owner_user_id = result.agent_owner_user_id
+                can_configure_settings = result.can_configure_settings
+                rate_limits = result.rate_limits or {}
             else:
                 # No validator configured — trust the frame identity (legacy).
-                self._user = incoming_user
-                self._rate_limits = {}
+                user = incoming_user
 
+        self._agent_id = agent_id
+        self._organization_id = organization_id
+        self._workspace_id = workspace_id
+        self._user = user
+        self._rate_limits = rate_limits
+        self._agent_owner_user_id = agent_owner_user_id
+        self._can_configure_settings = can_configure_settings
+        self._workspace_queues = workspace_queues
         self._ws = ws
         await self._registry.register(
-            self._agent_id,
+            agent_id,
             ws,
             user=self._user or User(user_id=""),
             workspace_id=self._workspace_id,

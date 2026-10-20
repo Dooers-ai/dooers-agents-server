@@ -425,6 +425,8 @@ class AgentServer:
                     )
                     raise
                 await router.route(websocket, frame)
+                if router.closed:
+                    break
         except Exception as e:
             name = type(e).__name__
             if name in (
