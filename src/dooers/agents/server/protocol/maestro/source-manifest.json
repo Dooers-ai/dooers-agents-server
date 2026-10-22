@@ -1,6 +1,6 @@
 {
-  "bundle_manifest": "contracts/generated/v1/bundle-manifest.json",
-  "bundle_manifest_sha256": "32566b338bcd7ff894cb33d81708ebe90ec9a7bb8505f042f90cae85c4c8376b",
+  "bundle_manifest": "docs/contracts/generated/v1/bundle-manifest.json",
+  "bundle_manifest_sha256": "2a5e8315e2614cad209c58d57f505ae34601093ec0004a5f8dc5932c5a0bac76",
   "compatibility": {
     "breaking_change": "new explicit contract version and coordinated update of every affected producer/consumer; do not change a pinned artifact in place",
     "capabilities": "presence of a schema is not availability; incomplete domains remain disabled",
@@ -16,10 +16,10 @@
   },
   "consumption": {
     "acquisition": "node scripts/contracts-manifest.mjs export NEW_DIRECTORY",
-    "pin": "consumer stores the externally reviewed SHA-256 of contracts/manifest.json and source_revision; never derive expected hash from the newly received artifact",
+    "pin": "consumer stores the externally reviewed SHA-256 of docs/contracts/manifest.json and source_revision; never derive expected hash from the newly received artifact",
     "python": {
-      "entrypoint": "contracts/generated/v1/python/validate.py",
-      "lock": "contracts/generated/v1/python/requirements.lock",
+      "entrypoint": "docs/contracts/generated/v1/python/validate.py",
+      "lock": "docs/contracts/generated/v1/python/requirements.lock",
       "mode": "portable conformity validator; runtime SDK adapters remain implementation work"
     },
     "trust": "hashes detect drift/corruption; local approved checkout establishes provenance; future release/signature and registry work belongs to E14",
@@ -27,28 +27,28 @@
       "browser": "import public.ts/common.ts only; do not re-export delivery.ts, which uses node:crypto; browser identity projection comes from SDK public adapters",
       "build": "compile the copied modules using the consumer TypeScript build, then import only its local compiled output",
       "entrypoints": {
-        "delivery": "contracts/v1/delivery.ts",
-        "identity": "contracts/v1/identity.ts",
-        "public": "contracts/v1/public.ts"
+        "delivery": "docs/contracts/v1/delivery.ts",
+        "identity": "docs/contracts/v1/identity.ts",
+        "public": "docs/contracts/v1/public.ts"
       },
       "format": "verbatim vendored TypeScript source; no npm package or compiled artifact supplied",
       "runtime_dependency": {
         "zod": "4.4.3"
       },
-      "shared_source": "contracts/v1/common.ts"
+      "shared_source": "docs/contracts/v1/common.ts"
     },
     "verification": "node TRUSTED_CHECKOUT/scripts/contracts-manifest.mjs verify DIRECTORY EXPECTED_MANIFEST_SHA256; never execute an unverified candidate verifier"
   },
   "distribution": "local-source-and-bundle",
   "documentation": [
-    "contracts/README.md",
-    "contracts/identity.md",
-    "contracts/delivery.md",
+    "docs/contracts/README.md",
+    "docs/contracts/identity.md",
+    "docs/contracts/delivery.md",
     "docs/contratos-handoff.md"
   ],
   "families": [
     {
-      "catalog": "contracts/catalog-public.json",
+      "catalog": "docs/contracts/catalog-public.json",
       "consumers": [
         "dooers-agents-client",
         "dooers-agents-server",
@@ -57,24 +57,24 @@
       ],
       "contract_task": "E00-02",
       "fixtures": [
-        "contracts/fixtures/v1/public.json",
-        "contracts/fixtures/v1/public-publication.json"
+        "docs/contracts/fixtures/v1/public.json",
+        "docs/contracts/fixtures/v1/public-publication.json"
       ],
       "id": "public",
       "namespace": "Public",
       "producers": ["dooers-service-maestro"],
-      "sources": ["contracts/v1/common.ts", "contracts/v1/public.ts"],
+      "sources": ["docs/contracts/v1/common.ts", "docs/contracts/v1/public.ts"],
       "validation": {
         "fixtures": {
-          "invalid": 133,
-          "total": 251,
-          "valid": 118
+          "invalid": 135,
+          "total": 254,
+          "valid": 119
         },
         "schemas": 107
       }
     },
     {
-      "catalog": "contracts/catalog-identity.json",
+      "catalog": "docs/contracts/catalog-identity.json",
       "consumers": [
         "dooers-service-maestro",
         "dooers-agents-client",
@@ -83,33 +83,33 @@
         "dooers-service-agent"
       ],
       "contract_task": "E00-03",
-      "fixtures": ["contracts/fixtures/v1/identity.json"],
+      "fixtures": ["docs/contracts/fixtures/v1/identity.json"],
       "id": "identity",
       "namespace": "Identity",
       "producers": ["dooers-service-core"],
-      "sources": ["contracts/v1/common.ts", "contracts/v1/identity.ts"],
+      "sources": ["docs/contracts/v1/common.ts", "docs/contracts/v1/identity.ts"],
       "validation": {
         "fixtures": {
-          "invalid": 74,
-          "total": 115,
-          "valid": 41
+          "invalid": 76,
+          "total": 121,
+          "valid": 45
         },
         "schemas": 17
       }
     },
     {
-      "catalog": "contracts/catalog-delivery.json",
+      "catalog": "docs/contracts/catalog-delivery.json",
       "consumers": ["dooers-service-maestro", "dooers-agents-server", "dooers-service-agent"],
       "contract_task": "E00-04",
-      "fixtures": ["contracts/fixtures/v1/delivery.json"],
+      "fixtures": ["docs/contracts/fixtures/v1/delivery.json"],
       "id": "delivery",
       "namespace": "Delivery",
       "producers": ["dooers-service-maestro", "dooers-agents-server"],
       "sources": [
-        "contracts/v1/common.ts",
-        "contracts/v1/public.ts",
-        "contracts/v1/identity.ts",
-        "contracts/v1/delivery.ts"
+        "docs/contracts/v1/common.ts",
+        "docs/contracts/v1/public.ts",
+        "docs/contracts/v1/identity.ts",
+        "docs/contracts/v1/delivery.ts"
       ],
       "validation": {
         "fixtures": {
@@ -122,49 +122,49 @@
     }
   ],
   "files": {
-    "contracts/README.md": "e0979f9e23c3419898f18dd0bab90cb71c511c2f4c042a6c637b6326ee6f6e5e",
-    "contracts/catalog-delivery.json": "ac2568daac62765d70fed3e738e0864c020eefdaf2434e9aafbe05830a049b77",
-    "contracts/catalog-identity.json": "455611c02cb9dc717387eec860b1663343117d662d97da72948de4a1bf9ca192",
-    "contracts/catalog-public.json": "eee165128295e6f1b9553afbaf2e61dc771d986c2162c7ff50ce2f0df841f899",
-    "contracts/delivery.md": "e1ae86c3418e7f306b1f28b47e5b39a5a2022245f8136618de169ef42101c594",
-    "contracts/fixtures/v1/delivery.json": "55562d9ce0a806e631db8f56248671ae5aa5ccf9d8f309fa95cd2fb09e10cf4c",
-    "contracts/fixtures/v1/identity.json": "94fc037199d475eb2f572d069f3fd53c828164718d8e266e96ec83a46e97c224",
-    "contracts/fixtures/v1/public-publication.json": "9d5655db25647342fdd2d15051df7c201778784a30a92ff7bc691809d644d9c1",
-    "contracts/fixtures/v1/public.json": "4cb66c5518d2439afdb4efbdc2a4f5870518314a70a56d46feff203a367106a3",
-    "contracts/generated/v1/authorization-rules.json": "882c43a410d53953ef62eddb7b37b5105c3977fc783532de3817fe1d0e791510",
-    "contracts/generated/v1/bundle-manifest.json": "32566b338bcd7ff894cb33d81708ebe90ec9a7bb8505f042f90cae85c4c8376b",
-    "contracts/generated/v1/catalog-delivery.json": "89b0e34a7f99c39816e71fd0c40f9945d8e566b0480d035ab432a67479b46e74",
-    "contracts/generated/v1/catalog-identity.json": "49680c27b4837fa42b71b8696b0c2e89e68de64fa6ce7224b753a413d255e72b",
-    "contracts/generated/v1/catalog-public.json": "24e9e49980987e83153526920c5d19b71b9a34992a20af9cafb6522bf0004a89",
-    "contracts/generated/v1/delivery-rules.json": "f451f76a6492b98a0b68c83f25b143dbccf019557f01f6039c4e602864ed4d69",
-    "contracts/generated/v1/fixtures.json": "6f55786e2fff77d841d82dd083d44d88ce611b235992c78f4c87b659904c9d36",
-    "contracts/generated/v1/openapi/core.json": "57f18de8286f029baf30f4fe1b83c9ea1fe1fb996d939afb17deb733ecddd1cd",
-    "contracts/generated/v1/openapi/internal.json": "a1d02dce30718e4e93f68d94aa77f2d787f2c6259619000796479e3398446a96",
-    "contracts/generated/v1/openapi/public.json": "9940768a5a18befcb30057f14a32d9c3cbf2d96e2e13e5bc103ecda8b466d596",
-    "contracts/generated/v1/openapi/runtime.json": "a94be46f6988f4d3e6f270a82dc8a8f167cde4baeede1af7bca2acd73e76a083",
-    "contracts/generated/v1/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
-    "contracts/generated/v1/python/requirements.lock": "618a0889fc225fe9c74443a342c7066a05d579a7d3e43078cd1bb18978238a02",
-    "contracts/generated/v1/python/semantics.py": "774f6809baa93f8b743421af3760ec111bcd7efbc2bc43be4e502412f1871502",
-    "contracts/generated/v1/python/validate.py": "42e5c9a3c20408720f8f18ef8202190d6c29b058b950bc1ce9ba6ccc22d24e41",
-    "contracts/generated/v1/schemas.json": "1ab8658e378b7c4858dcf7782cbc929793a2bf16ca9d76433a8f56acfba9bc60",
-    "contracts/harness/README.md": "15b8d7a90ca87b83a6b14042e213c1c79907ddef47bf84ae376a4b060427c528",
-    "contracts/harness/boundary-fixtures.json": "0fa1e07bfe7b29248954f4e2c587e5109002f51403169d85eb5c0a9043d2ff82",
-    "contracts/harness/cli.ts": "f72e4659989011d7f9b06464d56d341f575895d38334e56685a8e32051f57d0e",
-    "contracts/harness/generate.ts": "0e3c0428ec37214a557f78c964d584550543afe13b2f20196db3bc793943f28e",
-    "contracts/harness/openapi.ts": "a5be527429ddcd0e77ae697bb76ab49a4a3a0d6cbe748d769d5a1f9a9634e18a",
-    "contracts/harness/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
-    "contracts/harness/python/requirements.lock": "618a0889fc225fe9c74443a342c7066a05d579a7d3e43078cd1bb18978238a02",
-    "contracts/harness/python/semantics.py": "774f6809baa93f8b743421af3760ec111bcd7efbc2bc43be4e502412f1871502",
-    "contracts/harness/python/test_validate.py": "b41062a538feb0e8eb0c791264c1211eef737f3867de9c850dc9dff835ca67a9",
-    "contracts/harness/python/validate.py": "42e5c9a3c20408720f8f18ef8202190d6c29b058b950bc1ce9ba6ccc22d24e41",
-    "contracts/harness/registry.ts": "8bf41eb49fabf0f7b1e3edb00e0a44d1f612b6e676c110aac136a36ae351325b",
-    "contracts/identity.md": "a25d26d9891012285a63453f5cf1efa5384be0c43776836c936c53ca9d651d25",
-    "contracts/v1/common.ts": "3d7c46e16df30250a399fe6821e5d4e6d64d4059da493ec8dfdf9a9030b547da",
-    "contracts/v1/delivery.ts": "ab0af0db3d9d23f75db73ceef5462a88a0a7dc05e449de38231cdf2a4c576fea",
-    "contracts/v1/identity.ts": "96e89878dc0487717fa83448de03cdf5d6fa0899e8465474b7a30cc94a3ffbb8",
-    "contracts/v1/public.ts": "5f982cc79fcf5781a12bca86bb77d237f872d957389638d5bdd185544fe465f8",
-    "docs/contratos-handoff.md": "919f8f832190d6772344678772a408b8c5ac9631900e062daad489b492eb27ab",
-    "scripts/contracts-manifest.mjs": "415264103c5b0623486fc90e15a4e6f5a553347765b229ffa056aab74d998e1c"
+    "docs/contracts/README.md": "496ffbb3e67c8541b7d07e7efd45cffb74a8d396a596faa3c3fe6ae92e3179bf",
+    "docs/contracts/catalog-delivery.json": "ba5afe096230018fb8e3721b5f5f89c138fa37e2489257563115e5d239431e95",
+    "docs/contracts/catalog-identity.json": "e7b3dec25a4acbc65206d3d2c97d8789d4c2d43634af5bc6db6f8d886712ce43",
+    "docs/contracts/catalog-public.json": "5118bc5b59453faf2cc20e2e4dadacb68e183074e38f8ef7a26570a4b430fae4",
+    "docs/contracts/delivery.md": "e1ae86c3418e7f306b1f28b47e5b39a5a2022245f8136618de169ef42101c594",
+    "docs/contracts/fixtures/v1/delivery.json": "55562d9ce0a806e631db8f56248671ae5aa5ccf9d8f309fa95cd2fb09e10cf4c",
+    "docs/contracts/fixtures/v1/identity.json": "23c7230e0593beaffaeb94d7b0217d46baaeb8bd0e26ce69078d84bdda1ca816",
+    "docs/contracts/fixtures/v1/public-publication.json": "9d5655db25647342fdd2d15051df7c201778784a30a92ff7bc691809d644d9c1",
+    "docs/contracts/fixtures/v1/public.json": "1e73ba5a4e0b6b632f125fa03f1dab696050776631cac102125aaa8491e37a5d",
+    "docs/contracts/generated/v1/authorization-rules.json": "882c43a410d53953ef62eddb7b37b5105c3977fc783532de3817fe1d0e791510",
+    "docs/contracts/generated/v1/bundle-manifest.json": "2a5e8315e2614cad209c58d57f505ae34601093ec0004a5f8dc5932c5a0bac76",
+    "docs/contracts/generated/v1/catalog-delivery.json": "16aebadd1e48fbb1b4818333835c9e49fe4547ab802cebdf52c413d6242c0472",
+    "docs/contracts/generated/v1/catalog-identity.json": "170a155ba4357e98cad739dee911b6ebef9416bde0399bc410e383f74f787d94",
+    "docs/contracts/generated/v1/catalog-public.json": "849fc9d865a6ccb833210568a1d380a0faa0de75b6d6202989a8f2d3b97294a3",
+    "docs/contracts/generated/v1/delivery-rules.json": "f451f76a6492b98a0b68c83f25b143dbccf019557f01f6039c4e602864ed4d69",
+    "docs/contracts/generated/v1/fixtures.json": "a5ddb1912a388ed8bc0e31c0ee97d7345f654cfca71b5a092576aaf50c2e385e",
+    "docs/contracts/generated/v1/openapi/core.json": "fb5770e4d832cfb9229822bb72e544548350a3bb2c57fbfaf435396e832bbd4f",
+    "docs/contracts/generated/v1/openapi/internal.json": "efcfae360fd9bdc878ac4983675467f377d048cf4e62ae45bc930003430f6343",
+    "docs/contracts/generated/v1/openapi/public.json": "bb11aa7eab82bcf8dd0d9dbfcaaef4c13c48e16293b91b68c90f77bba0e916df",
+    "docs/contracts/generated/v1/openapi/runtime.json": "a94be46f6988f4d3e6f270a82dc8a8f167cde4baeede1af7bca2acd73e76a083",
+    "docs/contracts/generated/v1/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
+    "docs/contracts/generated/v1/python/requirements.lock": "004045153477d0ad4a6e8b1346535278f17e76446d00598ce79a9a659e828f23",
+    "docs/contracts/generated/v1/python/semantics.py": "774f6809baa93f8b743421af3760ec111bcd7efbc2bc43be4e502412f1871502",
+    "docs/contracts/generated/v1/python/validate.py": "42e5c9a3c20408720f8f18ef8202190d6c29b058b950bc1ce9ba6ccc22d24e41",
+    "docs/contracts/generated/v1/schemas.json": "72281cb8a17586d9c835a83a7caf7d64ce47aaed4fdfe7cf3cd1aa8bb1527826",
+    "docs/contracts/harness/README.md": "314eb860c35a6da0f1072ee20b01d8eab14b770667896fd966a3e1be7bbd33fe",
+    "docs/contracts/harness/boundary-fixtures.json": "0fa1e07bfe7b29248954f4e2c587e5109002f51403169d85eb5c0a9043d2ff82",
+    "docs/contracts/harness/cli.ts": "f72e4659989011d7f9b06464d56d341f575895d38334e56685a8e32051f57d0e",
+    "docs/contracts/harness/generate.ts": "bc406eb1fbc49e1f7a930bfa69ef35cf6ee578e5af79060d0f6338c0fca7e00e",
+    "docs/contracts/harness/openapi.ts": "a5be527429ddcd0e77ae697bb76ab49a4a3a0d6cbe748d769d5a1f9a9634e18a",
+    "docs/contracts/harness/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
+    "docs/contracts/harness/python/requirements.lock": "004045153477d0ad4a6e8b1346535278f17e76446d00598ce79a9a659e828f23",
+    "docs/contracts/harness/python/semantics.py": "774f6809baa93f8b743421af3760ec111bcd7efbc2bc43be4e502412f1871502",
+    "docs/contracts/harness/python/test_validate.py": "b41062a538feb0e8eb0c791264c1211eef737f3867de9c850dc9dff835ca67a9",
+    "docs/contracts/harness/python/validate.py": "42e5c9a3c20408720f8f18ef8202190d6c29b058b950bc1ce9ba6ccc22d24e41",
+    "docs/contracts/harness/registry.ts": "eff39b8ff15ddc02af09c17bcfe41752c36e2187b802f6ae62c51c5afc533b1c",
+    "docs/contracts/identity.md": "08d17475c8c3a217bec7b98fc79999d041ba2e3daaff3f4c03a79f660cdfe31a",
+    "docs/contracts/v1/common.ts": "3d7c46e16df30250a399fe6821e5d4e6d64d4059da493ec8dfdf9a9030b547da",
+    "docs/contracts/v1/delivery.ts": "ab0af0db3d9d23f75db73ceef5462a88a0a7dc05e449de38231cdf2a4c576fea",
+    "docs/contracts/v1/identity.ts": "f3736c40fa1827f62f40d48e2990bfbf5a0624bcb858f88ded3236ab5bfa2ede",
+    "docs/contracts/v1/public.ts": "ade50748d666d02fd2c985121abc69d1d1cfeb4a519238f067a31f0d641cb7fb",
+    "docs/contratos-handoff.md": "acc8ab8812b681b9cb53478b322f0d6f9de4cf023ef75684becc4398ce10b9ec",
+    "scripts/contracts-manifest.mjs": "42f981cb3a18beda9bde370e4db420f62f5520d6d94b0700e2ce0881e03fbf85"
   },
   "gates": [
     {
@@ -379,12 +379,12 @@
   ],
   "required_extensions": ["x-maestro-semantic", "x-maestro-string-length", "x-maestro-url"],
   "schema_version": 1,
-  "source_revision": "sha256:a32633a5ae4eebe94786fac40da632314bbcc75e7ad07ed1c562714e735e583b",
+  "source_revision": "sha256:ab2df747118075a26b571806bc0b9c7dd124413b22236fdf475f7bc6584bb144",
   "validation": {
     "fixtures": {
-      "invalid": 348,
-      "total": 598,
-      "valid": 250
+      "invalid": 352,
+      "total": 607,
+      "valid": 255
     },
     "schemas": 142
   }

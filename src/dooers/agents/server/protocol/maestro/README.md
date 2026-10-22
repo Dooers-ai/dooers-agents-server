@@ -18,7 +18,7 @@ identity = stable_identity(contracts, envelope["delivery_id"], envelope["phase_i
 
 `validate` devolve cópia independente e só expõe códigos técnicos em erros;
 `is_valid` preserva strings decimais e semântica do produtor Zod. `schema_names`
-identifica os 142 schemas. `fixture_results()` verifica os 598 casos congelados,
+identifica os 142 schemas. `fixture_results()` verifica os 607 casos congelados,
 sem tráfego de rede. O contrato usa extensões de JSON Schema obrigatórias
 (semântica relacional, UTF-16 e URL WHATWG); um validador JSON Schema genérico não
 é substituto. Os 24 casos adicionais do consumidor estão nos testes e o resultado
