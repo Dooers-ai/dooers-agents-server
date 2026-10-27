@@ -38,6 +38,7 @@ from .context import (
     current_maestro_context,
     maestro_handler_context,
 )
+from .group import AgentDirectory, MaestroGroupTurn, decide_group_turn
 from .memory import MaestroArtifactReference, MaestroMemory, MaestroThreadView
 
 __all__ += [
@@ -54,6 +55,9 @@ __all__ += [
     "MaestroArtifactReference",
     "MaestroMemory",
     "MaestroThreadView",
+    "AgentDirectory",
+    "MaestroGroupTurn",
+    "decide_group_turn",
 ]
 
 

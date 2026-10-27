@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `dooers.agents.server.maestro.decide_group_turn`: in a Maestro thread with
+  several agents, decides whether this agent speaks before generating the
+  answer. Fixed rules need no model (only agent in the thread, structured
+  mention of this agent, human message that mentions only other agents). Otherwise
+  the agent's own model classifies who owns the topic (`classify` callable,
+  JSON `{"owners": [...]}`), and code decides: the owner answers, others
+  yield, and a general topic goes to the first generalist. Returns
+  `MaestroGroupTurn` with ready OpenAI messages (author of each message,
+  participants, answer rules) or silence. The SDK still calls no model.
+
 ## [0.24.3] — 2026-10-16
 
 ### Fixed
