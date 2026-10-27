@@ -67,6 +67,14 @@ def test_round_turn_triggered_by_previous_agent_still_classifies():
     assert pre_decision(snapshot(asked), FIN, PART[FIN]).reason == "mentioned"
 
 
+def test_round_keeps_the_human_mentions_after_previous_agent_replies():
+    everyone = [PART[GEN], PART[JUR], PART[FIN]]
+    events = [message("e1", HUMAN, "@todos bom dia!", mentions=everyone), message("e2", agent(GEN), "Bom dia!")]
+    assert pre_decision(snapshot(events), JUR, PART[JUR]).reason == "mentioned"
+    only_fin = [message("e1", HUMAN, "@Financeiro e aí?", mentions=[PART[FIN]]), message("e2", agent(FIN), "Oi!")]
+    assert pre_decision(snapshot(only_fin), JUR, PART[JUR]).reason == "not_mentioned"
+
+
 def test_specialist_owns_its_topic_and_others_yield():
     events = [message("e1", HUMAN, "what is a cash flow statement?")]
     owners = ("Agente Financeiro",)
@@ -138,6 +146,14 @@ def test_decide_group_turn_end_to_end_with_fake_model():
 
     fallback = asyncio.run(decide_group_turn(Memory(snapshot(events), JUR), classify=broken, directory=DIRECTORY))
     assert fallback.answer and fallback.reason == "unclassified"
+
+
+def test_mentioned_agent_is_not_offered_silence():
+    from dooers.agents.server.maestro.group import answer_messages
+
+    events = [message("e1", HUMAN, "@todos bom dia")]
+    assert SILENCE not in answer_messages("", snapshot(events), JUR, DIRECTORY, may_stay_silent=False)[0]["content"]
+    assert SILENCE in answer_messages("", snapshot(events), JUR, DIRECTORY)[0]["content"]
 
 
 def test_silence_marker():

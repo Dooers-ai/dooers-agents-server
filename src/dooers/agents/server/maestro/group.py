@@ -109,15 +109,17 @@ def pre_decision(snapshot: dict[str, Any], own_instance_id: str, own_participant
     trigger = snapshot.get("trigger_event") or {}
     if not _agents(snapshot, own_instance_id):
         return MaestroGroupTurn(True, "solo")
-    mentions = {_key(m) for m in trigger.get("payload", {}).get("mentions", [])}
-    if _key(own_participant_id) in mentions:
+    mentions_of = lambda event: {_key(m) for m in (event or {}).get("payload", {}).get("mentions", [])}  # noqa: E731
+    mentions = mentions_of(trigger)
+    # Na rodada sequencial o gatilho das vezes seguintes é a resposta do agente anterior: as menções
+    # que valem para a rodada são as da mensagem do humano que a abriu.
+    from_agent = trigger.get("actor", {}).get("kind") == "agent"
+    human, _ = _round(snapshot, own_instance_id)
+    round_mentions = mentions_of(human) if from_agent else mentions
+    if _key(own_participant_id) in mentions | round_mentions:
         return MaestroGroupTurn(True, "mentioned")
-    # Gatilho de agente sem menção a mim é a minha vez na rodada sequencial (o Maestro usa a última
-    # resposta como gatilho): segue para a classificação.
-    if trigger.get("actor", {}).get("kind") == "agent":
-        return None
     agent_ids = {_key(p.get("participant_id")) for p in snapshot.get("participants", []) if p.get("kind") == "agent"}
-    if mentions & agent_ids:
+    if round_mentions & agent_ids:
         return MaestroGroupTurn(False, "not_mentioned")
     return None
 
@@ -179,9 +181,17 @@ def plan_group_turn(
 
 
 def answer_messages(
-    system_prompt: str, snapshot: dict[str, Any], own_instance_id: str, directory: AgentDirectory, limit: int = 20
+    system_prompt: str,
+    snapshot: dict[str, Any],
+    own_instance_id: str,
+    directory: AgentDirectory,
+    limit: int = 20,
+    may_stay_silent: bool = True,
 ) -> list[dict[str, str]]:
-    """Mensagens para gerar a resposta: autor de cada fala, participantes e regras de resposta."""
+    """Mensagens para gerar a resposta: autor de cada fala, participantes e regras de resposta.
+
+    Quem foi mencionado (``may_stay_silent=False``) tem que responder: as regras não oferecem silêncio.
+    """
     _, answered = _round(snapshot, own_instance_id)
     spoke = list(dict.fromkeys(_author(e, own_instance_id, directory) for e in answered))
     rules = [
@@ -192,7 +202,9 @@ def answer_messages(
         " e ainda não foi dito; nunca repita nem reformule o que eles disseram."
         if spoke
         else "- Você é o primeiro a responder nesta rodada.",
-        f"- Se não tiver nada novo a acrescentar, escreva exatamente {SILENCE} e nada mais.",
+        f"- Se não tiver nada novo a acrescentar, escreva exatamente {SILENCE} e nada mais."
+        if may_stay_silent
+        else "- Você foi chamado pelo nome: responda, mesmo que brevemente.",
     ]
     roster = _roster_text(_roster(snapshot, own_instance_id, directory))
     system = "\n\n".join(
@@ -239,5 +251,7 @@ async def decide_group_turn(
         decision = plan_group_turn(snapshot, own_instance_id, own, directory, owners)
     if not decision.answer:
         return decision
-    messages = answer_messages(system_prompt, snapshot, own_instance_id, directory, history_limit)
+    messages = answer_messages(
+        system_prompt, snapshot, own_instance_id, directory, history_limit, may_stay_silent=decision.reason != "mentioned"
+    )
     return MaestroGroupTurn(True, decision.reason, tuple(messages), decision.owners)
