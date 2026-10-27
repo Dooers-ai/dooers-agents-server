@@ -154,7 +154,8 @@ def test_mentioned_agent_is_not_offered_silence():
     events = [message("e1", HUMAN, "@todos bom dia")]
     assert SILENCE not in answer_messages("", snapshot(events), JUR, DIRECTORY, may_stay_silent=False)[0]["content"]
     assert SILENCE in answer_messages("", snapshot(events), JUR, DIRECTORY)[0]["content"]
-    assert "Você é o Agente Jurídico. Fale só por você" in answer_messages("", snapshot(events), JUR, DIRECTORY)[0]["content"]
+    assert "Você é o Agente Jurídico (direito empresarial)." in answer_messages("", snapshot(events), JUR, DIRECTORY)[0]["content"]
+    assert "Você é o Agente Maestro (generalista:" in answer_messages("", snapshot(events), GEN, DIRECTORY)[0]["content"]
 
 
 def test_silence_marker():
