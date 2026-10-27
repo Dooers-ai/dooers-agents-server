@@ -194,8 +194,12 @@ def answer_messages(
     """
     _, answered = _round(snapshot, own_instance_id)
     spoke = list(dict.fromkeys(_author(e, own_instance_id, directory) for e in answered))
+    me = _entry(directory, own_instance_id)[0]
     rules = [
         "Regras da conversa:",
+        f"- Você é o {me}. Fale só por você; nunca se apresente nem responda como outro agente."
+        if me != "Outro agente"
+        else "- Fale só por você; nunca se apresente nem responda como outro agente.",
         "- Você está numa conversa com outros agentes; cada mensagem traz o nome de quem a disse.",
         "- Responda à última mensagem do Humano.",
         f"- Nesta rodada já responderam: {', '.join(n for n in spoke if n)}. Acrescente só o que é da sua especialidade"
