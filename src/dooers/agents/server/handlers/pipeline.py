@@ -180,7 +180,7 @@ class HandlerPipeline:
         allowed_content_types: frozenset[str] | None = None,
         content_policy_denial_message: str | None = None,
         agent_config: AgentConfig | None = None,
-        whatsapp_outbound: Callable[[AgentEvent, HandlerContext], Awaitable[None]] | None = None,
+        whatsapp_outbound: Callable[[AgentEvent, HandlerContext], Awaitable[dict[str, Any] | None]] | None = None,
     ):
         self._persistence = persistence
         self._broadcast_callback = broadcast_callback
@@ -502,7 +502,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -567,7 +567,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -608,7 +608,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -649,7 +649,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -690,7 +690,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -735,7 +735,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -1153,7 +1153,12 @@ class HandlerPipeline:
         finally:
             reset_handler_context(runtime_tokens)
 
-    async def _dispatch_whatsapp_outbound(self, event: AgentEvent, context: HandlerContext) -> None:
+    async def _dispatch_whatsapp_outbound(
+        self,
+        event: AgentEvent,
+        context: HandlerContext,
+        thread_event: ThreadEvent | None = None,
+    ) -> None:
         if not self._whatsapp_outbound:
             return
         outbound_event = self._resolve_whatsapp_event(event, context)
@@ -1169,7 +1174,29 @@ class HandlerPipeline:
             context.channel,
             event.send_type,
         )
-        await self._whatsapp_outbound(outbound_event, context)
+        outcome = await self._whatsapp_outbound(outbound_event, context)
+        await self._record_whatsapp_delivery(thread_event, outcome)
+
+    async def _record_whatsapp_delivery(self, thread_event: ThreadEvent | None, outcome: Any) -> None:
+        if thread_event is None or not isinstance(outcome, dict):
+            return
+        status = str(outcome.get("status") or "").strip()
+        if status not in {"accepted", "failed"}:
+            return
+        data = dict(thread_event.data or {})
+        delivery = dict(data.get("delivery") or {})
+        delivery["status"] = status
+        wa_message_id = str(outcome.get("wa_message_id") or "").strip()
+        if wa_message_id:
+            delivery["wa_message_id"] = wa_message_id
+        if outcome.get("error_code") is not None:
+            delivery["error_code"] = outcome.get("error_code")
+        message = str(outcome.get("error_message") or "").strip()
+        if message:
+            delivery["error_message"] = message[:500]
+        data["delivery"] = delivery
+        thread_event.data = data
+        await self._persistence.update_event(thread_event)
 
     @staticmethod
     def _resolve_whatsapp_event(event: AgentEvent, context: HandlerContext) -> AgentEvent:

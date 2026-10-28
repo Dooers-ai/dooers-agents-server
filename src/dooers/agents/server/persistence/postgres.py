@@ -871,6 +871,27 @@ class PostgresPersistence:
             return None
         return self._row_to_event(row)
 
+    async def find_event_by_whatsapp_message_id(self, wa_message_id: str) -> ThreadEvent | None:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+        wanted = (wa_message_id or "").strip()
+        if not wanted:
+            return None
+        table = f"{self._prefix}events"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT * FROM {table}
+                WHERE data->'delivery'->>'wa_message_id' = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                wanted,
+            )
+        if not row:
+            return None
+        return self._row_to_event(row)
+
     async def update_event(self, event: ThreadEvent) -> None:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -880,17 +901,20 @@ class PostgresPersistence:
         if event.content:
             content_json = json.dumps([self._serialize_content_part(p) for p in event.content])
 
+        data_json = json.dumps(without_nul(event.data)) if event.data is not None else None
+
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
                 UPDATE {table}
-                SET content = $1, run_id = $2, author = $3
+                SET content = $1, run_id = $2, author = $3, data = COALESCE($5::jsonb, data)
                 WHERE id = $4
                 """,
                 content_json,
                 event.run_id,
                 event.author,
                 event.id,
+                data_json,
             )
 
     async def delete_event(self, event_id: str) -> None:

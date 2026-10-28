@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.4] — 2026-10-28
+
+### Added
+
+- WhatsApp outbound records `delivery.status` and `delivery.wa_message_id` on the
+  thread event. A synchronous tools error (for example Meta 131047, outside the
+  24h window) is stored before the console broadcast. An asynchronous refusal
+  posted back as a `delivery_receipt` (for example Meta 130497) updates that
+  same event and is pushed to open consoles with `event.append`.
+
 ## [0.24.3] — 2026-10-16
 
 ### Fixed

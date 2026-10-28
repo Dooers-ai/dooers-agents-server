@@ -340,6 +340,9 @@ class AgentServer:
         )
 
         self._initialized = True
+        from dooers.agents.server.features.channels.whatsapp.delivery_receipt import bind_agent_server
+
+        bind_agent_server(self)
         return self._persistence
 
     async def _run_guest_cleanup_loop(self) -> None:

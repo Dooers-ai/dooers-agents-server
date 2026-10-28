@@ -58,12 +58,18 @@ def tools_base(monkeypatch):
 @pytest.mark.asyncio
 @respx.mock
 async def test_outbound_posts_signed_message(tools_base):
-    route = respx.post(MESSAGES_URL).mock(return_value=httpx.Response(200, json={"ok": True, "send_type": "text"}))
+    route = respx.post(MESSAGES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"ok": True, "accepted": True, "send_type": "text", "message_id": "wamid.1"},
+        )
+    )
     secrets = {"dooers_whatsapp_instance_hmac_json": json.dumps({"inst-1": HMAC_SECRET})}
     outbound = create_dooers_whatsapp_outbound(FakePersistence(secrets))
 
-    await outbound(_text_event(), _ctx())
+    outcome = await outbound(_text_event(), _ctx())
 
+    assert outcome == {"status": "accepted", "wa_message_id": "wamid.1"}
     assert route.called
     request = route.calls[0].request
     assert request.headers["X-Message-Signature"].startswith("sha256=")
@@ -131,3 +137,28 @@ async def test_outbound_posts_template_via_client(tools_base):
     assert body["send_type"] == "template"
     assert body["template_name"] == "order_update"
     assert body["template_language"] == "pt_BR"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_outbound_sync_failure_returns_meta_code(tools_base):
+    respx.post(MESSAGES_URL).mock(
+        return_value=httpx.Response(
+            422,
+            json={
+                "ok": False,
+                "accepted": False,
+                "error_code": 131047,
+                "error_message": "Re-engagement message",
+            },
+        )
+    )
+    secrets = {"dooers_whatsapp_instance_hmac_json": json.dumps({"inst-1": HMAC_SECRET})}
+    outbound = create_dooers_whatsapp_outbound(FakePersistence(secrets))
+
+    outcome = await outbound(_text_event(), _ctx())
+
+    assert outcome is not None
+    assert outcome["status"] == "failed"
+    assert outcome["error_code"] == 131047
+    assert "Re-engagement" in outcome["error_message"]
