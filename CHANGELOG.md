@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.5] — 2026-10-29
+
+### Fixed
+
+- A long turn no longer loses the attributes that say which key paid for each
+  LLM call. OTel caps a span at 128 attributes by default and evicts the oldest
+  one when it fills up, so `dooers.llm.key_source`, `dooers.llm.endpoint`,
+  `llm.system` and `input.value` were dropped from the later calls of turns with
+  many messages and tools — the usage screen then read the turn as "mixed
+  origin" and had no request/response payload to show. Spans now allow 512
+  attributes.
+
 ## [0.24.4] — 2026-10-28
 
 ### Added
