@@ -688,3 +688,64 @@ async def test_aiohttp_key_is_found_wherever_the_client_put_it(gemini_server, se
     assert _attributes(llm[0])[KEY_SOURCE] == "dooers"
     assert _attributes(llm[0])[ENDPOINT] == "127.0.0.1"
     _assert_key_absent(body, DOOERS_KEY)
+
+
+# --- How many attributes one span keeps (MAX_SPAN_ATTRIBUTES) -------------------------------
+
+
+def _span_with_many_attributes(provider, message_attributes: int):
+    """One LLM span marked like a real call, then flooded with openinference-shaped attributes."""
+    tracer = provider.get_tracer("test")
+    span = tracer.start_span("ChatCompletion", attributes={"openinference.span.kind": "LLM"})
+    span.set_attribute("input.value", "{}")
+    span.set_attribute(KEY_SOURCE, "dooers")
+    span.set_attribute(ENDPOINT, "llm.dooers.ai")
+    for i in range(message_attributes):
+        span.set_attribute(f"llm.input_messages.{i}.message.role", "user")
+        span.set_attribute(f"llm.input_messages.{i}.message.content", "...")
+    span.set_attribute("llm.token_count.total", 1)
+    span.end()
+    return span
+
+
+def test_long_turn_loses_the_key_marking_under_otel_defaults():
+    """The bug this limit exists for: once the span fills up, the OLDEST attribute is evicted."""
+    from opentelemetry.sdk.trace import TracerProvider
+
+    span = _span_with_many_attributes(TracerProvider(), message_attributes=100)
+
+    # The call still reports its tokens, so nothing downstream looks broken — but who paid for
+    # it is gone, and that is what the usage screen groups by.
+    assert span.attributes["llm.token_count.total"] == 1
+    assert KEY_SOURCE not in span.attributes
+
+
+def test_configured_limit_keeps_the_key_marking_on_a_long_turn():
+    from opentelemetry.sdk.trace import SpanLimits, TracerProvider
+
+    provider = TracerProvider(span_limits=SpanLimits(max_span_attributes=otel.MAX_SPAN_ATTRIBUTES))
+    span = _span_with_many_attributes(provider, message_attributes=100)
+
+    assert span.attributes[KEY_SOURCE] == "dooers"
+    assert span.attributes[ENDPOINT] == "llm.dooers.ai"
+    assert span.attributes["input.value"] == "{}"
+
+
+def test_init_otel_applies_the_limit(monkeypatch):
+    import opentelemetry.sdk.trace as sdk_trace
+
+    captured = {}
+    real = sdk_trace.TracerProvider
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sdk_trace, "TracerProvider", spy)
+    otel.init_otel(
+        otel_service_url=OTEL_SERVICE_URL,
+        core_base_url=CORE_URL,
+        persistence=FakePersistence(),
+    )
+
+    assert captured["span_limits"].max_span_attributes == otel.MAX_SPAN_ATTRIBUTES

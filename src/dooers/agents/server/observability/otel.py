@@ -148,6 +148,26 @@ async def _export_turn(spans: list) -> None:  # noqa: ANN001
         logger.exception("OTEL: unexpected error exporting turn for agent_id=%s", agent_id)
 
 
+# How many attributes one span may carry.
+#
+# openinference writes one attribute per message field (role, content, each tool call) plus one
+# per tool schema, so a long turn with tools easily passes a hundred attributes on a single LLM
+# span. OTel's default cap is 128 and, once a span is full, ``BoundedAttributes`` evicts the
+# OLDEST attribute (``popitem(last=False)``) — which is precisely the identity of the call:
+# ``llm.system`` and ``input.value`` go first, then ``dooers.llm.key_source`` /
+# ``dooers.llm.endpoint``, the marking that says which key paid for it.
+#
+# Measured in production on 27/10/2026: in a 16-call turn, calls 14 to 16 arrived at the ceiling
+# (128 here plus the 4 the observability service adds) with the key marking gone. The turn showed
+# as "mixed origin" although every call used the same Dooers key, and the full-payload copy in
+# Cloud Logging had nothing to store either, because it is written from the span that arrives.
+#
+# 512 covers a turn about four times longer than the one that broke, and stays well under the
+# 1024 the Cloud Trace exporter enforces on its own (``MAX_SPAN_ATTRS``), where the very same
+# eviction would start again.
+MAX_SPAN_ATTRIBUTES = 512
+
+
 def init_otel(
     *,
     otel_service_url: str,
@@ -164,10 +184,13 @@ def init_otel(
     try:
         from opentelemetry import trace
         from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 
         resource = Resource.create({SERVICE_NAME: service_name})
-        provider = TracerProvider(resource=resource)
+        provider = TracerProvider(
+            resource=resource,
+            span_limits=SpanLimits(max_span_attributes=MAX_SPAN_ATTRIBUTES),
+        )
         provider.add_span_processor(_make_turn_export_processor())
         trace.set_tracer_provider(provider)
 
