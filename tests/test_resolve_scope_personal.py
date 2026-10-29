@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 
 from dooers.agents.server.handlers.router import (
     _can_access_thread,
-    resolve_scope,
+)
+from dooers.agents.server.handlers.router import (
+    resolve_list_scope as router_resolve_list_scope,
 )
 from dooers.agents.server.protocol.models import Thread, User
 from dooers.agents.server.thread_access import (
@@ -40,7 +42,7 @@ def test_resolve_list_scope_empty_workspace_org_manager_is_organization():
         system_role="user",
     )
     assert resolve_list_scope(user, workspace_id="") == "organization"
-    assert resolve_scope(user, workspace_id="") == "organization"
+    assert router_resolve_list_scope(user, workspace_id="") == "organization"
 
 
 def test_resolve_list_scope_real_workspace_keeps_org_elevated():
