@@ -23,6 +23,12 @@ from dooers.agents.server.thread_queue import is_unqueued_list_filter
 logger = logging.getLogger(__name__)
 
 
+def _ilike_pattern(query: str) -> str:
+    """Substring pattern for ``ILIKE ... ESCAPE '\\'`` that matches ``%`` and ``_`` literally."""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _build_ssl_context(ssl_config: bool | str) -> ssl_module.SSLContext | str | None:
 
     if isinstance(ssl_config, str):
@@ -559,6 +565,7 @@ class PostgresPersistence:
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> int:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -585,6 +592,10 @@ class PostgresPersistence:
             conditions.append(f"queue = ${idx}")
             params.append(queue)
             idx += 1
+        if title_query:
+            conditions.append(f"title ILIKE ${idx} ESCAPE '\\'")
+            params.append(_ilike_pattern(title_query))
+            idx += 1
 
         where = " AND ".join(conditions)
         query = f"SELECT COUNT(*) FROM {table} WHERE {where}"
@@ -604,6 +615,7 @@ class PostgresPersistence:
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> list[Thread]:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -629,6 +641,10 @@ class PostgresPersistence:
         elif queue:
             conditions.append(f"queue = ${idx}")
             params.append(queue)
+            idx += 1
+        if title_query:
+            conditions.append(f"title ILIKE ${idx} ESCAPE '\\'")
+            params.append(_ilike_pattern(title_query))
             idx += 1
 
         if cursor:

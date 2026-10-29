@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] — 2026-10-29
+
+### Added
+
+- `thread.search` (C2S) / `thread.search.result` (S2C): search every thread the
+  connection may see by title, not just the page already loaded. Same scope,
+  queue filter and `last_event_at|id` cursor as `thread.list`; case-insensitive
+  substring match (`ILIKE` on Postgres/AlloyDB with `%`/`_` matched literally,
+  `CONTAINS(..., true)` on Cosmos). The query is trimmed and must have 1 to 200
+  characters, otherwise the server acks `ok=false` with `INVALID_QUERY`; a search
+  that fails in the database acks `SEARCH_FAILED` instead of closing the socket. The
+  result echoes `query` so clients can drop answers to an older search.
+  Clients must check the server version first: servers before 0.25.0 close the
+  socket on an unknown frame type.
+
 ## [0.24.5] — 2026-10-29
 
 ### Fixed
