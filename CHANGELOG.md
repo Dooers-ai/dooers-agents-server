@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queue filter and `last_event_at|id` cursor as `thread.list`; case-insensitive
   substring match (`ILIKE` on Postgres/AlloyDB with `%`/`_` matched literally,
   `CONTAINS(..., true)` on Cosmos). The query is trimmed and must have 1 to 200
-  characters, otherwise the server acks `ok=false` with `INVALID_QUERY`. The
+  characters, otherwise the server acks `ok=false` with `INVALID_QUERY`; a search
+  that fails in the database acks `SEARCH_FAILED` instead of closing the socket. The
   result echoes `query` so clients can drop answers to an older search.
   Clients must check the server version first: servers before 0.25.0 close the
   socket on an unknown frame type.

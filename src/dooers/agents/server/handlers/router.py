@@ -647,7 +647,8 @@ class Router:
             )
             return
 
-        query = frame.payload.query.strip()
+        # NUL can't reach Postgres text; drop it rather than fail the query.
+        query = frame.payload.query.replace("\x00", "").strip()
         if not query or len(query) > _THREAD_SEARCH_MAX_QUERY:
             await self._send_ack(
                 ws,
@@ -660,12 +661,23 @@ class Router:
             )
             return
 
-        threads, cursor, total_count = await self._list_threads_page(
-            cursor=frame.payload.cursor,
-            limit=frame.payload.limit,
-            queue=frame.payload.queue,
-            title_query=query,
-        )
+        # A failing search must not take the socket (and the open chat) down with it.
+        try:
+            threads, cursor, total_count = await self._list_threads_page(
+                cursor=frame.payload.cursor,
+                limit=frame.payload.limit,
+                queue=frame.payload.queue,
+                title_query=query,
+            )
+        except Exception:
+            logger.exception("thread.search failed for agent %s", self._agent_id)
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "SEARCH_FAILED", "message": "thread search failed"},
+            )
+            return
         result = S2C_ThreadSearchResult(
             id=_generate_id(),
             payload=ThreadSearchResultPayload(

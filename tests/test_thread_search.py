@@ -80,3 +80,19 @@ async def test_thread_search_refuses_an_empty_query() -> None:
     ack = next(f for f in _frames(ws) if f["type"] == "ack")
     assert ack["payload"]["ok"] is False
     assert ack["payload"]["error"]["code"] == "INVALID_QUERY"
+
+
+@pytest.mark.asyncio
+async def test_thread_search_failure_answers_instead_of_closing_the_socket() -> None:
+    router, persistence, ws = _router()
+    persistence.list_threads.side_effect = RuntimeError("invalid byte sequence")
+
+    await router._handle_thread_search(
+        ws,
+        C2S_ThreadSearch(id="f1", type="thread.search", payload=ThreadSearchPayload(query="pe\x00dido")),
+    )
+
+    ack = next(f for f in _frames(ws) if f["type"] == "ack")
+    assert ack["payload"]["ok"] is False
+    assert ack["payload"]["error"]["code"] == "SEARCH_FAILED"
+    assert persistence.list_threads.await_args.kwargs["title_query"] == "pedido"
