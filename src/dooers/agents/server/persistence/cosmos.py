@@ -293,6 +293,7 @@ class CosmosPersistence:
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> int:
         container = self._get_container("threads")
 
@@ -314,6 +315,9 @@ class CosmosPersistence:
         elif queue:
             conditions.append("c.queue = @queue")
             params.append({"name": "@queue", "value": queue})
+        if title_query:
+            conditions.append("CONTAINS(c.title, @title_query, true)")
+            params.append({"name": "@title_query", "value": title_query})
 
         where = " AND ".join(conditions)
         query = f"SELECT VALUE COUNT(1) FROM c WHERE {where}"
@@ -340,6 +344,7 @@ class CosmosPersistence:
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> list[Thread]:
         container = self._get_container("threads")
 
@@ -361,6 +366,9 @@ class CosmosPersistence:
         elif queue:
             conditions.append("c.queue = @queue")
             params.append({"name": "@queue", "value": queue})
+        if title_query:
+            conditions.append("CONTAINS(c.title, @title_query, true)")
+            params.append({"name": "@title_query", "value": title_query})
 
         if cursor:
             if "|" in cursor:

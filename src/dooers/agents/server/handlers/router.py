@@ -38,6 +38,7 @@ from dooers.agents.server.protocol.frames import (
     C2S_ThreadArtifactsList,
     C2S_ThreadDelete,
     C2S_ThreadList,
+    C2S_ThreadSearch,
     C2S_ThreadParticipantsAdd,
     C2S_ThreadSubscribe,
     C2S_ThreadUnsubscribe,
@@ -57,6 +58,7 @@ from dooers.agents.server.protocol.frames import (
     S2C_ThreadArtifactsListResult,
     S2C_ThreadDeleted,
     S2C_ThreadListResult,
+    S2C_ThreadSearchResult,
     S2C_ThreadSnapshot,
     S2C_ThreadUpsert,
     ServerToClient,
@@ -64,6 +66,7 @@ from dooers.agents.server.protocol.frames import (
     ThreadArtifactsListResultPayload,
     ThreadDeletedPayload,
     ThreadListResultPayload,
+    ThreadSearchResultPayload,
     ThreadSnapshotPayload,
     ThreadUpsertPayload,
 )
@@ -117,6 +120,9 @@ def _queue_catalog_slugs(queues: list[WorkspaceQueueCatalog]) -> list[str] | Non
 
 # Latest page on first subscribe. Older events come from event.list / loadOlderEvents.
 _THREAD_SNAPSHOT_LIMIT = 500
+
+# Longest title search the server accepts (thread.search).
+_THREAD_SEARCH_MAX_QUERY = 200
 
 
 def _now() -> datetime:
@@ -322,6 +328,8 @@ class Router:
                 await self._handle_connect(ws, frame)
             case C2S_ThreadList():
                 await self._handle_thread_list(ws, frame)
+            case C2S_ThreadSearch():
+                await self._handle_thread_search(ws, frame)
             case C2S_ThreadSubscribe():
                 await self._handle_thread_subscribe(ws, frame)
             case C2S_ThreadUnsubscribe():
@@ -550,42 +558,42 @@ class Router:
             server={"name": SERVER_NAME, "version": PACKAGE_VERSION},
         )
 
-    async def _handle_thread_list(self, ws: WebSocketProtocol, frame: C2S_ThreadList) -> None:
-        if not self._agent_id:
-            await self._send_ack(
-                ws,
-                frame.id,
-                ok=False,
-                error={"code": "NOT_CONNECTED", "message": "Must connect first"},
-            )
-            return
-
+    async def _list_threads_page(
+        self,
+        *,
+        cursor: str | None,
+        limit: int | None,
+        queue: str | None,
+        title_query: str | None = None,
+    ) -> tuple[list[Thread], str | None, int]:
+        """One page of the threads this connection may see, plus the total on the first page."""
         user = self._user or User(user_id="")
         scope = resolve_list_scope(user, workspace_id=self._workspace_id)
         # Build complete identity set for thread filtering
         all_identity_ids = [uid for uid in [user.user_id, *(user.identity_ids or [])] if uid]
-        limit = frame.payload.limit or 30
+        page_size = limit or 30
         threads = await self._persistence.list_threads(
             agent_id=self._agent_id,
             organization_id=self._organization_id,
             workspace_id=self._workspace_id,
             user_id=user.user_id,
-            cursor=frame.payload.cursor,
-            limit=limit + 1,
+            cursor=cursor,
+            limit=page_size + 1,
             scope=scope,
             user_email=user.user_email,
             identity_ids=all_identity_ids or None,
-            queue=frame.payload.queue,
+            queue=queue,
+            title_query=title_query,
         )
-        has_more = len(threads) > limit
+        has_more = len(threads) > page_size
         if has_more:
-            threads = threads[:limit]
+            threads = threads[:page_size]
 
         threads = [
             attach_thread_access(t, user, connection_workspace_id=self._workspace_id) for t in threads
         ]
 
-        if frame.payload.cursor:
+        if cursor:
             total_count = 0
         else:
             total_count = await self._persistence.count_threads(
@@ -596,14 +604,72 @@ class Router:
                 scope=scope,
                 user_email=user.user_email,
                 identity_ids=all_identity_ids or None,
-                queue=frame.payload.queue,
+                queue=queue,
+                title_query=title_query,
             )
 
         last = threads[-1] if has_more else None
-        cursor = f"{last.last_event_at.isoformat()}|{last.id}" if last else None
+        next_cursor = f"{last.last_event_at.isoformat()}|{last.id}" if last else None
+        return threads, next_cursor, total_count
+
+    async def _handle_thread_list(self, ws: WebSocketProtocol, frame: C2S_ThreadList) -> None:
+        if not self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_CONNECTED", "message": "Must connect first"},
+            )
+            return
+
+        threads, cursor, total_count = await self._list_threads_page(
+            cursor=frame.payload.cursor,
+            limit=frame.payload.limit,
+            queue=frame.payload.queue,
+        )
         result = S2C_ThreadListResult(
             id=_generate_id(),
             payload=ThreadListResultPayload(
+                threads=threads,
+                cursor=cursor,
+                total_count=total_count,
+            ),
+        )
+        await self._send(ws, result)
+
+    async def _handle_thread_search(self, ws: WebSocketProtocol, frame: C2S_ThreadSearch) -> None:
+        if not self._agent_id:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={"code": "NOT_CONNECTED", "message": "Must connect first"},
+            )
+            return
+
+        query = frame.payload.query.strip()
+        if not query or len(query) > _THREAD_SEARCH_MAX_QUERY:
+            await self._send_ack(
+                ws,
+                frame.id,
+                ok=False,
+                error={
+                    "code": "INVALID_QUERY",
+                    "message": f"query must have 1 to {_THREAD_SEARCH_MAX_QUERY} characters",
+                },
+            )
+            return
+
+        threads, cursor, total_count = await self._list_threads_page(
+            cursor=frame.payload.cursor,
+            limit=frame.payload.limit,
+            queue=frame.payload.queue,
+            title_query=query,
+        )
+        result = S2C_ThreadSearchResult(
+            id=_generate_id(),
+            payload=ThreadSearchResultPayload(
+                query=query,
                 threads=threads,
                 cursor=cursor,
                 total_count=total_count,

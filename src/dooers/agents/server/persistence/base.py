@@ -32,6 +32,7 @@ class Persistence(Protocol):
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> list[Thread]: ...
     async def count_threads(
         self,
@@ -43,6 +44,7 @@ class Persistence(Protocol):
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> int: ...
     async def delete_thread(self, thread_id: str) -> None: ...
     async def delete_idle_guest_threads(self, max_idle_seconds: int) -> int:
