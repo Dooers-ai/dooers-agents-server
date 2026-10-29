@@ -161,3 +161,15 @@ def test_mentioned_agent_is_not_offered_silence():
 def test_silence_marker():
     assert is_silence("[SILENCIO]") and is_silence(" [silencio]. ")
     assert not is_silence("Renda fixa é... [SILENCIO]")
+
+
+def test_explicit_invocation_uses_original_request_without_classification():
+    original = message("e1", HUMAN, "calcule")
+    original["payload"]["routing_decision"] = {"version": 1, "mode": "direct", "recipients": [PART[FIN]], "execution": "sequential"}
+    followup = message("e2", agent(JUR), "contexto adicional")
+    context = snapshot([original, followup])
+    context["invocation_event"] = original
+    decision = pre_decision(context, FIN, PART[FIN])
+    assert decision.answer is True
+    assert decision.reason == "invoked"
+    assert pre_decision(context, JUR, PART[JUR]).answer is False

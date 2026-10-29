@@ -106,6 +106,11 @@ def _round(snapshot: dict[str, Any], own_instance_id: str) -> tuple[dict[str, An
 
 def pre_decision(snapshot: dict[str, Any], own_instance_id: str, own_participant_id: str) -> MaestroGroupTurn | None:
     """Casos decididos sem modelo; None quando é preciso classificar."""
+    invocation = snapshot.get("invocation_event") or {}
+    decision = invocation.get("payload", {}).get("routing_decision")
+    if decision is not None:
+        selected = _key(own_participant_id) in {_key(p) for p in decision.get("recipients", [])}
+        return MaestroGroupTurn(selected, "invoked" if selected else "not_invoked")
     trigger = snapshot.get("trigger_event") or {}
     if not _agents(snapshot, own_instance_id):
         return MaestroGroupTurn(True, "solo")
@@ -203,7 +208,9 @@ def answer_messages(
         if me != "Outro agente"
         else "- Fale só por você; nunca se apresente nem responda como outro agente.",
         "- Você está numa conversa com outros agentes; cada mensagem traz o nome de quem a disse.",
-        "- Responda à última mensagem do Humano.",
+        "- Responda à solicitação que acionou esta execução, apresentada ao final; outras mensagens são contexto."
+        if snapshot.get("invocation_event")
+        else "- Responda à última mensagem do Humano.",
         f"- Nesta rodada já responderam: {', '.join(n for n in spoke if n)}. Acrescente só o que é da sua especialidade"
         " e ainda não foi dito; nunca repita nem reformule o que eles disseram."
         if spoke
@@ -223,6 +230,15 @@ def answer_messages(
             messages.append({"role": "assistant", "content": _text(event)})
         else:
             messages.append({"role": "user", "content": f"{author} disse:\n{_text(event)}"})
+    if snapshot.get("invocation_event"):
+        invocation = snapshot["invocation_event"]
+        author = _author(invocation, own_instance_id, directory) or "você"
+        messages.append(
+            {
+                "role": "user",
+                "content": f"Solicitação desta execução ({author}):\n{_text(invocation)}",
+            }
+        )
     return messages
 
 

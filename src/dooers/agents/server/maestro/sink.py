@@ -22,6 +22,14 @@ class MaestroSend(AgentSend):
         super().__init__()
         self._sink = sink
 
+    def reply(self, text: str) -> AgentEvent:
+        """Publish without invoking another agent in routing v1."""
+        return self.text(text)
+
+    def handoff(self, participant_id: str, text: str) -> AgentEvent:
+        """Request one explicit, authorized invocation within the current causal budget."""
+        return AgentEvent("maestro.handoff", {"participant_id": participant_id, "text": text})
+
     def form(
         self,
         message: str,
@@ -192,7 +200,7 @@ class MaestroEventSink:
         self._streams.append(stream)
         return stream
 
-    def prepare_text(self, text: str, ordinal: int) -> MaestroOutputIntent:
+    def prepare_text(self, text: str, ordinal: int, handoff: str | None = None) -> MaestroOutputIntent:
         if not isinstance(text, str) or not text.strip():
             raise MaestroCallbackError("INVALID_REQUEST")
         try:
@@ -203,7 +211,11 @@ class MaestroEventSink:
         output = {
             "output_id": f"output:{ordinal}",
             "type": "message.create",
-            "payload": {"content": [{"type": "text", "text": text}], "mentions": []},
+            "payload": {
+                "content": [{"type": "text", "text": text}],
+                "mentions": [],
+                **({"handoff": {"recipients": [handoff]}} if handoff is not None else {}),
+            },
         }
         self._client._contracts.validate("Public.OutputRequest", {**output, "lease_fence": self._client._envelope["lease_fence"]})
         raw = json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -247,6 +259,12 @@ class MaestroEventSink:
                 if len(self._intents) >= 98:
                     raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
                 intent = self.prepare_text(event.data.get("text"), len(self._intents))
+                self._intents.append(intent)
+                await self.persist_with_retry(intent)
+            elif event.send_type == "maestro.handoff":
+                if set(event.data) != {"participant_id", "text"} or len(self._intents) >= 98:
+                    raise MaestroCallbackError("INVALID_REQUEST")
+                intent = self.prepare_text(event.data["text"], len(self._intents), event.data["participant_id"])
                 self._intents.append(intent)
                 await self.persist_with_retry(intent)
             elif event.send_type == "maestro.form.suspend":

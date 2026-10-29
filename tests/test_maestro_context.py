@@ -690,3 +690,33 @@ async def test_legacy_whatsapp_binding_still_allows_existing_child_task_semantic
         await asyncio.create_task(child())
     finally:
         reset_handler_context(tokens)
+
+
+@pytest.mark.parametrize("mutation", [None, "root", "thread", "cutoff", "recipient", "version", "history"])
+async def test_invocation_event_is_bound_to_current_execution(private_key, contracts, mutation):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        invocation = deepcopy(page["trigger_event"])
+        invocation["payload"]["routing_decision"] = {
+            "version": 1,
+            "mode": "direct",
+            "execution": "sequential",
+            "recipients": [memory._envelope["recipient_participant_id"]],
+        }
+        page["invocation_event"] = invocation
+        page["history"]["items"] = [deepcopy(invocation)]
+        if mutation in {"root", "thread"}:
+            invocation[f"{mutation}_id" if mutation == "thread" else "root_event_id"] = str(uuid4())
+        elif mutation == "cutoff":
+            invocation["sequence"] = str(int(memory._envelope["context_cutoff_sequence"]) + 1)
+        elif mutation == "recipient":
+            invocation["payload"]["routing_decision"]["recipients"] = [str(uuid4())]
+        elif mutation == "version":
+            invocation["payload"]["routing_decision"]["version"] = 2
+        elif mutation == "history":
+            page["history"]["items"][0]["payload"]["content"] = [{"type": "text", "text": "altered"}]
+        if mutation:
+            with pytest.raises(MaestroContextError):
+                memory._validate_page(page)
+        else:
+            assert (await memory.snapshot())["invocation_event"] == invocation

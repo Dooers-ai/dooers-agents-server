@@ -69,8 +69,22 @@ class MaestroMemory:
             or len({p["participant_id"] for p in page["participants"]}) != len(page["participants"])
         ):
             raise MaestroContextError("CONTEXT_INVALID")
+        invocation = page.get("invocation_event")
+        if invocation is not None:
+            decision = invocation["payload"].get("routing_decision", {})
+            if (
+                invocation["type"] != "message.created"
+                or decision.get("version") != 1
+                or invocation["root_event_id"] != envelope["root_event_id"]
+                or envelope["recipient_participant_id"] not in decision.get("recipients", [])
+            ):
+                raise MaestroContextError("CONTEXT_INVALID")
+        if invocation is not None and any(
+            event["event_id"] == invocation["event_id"] and event != invocation for event in page["history"]["items"]
+        ):
+            raise MaestroContextError("CONTEXT_INVALID")
         previous = (0, "")
-        for event in [trigger, *page["history"]["items"]]:
+        for event in [trigger, *([invocation] if invocation is not None else []), *page["history"]["items"]]:
             if event["thread_id"] != envelope["thread_id"] or (len(event["sequence"]), event["sequence"]) > (
                 len(envelope["context_cutoff_sequence"]),
                 envelope["context_cutoff_sequence"],
@@ -103,7 +117,7 @@ class MaestroMemory:
                 raise MaestroContextError("CONTEXT_LIMIT")
             if first is None:
                 first = page
-            elif page["trigger_event"] != first["trigger_event"]:
+            elif page["trigger_event"] != first["trigger_event"] or page.get("invocation_event") != first.get("invocation_event"):
                 raise MaestroContextError("CONTEXT_INVALID")
             for event in page["history"]["items"]:
                 if (
@@ -116,7 +130,12 @@ class MaestroMemory:
                 events.append(event)
             if not page["history"]["has_more"]:
                 self._client._check_current()
-                return {"trigger_event": deepcopy(first["trigger_event"]), "participants": deepcopy(page["participants"]), "events": events}
+                return {
+                    "trigger_event": deepcopy(first["trigger_event"]),
+                    **({"invocation_event": deepcopy(first["invocation_event"])} if "invocation_event" in first else {}),
+                    "participants": deepcopy(page["participants"]),
+                    "events": events,
+                }
             cursor = page["history"]["next_cursor"]
         raise MaestroContextError("CONTEXT_LIMIT")
 

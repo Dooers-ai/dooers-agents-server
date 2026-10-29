@@ -127,7 +127,7 @@ async def _incoming(
 
     envelope = memory._envelope
     trigger = snapshot["trigger_event"]
-    origin = trigger
+    origin = snapshot.get("invocation_event") or trigger
     resume = envelope.get("resume")
     form_data, form_event_id = None, None
     if resume:
@@ -276,7 +276,9 @@ async def maestro_handler_context(
         snapshot = await memory.snapshot()
         from .recipient_options import TurnSettings, prepare_recipient_options
 
-        selected_options, assert_options_current = prepare_recipient_options(snapshot["trigger_event"], memory._envelope, options_resolver)
+        selected_options, assert_options_current = prepare_recipient_options(
+            snapshot.get("invocation_event") or snapshot["trigger_event"], memory._envelope, options_resolver
+        )
         incoming = await _incoming(memory, snapshot, cancellation, private_resume, checkpoint_state)
         assert_options_current()
         if selected_options:

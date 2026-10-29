@@ -220,6 +220,13 @@ class MaestroCallbackClient(MaestroContextClient):
             or payload.get("output_id") != output["output_id"]
             or payload["content"] != output["payload"]["content"]
             or payload["mentions"] != output["payload"]["mentions"]
+            or (
+                output["payload"].get("handoff") is not None
+                and (
+                    payload.get("routing_decision", {}).get("mode") != "direct"
+                    or payload.get("routing_decision", {}).get("recipients") != output["payload"]["handoff"]["recipients"]
+                )
+            )
         ):
             self._closed = True
             raise MaestroCallbackError(unknown=True)
