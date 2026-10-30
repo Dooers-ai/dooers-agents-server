@@ -51,6 +51,8 @@ from dooers.agents.server.protocol.frames import (
     S2C_Ack,
     S2C_EventAppend,
     S2C_EventListResult,
+    S2C_TextDelta,
+    TextDeltaPayload,
     S2C_FeedbackAck,
     S2C_Pong,
     S2C_RunUpsert,
@@ -103,6 +105,7 @@ class WebSocketProtocol(Protocol):
 
 # Re-export for tests that still import from router
 _user_is_thread_participant = user_is_thread_participant
+resolve_scope = resolve_list_scope  # Backwards-compatible alias for scoped personal threads
 
 
 def _can_access_thread(user: User, thread: Thread, *, connection_workspace_id: str) -> bool:
@@ -310,6 +313,32 @@ class Router:
                     events=evs,
                 ),
             )
+        elif payload_type == "text.delta":
+            thread = await self._persistence.get_thread(payload["thread_id"])
+            if not thread or thread.agent_id != agent_id:
+                return
+            frame = S2C_TextDelta(
+                id=_generate_id(),
+                payload=TextDeltaPayload(
+                    thread_id=payload["thread_id"], run_id=payload["run_id"],
+                    sequence=payload["sequence"], text=payload["text"],
+                ),
+            )
+            message = serialize_frame(frame)
+            # Unlike agent-wide event broadcasts, live fragments must never
+            # leak to sockets without actual read access to this thread.
+            recipients = []
+            for ws in self._registry.get_connections(agent_id):
+                session = self._registry.session_for(ws)
+                if session and resolve_thread_access(
+                    session.user, thread, connection_workspace_id=session.workspace_id,
+                ).read:
+                    recipients.append(ws)
+            await asyncio.gather(
+                *(self._registry._safe_send(ws, message) for ws in recipients),
+                return_exceptions=True,
+            )
+            return
         elif payload_type == "run.upsert":
             frame = S2C_RunUpsert(
                 id=_generate_id(),
