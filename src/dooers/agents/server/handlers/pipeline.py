@@ -500,6 +500,8 @@ class HandlerPipeline:
                             {
                                 "type": "text.delta",
                                 "thread_id": thread_id,
+                                # Internal trusted object avoids a DB read per token.
+                                "thread": thread,
                                 "run_id": current_run_id,
                                 "sequence": delta_sequence,
                                 "text": delta,
