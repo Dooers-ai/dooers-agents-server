@@ -54,9 +54,10 @@ def test_live_fragment_reaches_only_authorized_thread_viewers():
         registry=registry, subscriptions={},
     )
     asyncio.run(router._broadcast_to_agent_dict("agent-1", {
-        "type": "text.delta", "thread_id": "thread-1", "run_id": "run-1",
+        "type": "text.delta", "thread_id": "thread-1", "thread": thread, "run_id": "run-1",
         "sequence": 1, "text": "hello",
     }))
+    persistence.get_thread.assert_not_awaited()
     assert registry._safe_send.await_count == 1
     ws, payload = registry._safe_send.await_args.args
     assert ws is allowed
