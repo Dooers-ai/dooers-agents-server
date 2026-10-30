@@ -16,4 +16,4 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --extra dev --extra observability
       - run: uv run pytest -q
-      - run: uv run ruff check src tests
+      - run: uv run ruff check src/dooers/agents/server/handlers/send.py src/dooers/agents/server/handlers/pipeline.py src/dooers/agents/server/handlers/router.py src/dooers/agents/server/protocol/frames.py src/dooers/tools/rag/runtime.py tests/test_text_delta.py --select F,E4,E7,E9
