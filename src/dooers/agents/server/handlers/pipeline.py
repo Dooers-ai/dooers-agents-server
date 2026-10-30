@@ -398,6 +398,7 @@ class HandlerPipeline:
 
         current_run_id: str | None = None
         current_agent_id: str | None = None
+        delta_sequence = 0
 
         policy_denial: str | None = None
         if result.user_event.type == "message":
@@ -487,6 +488,25 @@ class HandlerPipeline:
                         )
                         current_run_id = None
                         current_agent_id = None
+
+                elif event.send_type == "text_delta":
+                    # Streaming data is ephemeral. Do not persist fragments in history
+                    # or dispatch them as individual WhatsApp messages.
+                    delta = event.data.get("text")
+                    if current_run_id and isinstance(delta, str) and delta and len(delta) <= 8192:
+                        delta_sequence += 1
+                        await self._broadcast(
+                            context.agent_id,
+                            {
+                                "type": "text.delta",
+                                "thread_id": thread_id,
+                                # Internal trusted object avoids a DB read per token.
+                                "thread": thread,
+                                "run_id": current_run_id,
+                                "sequence": delta_sequence,
+                                "text": delta,
+                            },
+                        )
 
                 elif event.send_type == "text":
                     event_id = _generate_id()

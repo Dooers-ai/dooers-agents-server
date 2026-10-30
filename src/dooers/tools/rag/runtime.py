@@ -31,7 +31,12 @@ def bind_execution_context(
     user_id: str = "",
     channel: str = "",
 ) -> None:
-    task = asyncio.current_task()
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        # AgentIncoming also appears in synchronous preflight/tests: no task
+        # exists yet and there is no privileged execution context to bind.
+        return
     if task is None:
         return
     user_id = (user_id or "").strip()
@@ -51,5 +56,8 @@ def bind_execution_context(
 
 
 def current_execution_context() -> RAGExecutionContext | None:
-    task = asyncio.current_task()
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return None
     return _contexts.get(task) if task is not None else None
