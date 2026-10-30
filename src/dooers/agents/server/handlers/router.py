@@ -314,8 +314,12 @@ class Router:
                 ),
             )
         elif payload_type == "text.delta":
-            thread = await self._persistence.get_thread(payload["thread_id"])
-            if not thread or thread.agent_id != agent_id:
+            # The pipeline already holds this authenticated thread snapshot.
+            # Do not make a persistence round trip for every model token.
+            thread = payload.get("thread")
+            if not isinstance(thread, Thread):
+                thread = await self._persistence.get_thread(payload["thread_id"])
+            if not thread or thread.id != payload["thread_id"] or thread.agent_id != agent_id:
                 return
             frame = S2C_TextDelta(
                 id=_generate_id(),
