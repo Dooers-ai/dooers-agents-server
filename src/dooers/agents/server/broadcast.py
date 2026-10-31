@@ -47,11 +47,13 @@ async def broadcast_thread_upsert(
 
     async def send_one(ws: WebSocketProtocol) -> bool:
         session = registry.session_for(ws)
-        outgoing = (
-            attach_thread_access(bare, session.user, connection_workspace_id=session.workspace_id)
-            if session is not None
-            else bare
-        )
+        if session is None:
+            return False
+        outgoing = attach_thread_access(bare, session.user, connection_workspace_id=session.workspace_id)
+        # Only sockets that may read the thread learn it exists: an agent shared by a whole
+        # organization must not put one person's new chat (title included) in everyone's sidebar.
+        if outgoing.access is None or not outgoing.access.read:
+            return False
         frame = S2C_ThreadUpsert(
             id=_generate_id(),
             payload=ThreadUpsertPayload(thread=outgoing),

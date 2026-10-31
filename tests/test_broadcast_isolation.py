@@ -79,3 +79,16 @@ async def test_unknown_thread_is_not_broadcast():
     broadcaster, _, _, sockets = await _setup()
     await broadcaster("a1", {"type": "event.append", "thread_id": "missing", "events": [_event()]})
     assert all(s.frames() == [] for s in sockets)
+
+
+async def test_thread_upsert_reaches_only_who_can_read_it():
+    from dooers.agents.server.broadcast import broadcast_thread_upsert
+
+    broadcaster, _, thread, (alice, bob, carol) = await _setup()
+    sent = await broadcast_thread_upsert(broadcaster._registry, "a1", thread.model_copy(update={"title": "Salário da Alice"}))
+    assert len(alice.frames("thread.upsert")) == 1
+    assert alice.frames("thread.upsert")[0]["payload"]["thread"]["title"] == "Salário da Alice"
+    # Bob is just another member: the title of Alice's chat never reaches his sidebar.
+    assert bob.frames() == []
+    assert sent == len(alice.frames("thread.upsert")) + len(carol.frames("thread.upsert"))
+

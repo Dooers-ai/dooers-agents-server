@@ -30,6 +30,9 @@ check the server version (servers before 0.26.0 close the socket on an unknown f
   per-connection worker (same one-at-a-time order as before), so pings, `run.cancel`,
   subscriptions and settings frames are served while the agent works, and a turn finishes even
   if the browser disconnects. Routers built by hand keep the inline behaviour.
+- **Thread metadata isolation**: `thread.upsert` (title, participants, dates) now reaches only sockets
+  that may read the thread; before, every socket connected to the agent got it and the client added
+  other people's new chats to the sidebar. Sockets without a session receive nothing.
 - **Parallel threads**: turns run off the WebSocket receive loop, one queue per thread — the turns of a
   thread keep their order, different threads run in parallel (up to `max_parallel_turns`, env
   `AGENT_MAX_PARALLEL_TURNS`, default 4, per connection). A long answer in one chat no longer holds
