@@ -210,6 +210,89 @@ all_values = await settings.get_all(exclude=["avatar_base64"])
 await settings.set("field_id", new_value)
 ```
 
+## Frontier agent features (0.26)
+
+### Streaming
+
+```python
+async def agent_handler(incoming, send, memory, analytics, settings):
+    yield send.run_start()
+    sid = send.new_stream_id()
+    async for chunk in llm_stream(...):
+        if incoming.context.cancelled:      # user pressed Stop
+            break
+        yield send.text_delta(chunk, stream_id=sid)
+    yield send.text(full_text, stream_id=sid)   # finalize (same event id)
+    yield send.run_end()
+```
+
+`send.reasoning_delta` / `send.reasoning(..., stream_id=)` do the same for thinking. Clients
+receive `event.append` (`streaming: true`), then `event.delta` frames, then the final event.
+
+### Stop (`run.cancel`)
+
+Clients send `run.cancel {thread_id, run_id?}`. The handler is interrupted at its current
+`await` (an LLM stream, a tool) and the partial text is kept with `data.interrupted = true`; the
+run ends as `canceled`. Outside WebSockets use `agent_server.cancel_run(thread_id)`.
+
+### Long-term memory
+
+```python
+mem = memory.long_term                       # bound to this user + workspace + agent
+if mem.available:
+    prefs = await mem.preferences()          # custom instructions / about me / enabled
+    relevant = await mem.recall(incoming.message, limit=8)
+    await mem.remember("Prefers answers in bullet points", kind="preference")
+    await mem.remember("Fiscal year closes on the 25th", scope="workspace")
+```
+
+Users manage their memories over the socket (`memory.list|create|update|delete|prefs.*`).
+
+### Reminders and recurring tasks
+
+```python
+from datetime import datetime, timedelta, UTC
+
+await memory.schedules.create(
+    title="Weekly market brief",
+    instruction="Search the news about our competitors and summarize them",
+    kind="task",
+    recurrence={"freq": "weekly", "by_weekday": [0], "at_time": "09:00"},
+    timezone=incoming.context.timezone,
+)
+
+agent_server.enable_schedules(agent_handler)      # in-process poller
+
+@app.post("/internal/schedules/tick")             # for scale-to-zero hosts
+async def tick():
+    return [r.model_dump() for r in await agent_server.run_due_schedules()]
+```
+
+When a schedule fires, the handler runs in the schedule's thread with
+`incoming.context.trigger == {"type": "schedule", "schedule_id": ..., "title": ..., ...}`.
+
+### Durable generated files
+
+```python
+stored = await agent_server.store_artifact(
+    data=pdf_bytes, filename="report.pdf", mime_type="application/pdf",
+    agent_id=incoming.context.agent_id, thread_id=incoming.context.thread_id,
+)
+if stored:
+    yield send.document(stored["url"], "report.pdf", "application/pdf",
+                        ref_id=stored["ref_id"], size_bytes=stored["size_bytes"])
+```
+
+### Managed sandbox
+
+```python
+from dooers.tools import sandbox
+
+box = await sandbox.open(profile="documents")
+await box.write_file("in.csv", data)
+result = await box.exec(["python3", "-c", "import pandas; print(pandas.__version__)"])
+```
+
 ## Dispatch API
 
 Full signature for programmatic handler execution.

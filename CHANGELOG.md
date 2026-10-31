@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] — 2026-10-31
+
+Platform support for frontier, multi-user agents. Every new frame is additive; clients must
+check the server version (servers before 0.26.0 close the socket on an unknown frame type).
+
+### Added
+
+- **Token streaming.** `send.text_delta(delta, stream_id=)` / `send.reasoning_delta(...)` stream an
+  assistant message while it is generated; `send.text(text, stream_id=)` /
+  `send.reasoning(text, stream_id=)` finalize it (same event id). The first delta broadcasts
+  `event.append` with `streaming: true`, the next ones a new S2C frame **`event.delta`**
+  (`thread_id`, `event_id`, `kind`, `delta`, `seq`, coalesced every ~50 ms / 512 chars), and the
+  final message is persisted and broadcast with `finalized: true`. Streams left open are
+  finalized at `run_end`, on handler errors and on cancellation. `send.new_stream_id()` helper.
+  WhatsApp and other channels only receive the final text.
+- **Stop a run.** C2S **`run.cancel`** `{thread_id, run_id?}` (participants or thread managers).
+  The pipeline interrupts the handler at its current `await` (never in the middle of its own
+  persistence), keeps the streamed text with `data.interrupted = true`, and records the run as
+  `canceled`. `incoming.context.cancelled` for cooperative checks; `AgentServer.cancel_run()` and
+  `AgentServer.run_registry` for REST/dispatch runs. A `running` row nobody owns for 10 minutes
+  (crash/redeploy) is closed by `run.cancel` too.
+- **Turns no longer block the socket.** `AgentServer.handle` runs `event.create` turns on a
+  per-connection worker (same one-at-a-time order as before), so pings, `run.cancel`,
+  subscriptions and settings frames are served while the agent works, and a turn finishes even
+  if the browser disconnects. Routers built by hand keep the inline behaviour.
+- **Long-term memory** (`features/memory`): tables `{prefix}memories` (scopes `user` /
+  `workspace`, kinds, tags, pinned, usage, expiry, soft delete) and `{prefix}memory_prefs`
+  (enabled, custom instructions, "about me"). Handler API `memory.long_term`
+  (`remember` with de-duplication, `recall` ranked by full-text relevance + pinning + usage +
+  recency, `list`, `update`, `forget`, `preferences`, `set_preferences`); owners always come from
+  the turn context. WebSocket: `memory.list | create | update | delete | prefs.get |
+  prefs.update` → `memory.list.result`, `memory.upsert`, `memory.deleted`, `memory.prefs`.
+  Workspace memories are readable by members and editable by managers. Guests have no memory.
+  `format_memories_for_prompt()` helper.
+- **Schedules** (`features/schedules`): reminders and recurring tasks (`once`, `minutely`,
+  `hourly`, `daily`, `weekly`, `monthly`, with interval, weekdays, month day, local time,
+  `until`, `count`) evaluated in the user's time zone. Handler API `memory.schedules`
+  (`create`, `list`, `pause`, `resume`, `cancel`). `AgentServer.enable_schedules(handler)`
+  starts an in-process poller; `AgentServer.run_due_schedules()` claims due rows with a lease
+  (`FOR UPDATE SKIP LOCKED`, safe across replicas) for a tick endpoint on hosts that scale to
+  zero. A firing runs the handler in the schedule's thread as a `system` event with
+  `incoming.context.trigger = {"type": "schedule", ...}`. WebSocket: `schedule.list | update |
+  delete` → `schedule.list.result`, `schedule.upsert`, `schedule.deleted`.
+- **Durable agent artifacts.** `AgentServer.store_artifact(...)` uploads generated files to chat
+  storage and returns a `ref_id`; `send.document(..., ref_id=, size_bytes=)` and
+  `send.image(..., ref_id=, filename=)` persist it so the URL is re-signed on every replay.
+- `ChatContext.timezone` and `ChatContext.locale`; `incoming.context.timezone`.
+- `dispatch(..., chat_context=, trigger=, actor=, data=)`.
+- **`dooers.tools.sandbox`**: managed sandbox client (`open`, `exec`, `write_file`, `read_file`,
+  `close`) authenticated with a Core service token (`sandbox-service` / `sandbox:exec`), one
+  sandbox per thread. Configured by `DOOERS_SANDBOX_SERVICE_URL`.
+- Config: `memory_enabled`, `schedules_enabled`, `schedules_poll_interval_seconds`
+  (`AGENT_MEMORY_ENABLED`, `AGENT_SCHEDULES_ENABLED`, `AGENT_SCHEDULES_POLL_SECONDS`),
+  `schedule_lease_seconds`. Analytics events `run.canceled`, `schedule.fired`.
+
+### Fixed
+
+- **Thread events no longer reach every socket of the agent.** `event.append`, `run.upsert` and
+  `event.delta` (pipeline, REST dispatch and `BroadcastManager.send_event`) go only to sockets
+  subscribed to the thread or whose user participates in it. Before, an agent shared by an
+  organization streamed each person's conversation to everyone connected to it.
+- The tool execution context (RAG, sandbox) now reaches child tasks, so parallel tool calls
+  started with `asyncio.gather` keep the agent/workspace/user scope.
+- Building `AgentIncoming` outside a running event loop no longer raises `RuntimeError`.
+- `run.upsert` at the end of a run keeps the original `started_at`.
+- Inbound events recorded with a non-user actor (`ingest`, schedules) no longer fail validation.
+
 ## [0.25.0] — 2026-10-29
 
 ### Added

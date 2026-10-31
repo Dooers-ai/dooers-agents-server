@@ -137,5 +137,17 @@ class AgentConfig:
     #: The worker never talks to GCP directly.
     otel_service_url: str = field(default_factory=lambda: (os.environ.get("AGENT_OTEL_SERVICE_URL") or "").strip())
 
+    #: Long-term memory (``memory.long_term`` + ``memory.*`` frames). Needs a SQL backend.
+    memory_enabled: bool = field(default_factory=lambda: _env_bool("AGENT_MEMORY_ENABLED", True))
+    #: Reminders / recurring tasks (``memory.schedules`` + ``schedule.*`` frames). Needs a SQL backend.
+    schedules_enabled: bool = field(default_factory=lambda: _env_bool("AGENT_SCHEDULES_ENABLED", True))
+    #: In-process poller for due schedules once ``AgentServer.enable_schedules`` is called (0 = off;
+    #: rely on an external tick calling ``run_due_schedules``). Env ``AGENT_SCHEDULES_POLL_SECONDS``.
+    schedules_poll_interval_seconds: int = field(
+        default_factory=lambda: int(os.environ.get("AGENT_SCHEDULES_POLL_SECONDS", "30") or "30")
+    )
+    #: How long a replica owns a claimed schedule before another may retry it.
+    schedule_lease_seconds: int = 900
+
     #: Service name on exported spans (env ``OTEL_SERVICE_NAME``). Empty → platform default.
     otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())

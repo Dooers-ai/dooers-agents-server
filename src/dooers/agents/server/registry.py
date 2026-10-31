@@ -19,6 +19,8 @@ class ConnectionSession:
 
     user: User
     workspace_id: str
+    #: Router id of this socket (keys the thread-subscription map).
+    ws_id: str = ""
 
 
 class ConnectionRegistry:
@@ -34,13 +36,14 @@ class ConnectionRegistry:
         *,
         user: User | None = None,
         workspace_id: str = "",
+        ws_id: str = "",
     ) -> None:
         async with self._lock:
             if agent_id not in self._connections:
                 self._connections[agent_id] = set()
             self._connections[agent_id].add(ws)
             if user is not None:
-                self._sessions[ws] = ConnectionSession(user=user, workspace_id=workspace_id)
+                self._sessions[ws] = ConnectionSession(user=user, workspace_id=workspace_id, ws_id=ws_id)
 
     async def unregister(self, agent_id: str, ws: WebSocketProtocol) -> None:
         async with self._lock:
@@ -73,6 +76,28 @@ class ConnectionRegistry:
             return_exceptions=True,
         )
         return sum(1 for r in results if r is True)
+
+    async def send_to(self, connections: list[WebSocketProtocol] | set[WebSocketProtocol], message: str) -> int:
+        """Send one serialized frame to an explicit recipient list."""
+        if not connections:
+            return 0
+        results = await asyncio.gather(
+            *[self._safe_send(ws, message) for ws in connections],
+            return_exceptions=True,
+        )
+        return sum(1 for r in results if r is True)
+
+    def connections_for_user(self, agent_id: str, user_id: str) -> list[WebSocketProtocol]:
+        """Sockets of ``agent_id`` opened by ``user_id`` (all tabs/devices of that person)."""
+        uid = (user_id or "").strip()
+        if not uid:
+            return []
+        out: list[WebSocketProtocol] = []
+        for ws in self.get_connections(agent_id):
+            session = self._sessions.get(ws)
+            if session is not None and (session.user.user_id or "") == uid:
+                out.append(ws)
+        return out
 
     async def broadcast_except(
         self,

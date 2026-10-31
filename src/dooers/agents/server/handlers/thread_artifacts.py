@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Literal
 
 from dooers.agents.server.protocol.models import (
     ArtifactDirection,
-    ArtifactKind,
     Thread,
     ThreadArtifact,
     ThreadEvent,

@@ -15,11 +15,11 @@ from dooers.agents.server.protocol.frames import (
     C2S_SettingsUnsubscribe,
     C2S_ThreadDelete,
     C2S_ThreadList,
-    C2S_ThreadSearch,
     C2S_ThreadParticipantsAdd,
+    C2S_ThreadSearch,
     C2S_ThreadSubscribe,
-    C2S_ThreadUpdate,
     C2S_ThreadUnsubscribe,
+    C2S_ThreadUpdate,
     FeedbackAckPayload,
     FeedbackPayload,
     # Existing S2C frames

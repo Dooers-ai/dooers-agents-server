@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -20,7 +22,6 @@ from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.persistence.base import Persistence
-from dooers.agents.server.thread_queue import queue_for_create, resolve_thread_queue
 from dooers.agents.server.protocol.models import (
     AudioPart,
     ChatContext,
@@ -28,7 +29,6 @@ from dooers.agents.server.protocol.models import (
     ContentPart,
     DocumentPart,
     ImagePart,
-    WorkspaceQueueCatalog,
     Run,
     TextPart,
     Thread,
@@ -48,6 +48,7 @@ from dooers.agents.server.protocol.models import (
     WireS2C_FormTextElement,
     WireS2C_ImagePart,
     WireS2C_TextPart,
+    WorkspaceQueueCatalog,
     deserialize_s2c_part,
 )
 from dooers.agents.server.storage.channel_media_ingest import prepare_inline_media_part
@@ -61,17 +62,45 @@ from dooers.agents.server.storage.chat_upload_file_policy import (
     PERSIST_CHAT_ATTACHMENTS_FIELD,
     enforce_allowed_chat_file_kind,
 )
+from dooers.agents.server.thread_queue import queue_for_create, resolve_thread_queue
 from dooers.tools.whatsapp.runtime import bind_handler_context, reset_handler_context
 
 if TYPE_CHECKING:
     from dooers.agents.server.features.analytics.collector import AnalyticsCollector
+    from dooers.agents.server.features.memory.api import MemoryNotifier
+    from dooers.agents.server.features.memory.store import MemoryStore
+    from dooers.agents.server.features.schedules.api import ScheduleNotifier
+    from dooers.agents.server.features.schedules.store import ScheduleStore
     from dooers.agents.server.features.settings.broadcaster import SettingsBroadcaster
     from dooers.agents.server.features.settings.models import SettingsSchema
+    from dooers.agents.server.runs import ActiveRun, RunRegistry
     from dooers.agents.server.upload_store import UploadStore
 
 from dooers.agents.server.upload_store import UploadEntry
 
 logger = logging.getLogger("agents")
+
+#: Streaming deltas are coalesced: one ``event.delta`` frame at most every this many seconds…
+STREAM_FLUSH_SECONDS = 0.05
+#: …or as soon as this many characters are buffered.
+STREAM_FLUSH_CHARS = 512
+
+
+class _RunCancelled(Exception):
+    """Internal: stop requested between handler events."""
+
+
+@dataclass
+class _OpenStream:
+    event_id: str
+    kind: str  # "text" | "reasoning"
+    author: str
+    created_at: datetime
+    run_id: str | None
+    text: str = ""
+    pending: str = ""
+    seq: int = 0
+    last_flush: float = 0.0
 
 
 class UploadReferenceError(ValueError):
@@ -153,6 +182,8 @@ class HandlerContext:
     #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
     persist_actor: str = "user"
     persist_author: str | None = None
+    #: Non-human origin of the turn (``{"type": "schedule", ...}``); copied to ``incoming.context.trigger``.
+    trigger: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.user is None:
@@ -181,7 +212,17 @@ class HandlerPipeline:
         content_policy_denial_message: str | None = None,
         agent_config: AgentConfig | None = None,
         whatsapp_outbound: Callable[[AgentEvent, HandlerContext], Awaitable[dict[str, Any] | None]] | None = None,
+        run_registry: RunRegistry | None = None,
+        memory_store: MemoryStore | None = None,
+        schedule_store: ScheduleStore | None = None,
+        memory_notifier: MemoryNotifier | None = None,
+        schedule_notifier: ScheduleNotifier | None = None,
     ):
+        self._run_registry = run_registry
+        self._memory_store = memory_store
+        self._schedule_store = schedule_store
+        self._memory_notifier = memory_notifier
+        self._schedule_notifier = schedule_notifier
         self._persistence = persistence
         self._broadcast_callback = broadcast_callback
         self._analytics_collector = analytics_collector
@@ -321,7 +362,7 @@ class HandlerPipeline:
             type=context.event_type,
             actor=context.persist_actor,  # type: ignore[arg-type]
             author=author,
-            user=context.user if context.persist_actor == "user" else None,
+            user=context.user if context.persist_actor == "user" else User(user_id=""),
             content=storage_parts if context.event_type != "form.response" else None,
             data=self._with_inbound_source_data(context.data, context),
             created_at=now,
@@ -370,6 +411,7 @@ class HandlerPipeline:
             queue=thread.queue,
             queues=list(context.queues),
             chat_context=context.chat_context,
+            trigger=context.trigger,
         )
         incoming = AgentIncoming(
             message=message,
@@ -384,7 +426,7 @@ class HandlerPipeline:
             incoming.form_event_id = context.data.get("form_event_id")
 
         send = AgentSend()
-        memory = AgentMemory(thread_id=thread_id, persistence=self._persistence)
+        memory = self._build_memory(context, thread_id=thread_id, event_id=result.user_event.id)
 
         analytics = self._create_analytics(
             agent_id=context.agent_id,
@@ -398,6 +440,8 @@ class HandlerPipeline:
 
         current_run_id: str | None = None
         current_agent_id: str | None = None
+        current_run_started_at: datetime | None = None
+        streams: dict[str, _OpenStream] = {}
 
         policy_denial: str | None = None
         if result.user_event.type == "message":
@@ -421,13 +465,40 @@ class HandlerPipeline:
             persistence=self._persistence,
             agent_id=context.agent_id,
         )
+        active = self._register_active_run(thread_id, context.agent_id)
+        agent_context._active_run = active
+        handler_stream = _handler_event_stream()
         try:
-            async for event in _handler_event_stream():
+            while True:
+                if active is not None and active.cancel_requested:
+                    raise _RunCancelled()
+                if active is not None:
+                    active.in_handler = True
+                try:
+                    event = await handler_stream.__anext__()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    if active is not None:
+                        active.in_handler = False
+                if active is not None and active.cancel_requested:
+                    # Stop requested while the handler produced this event: drop it.
+                    raise _RunCancelled()
                 event_now = _now()
+
+                if event.send_type in ("text_delta", "reasoning_delta"):
+                    await self._on_stream_delta(
+                        streams, event, context=context, thread_id=thread_id, run_id=current_run_id, now=event_now
+                    )
+                    yield event
+                    continue
 
                 if event.send_type == "run_start":
                     current_run_id = _generate_id()
                     current_agent_id = event.data.get("agent_id")
+                    current_run_started_at = event_now
+                    if active is not None:
+                        active.run_id = current_run_id
                     run = Run(
                         id=current_run_id,
                         thread_id=thread_id,
@@ -467,13 +538,14 @@ class HandlerPipeline:
                     )
 
                 elif event.send_type == "run_end":
+                    await self._finalize_open_streams(streams, context=context, thread_id=thread_id)
                     if current_run_id:
                         run = Run(
                             id=current_run_id,
                             thread_id=thread_id,
                             agent_id=current_agent_id,
                             status=event.data.get("status", "succeeded"),
-                            started_at=event_now,
+                            started_at=current_run_started_at or event_now,
                             ended_at=event_now,
                             error=event.data.get("error"),
                         )
@@ -487,6 +559,24 @@ class HandlerPipeline:
                         )
                         current_run_id = None
                         current_agent_id = None
+
+                elif event.send_type == "text" and streams.get(event.data.get("stream_id") or "") is not None:
+                    await self._finalize_stream(
+                        streams.pop(event.data["stream_id"]),
+                        context=context,
+                        thread_id=thread_id,
+                        final_text=event.data.get("text"),
+                        source_event=event,
+                    )
+
+                elif event.send_type == "reasoning" and streams.get(event.data.get("stream_id") or "") is not None:
+                    await self._finalize_stream(
+                        streams.pop(event.data["stream_id"]),
+                        context=context,
+                        thread_id=thread_id,
+                        final_text=event.data.get("text"),
+                        source_event=event,
+                    )
 
                 elif event.send_type == "text":
                     event_id = _generate_id()
@@ -602,6 +692,8 @@ class HandlerPipeline:
                                 url=event.data["url"],
                                 mime_type=event.data.get("mime_type"),
                                 alt=event.data.get("alt"),
+                                filename=event.data.get("filename"),
+                                ref_id=event.data.get("ref_id"),
                             )
                         ],
                         data=self._assistant_delivery_data(context),
@@ -643,6 +735,8 @@ class HandlerPipeline:
                                 url=event.data["url"],
                                 filename=event.data["filename"],
                                 mime_type=event.data["mime_type"],
+                                size_bytes=event.data.get("size_bytes"),
+                                ref_id=event.data.get("ref_id"),
                             )
                         ],
                         data=self._assistant_delivery_data(context),
@@ -1068,6 +1162,8 @@ class HandlerPipeline:
 
                 yield event
 
+            await self._finalize_open_streams(streams, context=context, thread_id=thread_id)
+
             if result.user_event.run_id is None:
                 await self._track_event(
                     context.agent_id,
@@ -1081,7 +1177,38 @@ class HandlerPipeline:
                     workspace_id=context.workspace_id,
                 )
 
+        except (_RunCancelled, asyncio.CancelledError) as exc:
+            requested = active is not None and active.cancel_requested
+            if isinstance(exc, asyncio.CancelledError):
+                if not requested:
+                    # Shutdown / caller cancellation: record it, then let the cancellation propagate.
+                    await self._close_canceled_run(
+                        streams,
+                        handler_stream,
+                        context=context,
+                        thread_id=thread_id,
+                        run_id=current_run_id,
+                        agent_id=current_agent_id,
+                        started_at=current_run_started_at,
+                        reason="interrupted",
+                    )
+                    raise
+                task = asyncio.current_task()
+                if task is not None:
+                    task.uncancel()
+            await self._close_canceled_run(
+                streams,
+                handler_stream,
+                context=context,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                agent_id=current_agent_id,
+                started_at=current_run_started_at,
+                reason=(active.cancel_reason if active else None) or "user_canceled",
+            )
         except Exception as e:
+            with contextlib.suppress(Exception):
+                await self._finalize_open_streams(streams, context=context, thread_id=thread_id, interrupted=True)
             if result.user_event.run_id is None:
                 await self._track_event(
                     context.agent_id,
@@ -1151,7 +1278,245 @@ class HandlerPipeline:
 
             raise HandlerError(str(e), original=e) from e
         finally:
+            if active is not None and self._run_registry is not None:
+                self._run_registry.unregister(active)
             reset_handler_context(runtime_tokens)
+
+    # --- run control -------------------------------------------------------------------
+
+    def _register_active_run(self, thread_id: str, agent_id: str) -> ActiveRun | None:
+        if self._run_registry is None:
+            return None
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        return self._run_registry.register(thread_id=thread_id, agent_id=agent_id, task=task)
+
+    async def _close_canceled_run(
+        self,
+        streams: dict[str, _OpenStream],
+        handler_stream: Any,
+        *,
+        context: HandlerContext,
+        thread_id: str,
+        run_id: str | None,
+        agent_id: str | None,
+        started_at: datetime | None,
+        reason: str,
+    ) -> None:
+        with contextlib.suppress(BaseException):
+            await handler_stream.aclose()
+        await self._finalize_open_streams(streams, context=context, thread_id=thread_id, interrupted=True)
+        now = _now()
+        if run_id:
+            run = Run(
+                id=run_id,
+                thread_id=thread_id,
+                agent_id=agent_id,
+                status="canceled",
+                started_at=started_at or now,
+                ended_at=now,
+                error=reason,
+            )
+            await self._persistence.update_run(run)
+            await self._broadcast(context.agent_id, {"type": "run.upsert", "run": run})
+        await self._track_event(
+            context.agent_id,
+            AnalyticsEvent.RUN_CANCELED.value,
+            thread_id=thread_id,
+            user_id=context.user.user_id,
+            run_id=run_id,
+            data={"reason": reason},
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+        )
+        logger.info("[agents] run canceled thread=%s run=%s reason=%s", thread_id, run_id, reason)
+
+    # --- long-term memory / schedules bound to the turn ----------------------------------
+
+    def _build_memory(self, context: HandlerContext, *, thread_id: str, event_id: str) -> AgentMemory:
+        from dooers.agents.server.features.memory.api import LongTermMemory
+        from dooers.agents.server.features.memory.models import MemoryOwner
+        from dooers.agents.server.features.schedules.api import AgentSchedules
+
+        user = context.user or User(user_id="")
+        owner = MemoryOwner(
+            agent_id=context.agent_id,
+            organization_id=context.organization_id or "",
+            workspace_id=context.workspace_id or "",
+            user_id=user.user_id or "",
+        )
+        long_term = LongTermMemory(
+            self._memory_store,
+            owner,
+            notifier=self._memory_notifier,
+            thread_id=thread_id,
+            event_id=event_id,
+        )
+        schedules = AgentSchedules(
+            self._schedule_store,
+            agent_id=context.agent_id,
+            organization_id=context.organization_id or "",
+            workspace_id=context.workspace_id or "",
+            user_id=user.user_id or "",
+            user_name=user.user_name,
+            user_email=user.user_email,
+            thread_id=thread_id,
+            default_timezone=context.chat_context.timezone if context.chat_context else None,
+            notifier=self._schedule_notifier,
+        )
+        return AgentMemory(thread_id=thread_id, persistence=self._persistence, long_term=long_term, schedules=schedules)
+
+    # --- streaming ----------------------------------------------------------------------
+
+    def _stream_thread_event(
+        self,
+        stream: _OpenStream,
+        *,
+        context: HandlerContext,
+        thread_id: str,
+        text: str,
+        streaming: bool,
+        interrupted: bool = False,
+    ) -> ThreadEvent:
+        if stream.kind == "reasoning":
+            data: dict[str, Any] = {"text": text}
+            if interrupted:
+                data["interrupted"] = True
+            return ThreadEvent(
+                id=stream.event_id,
+                thread_id=thread_id,
+                run_id=stream.run_id,
+                type="reasoning",
+                actor="assistant",
+                author=stream.author,
+                data=data,
+                created_at=stream.created_at,
+                streaming=streaming,
+                finalized=None if streaming else True,
+            )
+        delivery = self._assistant_delivery_data(context) or {}
+        if interrupted:
+            delivery = {**delivery, "interrupted": True}
+        return ThreadEvent(
+            id=stream.event_id,
+            thread_id=thread_id,
+            run_id=stream.run_id,
+            type="message",
+            actor="assistant",
+            author=stream.author,
+            content=[WireS2C_TextPart(text=text)],
+            data=delivery or None,
+            created_at=stream.created_at,
+            streaming=streaming,
+            finalized=None if streaming else True,
+        )
+
+    async def _on_stream_delta(
+        self,
+        streams: dict[str, _OpenStream],
+        event: AgentEvent,
+        *,
+        context: HandlerContext,
+        thread_id: str,
+        run_id: str | None,
+        now: datetime,
+    ) -> None:
+        stream_id = str(event.data.get("stream_id") or "")
+        delta = str(event.data.get("delta") or "")
+        if not stream_id:
+            return
+        stream = streams.get(stream_id)
+        if stream is None:
+            if not delta:
+                return
+            stream = _OpenStream(
+                event_id=_generate_id(),
+                kind="reasoning" if event.send_type == "reasoning_delta" else "text",
+                author=event.data.get("author") or self._assistant_name,
+                created_at=now,
+                run_id=run_id,
+                text=delta,
+                last_flush=time.monotonic(),
+            )
+            streams[stream_id] = stream
+            draft = self._stream_thread_event(stream, context=context, thread_id=thread_id, text=delta, streaming=True)
+            await self._broadcast(context.agent_id, {"type": "event.append", "thread_id": thread_id, "events": [draft]})
+            return
+        if not delta:
+            return
+        stream.text += delta
+        stream.pending += delta
+        if time.monotonic() - stream.last_flush >= STREAM_FLUSH_SECONDS or len(stream.pending) >= STREAM_FLUSH_CHARS:
+            await self._flush_stream(stream, context=context, thread_id=thread_id)
+
+    async def _flush_stream(self, stream: _OpenStream, *, context: HandlerContext, thread_id: str) -> None:
+        if not stream.pending:
+            return
+        stream.seq += 1
+        payload = {
+            "type": "event.delta",
+            "thread_id": thread_id,
+            "event_id": stream.event_id,
+            "run_id": stream.run_id,
+            "kind": stream.kind,
+            "delta": stream.pending,
+            "seq": stream.seq,
+        }
+        stream.pending = ""
+        stream.last_flush = time.monotonic()
+        await self._broadcast(context.agent_id, payload)
+
+    async def _finalize_stream(
+        self,
+        stream: _OpenStream,
+        *,
+        context: HandlerContext,
+        thread_id: str,
+        final_text: str | None = None,
+        source_event: AgentEvent | None = None,
+        interrupted: bool = False,
+    ) -> ThreadEvent:
+        text = final_text if final_text is not None else stream.text
+        thread_event = self._stream_thread_event(
+            stream, context=context, thread_id=thread_id, text=text, streaming=False, interrupted=interrupted
+        )
+        await self._persistence.create_event(thread_event)
+        if stream.kind == "text" and text.strip():
+            outbound = source_event or AgentEvent(send_type="text", data={"text": text, "author": stream.author})
+            if outbound.data.get("text") != text:
+                outbound = AgentEvent(send_type="text", data={**outbound.data, "text": text})
+            await self._dispatch_whatsapp_outbound(outbound, context, thread_event)
+        await self._broadcast(context.agent_id, {"type": "event.append", "thread_id": thread_id, "events": [thread_event]})
+        if stream.kind == "text":
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=stream.run_id,
+                event_id=stream.event_id,
+                data={"type": "text", "streamed": True, "interrupted": interrupted},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+        await self._update_thread_last_event(thread_id, _now())
+        return thread_event
+
+    async def _finalize_open_streams(
+        self,
+        streams: dict[str, _OpenStream],
+        *,
+        context: HandlerContext,
+        thread_id: str,
+        interrupted: bool = False,
+    ) -> None:
+        for stream_id in list(streams):
+            stream = streams.pop(stream_id)
+            if not stream.text.strip() and not interrupted:
+                continue
+            await self._finalize_stream(stream, context=context, thread_id=thread_id, interrupted=interrupted)
 
     async def _dispatch_whatsapp_outbound(
         self,

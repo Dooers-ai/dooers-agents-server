@@ -4,6 +4,8 @@ from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
 from dooers.agents.server.protocol.models import Thread, ThreadArtifact, ThreadEvent
 
 if TYPE_CHECKING:
+    from dooers.agents.server.features.memory.api import LongTermMemory
+    from dooers.agents.server.features.schedules.api import AgentSchedules
     from dooers.agents.server.persistence.base import EventOrder, Persistence
 
 # openai: plain string per message (legacy).
@@ -26,9 +28,41 @@ HistoryFormat = Literal[
 
 
 class AgentMemory:
-    def __init__(self, thread_id: str, persistence: "Persistence"):
+    """Thread history (short-term) plus the long-term stores bound to the current turn.
+
+    * ``memory.get_history(...)`` — this conversation.
+    * ``memory.long_term`` — what the agent remembers about this user/workspace across threads.
+    * ``memory.schedules`` — reminders and recurring tasks for this user.
+
+    ``long_term`` / ``schedules`` are always present; check ``.available`` (no database feature,
+    guest users and dispatch without a user leave them unavailable).
+    """
+
+    def __init__(
+        self,
+        thread_id: str,
+        persistence: "Persistence",
+        *,
+        long_term: "LongTermMemory | None" = None,
+        schedules: "AgentSchedules | None" = None,
+    ):
         self._thread_id = thread_id
         self._persistence = persistence
+        if long_term is None:
+            from dooers.agents.server.features.memory.api import LongTermMemory
+            from dooers.agents.server.features.memory.models import MemoryOwner
+
+            long_term = LongTermMemory(None, MemoryOwner(agent_id=""))
+        if schedules is None:
+            from dooers.agents.server.features.schedules.api import AgentSchedules
+
+            schedules = AgentSchedules(None, agent_id="", organization_id="", workspace_id="", user_id="")
+        self.long_term = long_term
+        self.schedules = schedules
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
 
     async def get_thread(self) -> Thread | None:
         return await self._persistence.get_thread(self._thread_id)

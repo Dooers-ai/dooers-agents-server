@@ -2,10 +2,7 @@
 
 from datetime import UTC, datetime
 
-from dooers.agents.server.handlers.router import (
-    _can_access_thread,
-    resolve_scope,
-)
+from dooers.agents.server.handlers.router import _can_access_thread
 from dooers.agents.server.protocol.models import Thread, User
 from dooers.agents.server.thread_access import (
     ThreadViewGrantStore,
@@ -15,6 +12,7 @@ from dooers.agents.server.thread_access import (
     resolve_thread_access,
     user_is_thread_participant,
 )
+from dooers.agents.server.thread_access import resolve_list_scope as resolve_scope
 
 
 def _thread(*, workspace_id: str, owner_id: str, participant_ids: list[str]) -> Thread:

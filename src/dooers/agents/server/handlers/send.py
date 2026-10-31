@@ -125,11 +125,25 @@ class AgentSend:
     def __init__(self) -> None:
         self.whatsapp = _WhatsappSend(self)
 
-    def text(self, text: str, author: str | None = None) -> AgentEvent:
-        return AgentEvent(
-            send_type="text",
-            data={"text": text, "author": author},
-        )
+    def text(self, text: str, author: str | None = None, *, stream_id: str | None = None) -> AgentEvent:
+        """Assistant message. With ``stream_id``, finalizes a stream opened by :meth:`text_delta`
+        (same event id; ``text`` replaces what was streamed)."""
+        data: dict[str, Any] = {"text": text, "author": author}
+        if stream_id:
+            data["stream_id"] = stream_id
+        return AgentEvent(send_type="text", data=data)
+
+    def text_delta(self, delta: str, *, stream_id: str, author: str | None = None) -> AgentEvent:
+        """Append ``delta`` to the streaming message ``stream_id`` (opened on first use).
+
+        Deltas are broadcast live (``event.delta``) and coalesced; nothing is persisted until
+        ``send.text(..., stream_id=...)`` or the end of the run finalizes the message.
+        """
+        return AgentEvent(send_type="text_delta", data={"delta": delta, "stream_id": stream_id, "author": author})
+
+    @staticmethod
+    def new_stream_id() -> str:
+        return f"stream_{uuid.uuid4().hex}"
 
     def image(
         self,
@@ -137,10 +151,21 @@ class AgentSend:
         mime_type: str | None = None,
         alt: str | None = None,
         author: str | None = None,
+        *,
+        ref_id: str | None = None,
+        filename: str | None = None,
     ) -> AgentEvent:
+        """``ref_id`` from :meth:`AgentServer.store_artifact` keeps the URL re-signable on replay."""
         return AgentEvent(
             send_type="image",
-            data={"url": url, "mime_type": mime_type, "alt": alt, "author": author},
+            data={
+                "url": url,
+                "mime_type": mime_type,
+                "alt": alt,
+                "author": author,
+                "ref_id": ref_id,
+                "filename": filename,
+            },
         )
 
     def document(
@@ -149,10 +174,21 @@ class AgentSend:
         filename: str,
         mime_type: str,
         author: str | None = None,
+        *,
+        ref_id: str | None = None,
+        size_bytes: int | None = None,
     ) -> AgentEvent:
+        """``ref_id`` from :meth:`AgentServer.store_artifact` keeps the URL re-signable on replay."""
         return AgentEvent(
             send_type="document",
-            data={"url": url, "filename": filename, "mime_type": mime_type, "author": author},
+            data={
+                "url": url,
+                "filename": filename,
+                "mime_type": mime_type,
+                "author": author,
+                "ref_id": ref_id,
+                "size_bytes": size_bytes,
+            },
         )
 
     def audio(
@@ -203,12 +239,18 @@ class AgentSend:
             },
         )
 
-    def reasoning(self, text: str, author: str | None = None) -> AgentEvent:
-        """Assistant reasoning / chain-of-thought shown as a collapsible block (not sent to the LLM history)."""
-        return AgentEvent(
-            send_type="reasoning",
-            data={"text": text, "author": author},
-        )
+    def reasoning(self, text: str, author: str | None = None, *, stream_id: str | None = None) -> AgentEvent:
+        """Assistant reasoning / chain-of-thought shown as a collapsible block (not sent to the LLM history).
+
+        With ``stream_id``, finalizes a stream opened by :meth:`reasoning_delta`."""
+        data: dict[str, Any] = {"text": text, "author": author}
+        if stream_id:
+            data["stream_id"] = stream_id
+        return AgentEvent(send_type="reasoning", data=data)
+
+    def reasoning_delta(self, delta: str, *, stream_id: str, author: str | None = None) -> AgentEvent:
+        """Live reasoning text (same lifecycle as :meth:`text_delta`)."""
+        return AgentEvent(send_type="reasoning_delta", data={"delta": delta, "stream_id": stream_id, "author": author})
 
     def tool_call(
         self,

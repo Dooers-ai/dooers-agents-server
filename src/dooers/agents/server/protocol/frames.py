@@ -4,6 +4,8 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, Field
 
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
+from dooers.agents.server.features.memory.models import MemoryPreferences, MemoryRecord
+from dooers.agents.server.features.schedules.models import ScheduleRecord
 from dooers.agents.server.features.settings.models import SettingsField, SettingsFieldGroup
 from dooers.agents.server.protocol.models import (
     ChatContext,
@@ -279,6 +281,122 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
+# --- Run control / long-term memory / schedules (0.26.0) ---
+
+
+class RunCancelPayload(BaseModel):
+    thread_id: str
+    #: Optional: only stop this run (stale clicks on an old run are ignored).
+    run_id: str | None = None
+
+
+class C2S_RunCancel(BaseModel):
+    id: str
+    type: Literal["run.cancel"] = "run.cancel"
+    payload: RunCancelPayload
+
+
+class MemoryListPayload(BaseModel):
+    scope: Literal["user", "workspace"] | None = None
+    query: str | None = None
+    cursor: str | None = None
+    limit: int | None = None
+
+
+class C2S_MemoryList(BaseModel):
+    id: str
+    type: Literal["memory.list"] = "memory.list"
+    payload: MemoryListPayload = Field(default_factory=MemoryListPayload)
+
+
+class MemoryCreatePayload(BaseModel):
+    content: str
+    scope: Literal["user", "workspace"] = "user"
+    kind: str = "fact"
+    tags: list[str] = Field(default_factory=list)
+    pinned: bool = False
+
+
+class C2S_MemoryCreate(BaseModel):
+    id: str
+    type: Literal["memory.create"] = "memory.create"
+    payload: MemoryCreatePayload
+
+
+class MemoryUpdatePayload(BaseModel):
+    memory_id: str
+    content: str | None = None
+    tags: list[str] | None = None
+    pinned: bool | None = None
+    kind: str | None = None
+
+
+class C2S_MemoryUpdate(BaseModel):
+    id: str
+    type: Literal["memory.update"] = "memory.update"
+    payload: MemoryUpdatePayload
+
+
+class MemoryDeletePayload(BaseModel):
+    memory_id: str
+
+
+class C2S_MemoryDelete(BaseModel):
+    id: str
+    type: Literal["memory.delete"] = "memory.delete"
+    payload: MemoryDeletePayload
+
+
+class C2S_MemoryPrefsGet(BaseModel):
+    id: str
+    type: Literal["memory.prefs.get"] = "memory.prefs.get"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryPrefsUpdatePayload(BaseModel):
+    enabled: bool | None = None
+    custom_instructions: str | None = None
+    about_me: str | None = None
+
+
+class C2S_MemoryPrefsUpdate(BaseModel):
+    id: str
+    type: Literal["memory.prefs.update"] = "memory.prefs.update"
+    payload: MemoryPrefsUpdatePayload
+
+
+class ScheduleListPayload(BaseModel):
+    thread_id: str | None = None
+    include_closed: bool = False
+
+
+class C2S_ScheduleList(BaseModel):
+    id: str
+    type: Literal["schedule.list"] = "schedule.list"
+    payload: ScheduleListPayload = Field(default_factory=ScheduleListPayload)
+
+
+class ScheduleUpdatePayload(BaseModel):
+    schedule_id: str
+    status: Literal["active", "paused"]
+
+
+class C2S_ScheduleUpdate(BaseModel):
+    id: str
+    type: Literal["schedule.update"] = "schedule.update"
+    payload: ScheduleUpdatePayload
+
+
+class ScheduleDeletePayload(BaseModel):
+    schedule_id: str
+
+
+class C2S_ScheduleDelete(BaseModel):
+    id: str
+    type: Literal["schedule.delete"] = "schedule.delete"
+    payload: ScheduleDeletePayload
+
+
 class C2S_Ping(BaseModel):
     id: str
     type: Literal["ping"] = "ping"
@@ -306,6 +424,16 @@ ClientToServer = Annotated[
     | C2S_SettingsPublicSchema
     | C2S_SettingsSeed
     | C2S_SettingsMergeServiceSecrets
+    | C2S_RunCancel
+    | C2S_MemoryList
+    | C2S_MemoryCreate
+    | C2S_MemoryUpdate
+    | C2S_MemoryDelete
+    | C2S_MemoryPrefsGet
+    | C2S_MemoryPrefsUpdate
+    | C2S_ScheduleList
+    | C2S_ScheduleUpdate
+    | C2S_ScheduleDelete
     | C2S_Ping,
     Field(discriminator="type"),
 ]
@@ -485,6 +613,102 @@ class S2C_SettingsPublicSchemaResult(BaseModel):
     payload: SettingsPublicSchemaResultPayload
 
 
+class EventDeltaPayload(BaseModel):
+    """Incremental text for an event announced with ``streaming: true`` (append ``delta``)."""
+
+    thread_id: str
+    event_id: str
+    run_id: str | None = None
+    kind: Literal["text", "reasoning"] = "text"
+    delta: str
+    #: Monotonic per event; clients may drop out-of-order duplicates.
+    seq: int = 0
+
+
+class S2C_EventDelta(BaseModel):
+    id: str
+    type: Literal["event.delta"] = "event.delta"
+    payload: EventDeltaPayload
+
+
+class MemoryListResultPayload(BaseModel):
+    memories: list[MemoryRecord]
+    cursor: str | None = None
+    has_more: bool = False
+    #: False when the agent has no long-term memory store (or the user is a guest).
+    available: bool = True
+    #: True when this user may create/edit ``workspace`` memories.
+    can_manage_workspace: bool = False
+
+
+class S2C_MemoryListResult(BaseModel):
+    id: str
+    type: Literal["memory.list.result"] = "memory.list.result"
+    payload: MemoryListResultPayload
+
+
+class MemoryUpsertPayload(BaseModel):
+    memory: MemoryRecord
+
+
+class S2C_MemoryUpsert(BaseModel):
+    id: str
+    type: Literal["memory.upsert"] = "memory.upsert"
+    payload: MemoryUpsertPayload
+
+
+class MemoryDeletedPayload(BaseModel):
+    memory_id: str
+
+
+class S2C_MemoryDeleted(BaseModel):
+    id: str
+    type: Literal["memory.deleted"] = "memory.deleted"
+    payload: MemoryDeletedPayload
+
+
+class MemoryPrefsPayload(BaseModel):
+    prefs: MemoryPreferences
+    available: bool = True
+
+
+class S2C_MemoryPrefs(BaseModel):
+    id: str
+    type: Literal["memory.prefs"] = "memory.prefs"
+    payload: MemoryPrefsPayload
+
+
+class ScheduleListResultPayload(BaseModel):
+    schedules: list[ScheduleRecord]
+    available: bool = True
+
+
+class S2C_ScheduleListResult(BaseModel):
+    id: str
+    type: Literal["schedule.list.result"] = "schedule.list.result"
+    payload: ScheduleListResultPayload
+
+
+class ScheduleUpsertPayload(BaseModel):
+    schedule: ScheduleRecord
+
+
+class S2C_ScheduleUpsert(BaseModel):
+    id: str
+    type: Literal["schedule.upsert"] = "schedule.upsert"
+    payload: ScheduleUpsertPayload
+
+
+class ScheduleDeletedPayload(BaseModel):
+    schedule_id: str
+
+
+class S2C_ScheduleDeleted(BaseModel):
+    id: str
+    type: Literal["schedule.deleted"] = "schedule.deleted"
+    payload: ScheduleDeletedPayload
+
+
 class S2C_Pong(BaseModel):
     id: str
     type: Literal["pong"] = "pong"
@@ -507,5 +731,13 @@ ServerToClient = (
     | S2C_SettingsSnapshot
     | S2C_SettingsPatch
     | S2C_SettingsPublicSchemaResult
+    | S2C_EventDelta
+    | S2C_MemoryListResult
+    | S2C_MemoryUpsert
+    | S2C_MemoryDeleted
+    | S2C_MemoryPrefs
+    | S2C_ScheduleListResult
+    | S2C_ScheduleUpsert
+    | S2C_ScheduleDeleted
     | S2C_Pong
 )
