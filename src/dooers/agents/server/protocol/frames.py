@@ -329,6 +329,8 @@ class MemoryUpdatePayload(BaseModel):
     tags: list[str] | None = None
     pinned: bool | None = None
     kind: str | None = None
+    #: ``"workspace"`` shares a personal memory with the workspace members (explicit action).
+    scope: Literal["workspace"] | None = None
 
 
 class C2S_MemoryUpdate(BaseModel):

@@ -143,6 +143,8 @@ class LongTermMemory:
             source_thread_id=self._thread_id,
             source_event_id=self._event_id,
             created_by=created_by,
+            author_id="" if self._owner.is_anonymous else self._owner.user_id,
+            author_name=self._owner.user_name,
             created_at=now,
             updated_at=now,
             expires_at=expires_at,
@@ -224,6 +226,37 @@ class LongTermMemory:
         if deleted:
             await self._emit("deleted", record)
         return deleted
+
+    async def share(self, memory_id: str) -> MemoryRecord | None:
+        """Move one of the caller's personal memories into the workspace (shared with its members).
+
+        Sharing is always an explicit human action — a button in the chat or the panel — never
+        the model's own call: a personal fact misfiled as workspace memory would be shown to every
+        member. Returns ``None`` when the memory is not the caller's personal memory or there is
+        no workspace to share with.
+        """
+        record = await self.get(memory_id)
+        if record is None or record.scope != "user" or not self._owner.workspace_id:
+            return None
+        shared = await self.remember(
+            record.content,
+            scope="workspace",
+            kind=record.kind,
+            tags=record.tags,
+            pinned=record.pinned,
+            expires_at=record.expires_at,
+            created_by=record.created_by or "assistant",
+        )
+        await self.forget(record.id)
+        return shared
+
+    def can_modify(self, record: MemoryRecord, *, manager: bool) -> bool:
+        """Personal memory: its owner. Workspace memory: managers, and the person who added it."""
+        if not self.owns(record):
+            return False
+        if record.scope != "workspace":
+            return True
+        return manager or (bool(record.author_id) and record.author_id == self._owner.user_id)
 
     def owns(self, record: MemoryRecord) -> bool:
         if record.scope == "workspace" and not self._owner.workspace_id:

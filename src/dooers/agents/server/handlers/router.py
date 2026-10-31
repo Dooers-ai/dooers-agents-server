@@ -549,6 +549,7 @@ class Router:
             organization_id=self._organization_id,
             workspace_id=self._workspace_id,
             user_id=user.user_id or "",
+            user_name=user.user_name or "",
         )
 
     def _memory_api(self):
@@ -614,8 +615,10 @@ class Router:
         if api is None:
             return
         payload = frame.payload
-        if payload.scope == "workspace" and not self._can_manage_workspace_memory():
-            await self._send_ack(ws, frame.id, ok=False, error={"code": "FORBIDDEN", "message": "Only managers edit workspace memory"})
+        # Any member may add to the workspace memory from the panel: it is an explicit choice
+        # ("Workspace" in the form), never inferred. Without a workspace there is no one to share with.
+        if payload.scope == "workspace" and not self._workspace_id:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "FORBIDDEN", "message": "No workspace to share with"})
             return
         try:
             await api.remember(
@@ -639,14 +642,26 @@ class Router:
         if record is None:
             await self._send_ack(ws, frame_id, ok=False, error={"code": "NOT_FOUND", "message": "Memory not found"})
             return None, None
-        if record.scope == "workspace" and not self._can_manage_workspace_memory():
-            await self._send_ack(ws, frame_id, ok=False, error={"code": "FORBIDDEN", "message": "Only managers edit workspace memory"})
+        if not api.can_modify(record, manager=self._can_manage_workspace_memory()):
+            await self._send_ack(
+                ws,
+                frame_id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Only managers and its author edit a workspace memory"},
+            )
             return None, None
         return api, record
 
     async def _handle_memory_update(self, ws: WebSocketProtocol, frame: C2S_MemoryUpdate) -> None:
         api, record = await self._memory_target(ws, frame.id, frame.payload.memory_id)
         if api is None or record is None:
+            return
+        if frame.payload.scope == "workspace" and record.scope == "user":
+            shared = await api.share(record.id)
+            if shared is None:
+                await self._send_ack(ws, frame.id, ok=False, error={"code": "FORBIDDEN", "message": "No workspace to share with"})
+            else:
+                await self._send_ack(ws, frame.id)
             return
         try:
             await api.update(

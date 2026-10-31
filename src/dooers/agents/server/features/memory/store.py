@@ -210,6 +210,8 @@ class PostgresMemoryStore:
                     source_thread_id TEXT,
                     source_event_id TEXT,
                     created_by TEXT,
+                    author_id TEXT NOT NULL DEFAULT '',
+                    author_name TEXT NOT NULL DEFAULT '',
                     use_count INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -218,6 +220,9 @@ class PostgresMemoryStore:
                     deleted_at TIMESTAMPTZ
                 )
             """)
+            # Tables created by earlier 0.26 builds predate the author columns.
+            await conn.execute(f"ALTER TABLE {self._table} ADD COLUMN IF NOT EXISTS author_id TEXT NOT NULL DEFAULT ''")
+            await conn.execute(f"ALTER TABLE {self._table} ADD COLUMN IF NOT EXISTS author_name TEXT NOT NULL DEFAULT ''")
             await conn.execute(f"""
                 CREATE INDEX IF NOT EXISTS idx_{self._idx}memories_owner
                     ON {self._table}(agent_id, organization_id, workspace_id, user_id, scope)
@@ -256,7 +261,8 @@ class PostgresMemoryStore:
 
     _COLUMNS = (
         "id, agent_id, organization_id, workspace_id, user_id, scope, kind, content, tags, pinned, "
-        "source_thread_id, source_event_id, created_by, use_count, created_at, updated_at, last_used_at, expires_at"
+        "source_thread_id, source_event_id, created_by, author_id, author_name, use_count, created_at, updated_at, "
+        "last_used_at, expires_at"
     )
 
     def _owner_clause(self, owner: MemoryOwner, scopes: tuple[str, ...], start: int) -> tuple[str, list[Any]]:
@@ -284,9 +290,9 @@ class PostgresMemoryStore:
                 f"""
                 INSERT INTO {self._table} (
                     id, agent_id, organization_id, workspace_id, user_id, scope, kind, content, dedupe_key,
-                    tags, pinned, source_thread_id, source_event_id, created_by, use_count,
+                    tags, pinned, source_thread_id, source_event_id, created_by, author_id, author_name, use_count,
                     created_at, updated_at, last_used_at, expires_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
                 """,
                 record.id,
                 record.agent_id,
@@ -302,6 +308,8 @@ class PostgresMemoryStore:
                 record.source_thread_id,
                 record.source_event_id,
                 record.created_by,
+                record.author_id,
+                record.author_name,
                 record.use_count,
                 record.created_at,
                 record.updated_at,

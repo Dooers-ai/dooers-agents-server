@@ -30,6 +30,8 @@ class AgentContext:
     chat_context: ChatContext | None = None
     #: Why this turn runs when no person typed it, e.g. ``{"type": "schedule", "schedule_id": ...}``.
     trigger: dict[str, Any] | None = None
+    #: People taking part in the thread (from the thread row; the agent itself excluded).
+    participants: list[User] = field(default_factory=list)
     #: Set by the pipeline; ``cancelled`` reads it. Not part of the public constructor contract.
     _active_run: Any = field(default=None, repr=False)
 
@@ -37,6 +39,16 @@ class AgentContext:
     def cancelled(self) -> bool:
         """True once someone pressed Stop (``run.cancel``). Long loops should check it."""
         return bool(getattr(self._active_run, "cancel_requested", False))
+
+    @property
+    def is_shared(self) -> bool:
+        """True when someone besides the current user takes part in the thread.
+
+        Personal memory must stay out of such threads: whatever the agent recalls about one person
+        can end up in an answer the others read.
+        """
+        me = (self.user.user_id or "").strip()
+        return any((p.user_id or "").strip() not in ("", me) for p in self.participants)
 
     @property
     def timezone(self) -> str | None:

@@ -37,7 +37,12 @@ check the server version (servers before 0.26.0 close the socket on an unknown f
   recency, `list`, `update`, `forget`, `preferences`, `set_preferences`); owners always come from
   the turn context. WebSocket: `memory.list | create | update | delete | prefs.get |
   prefs.update` → `memory.list.result`, `memory.upsert`, `memory.deleted`, `memory.prefs`.
-  Workspace memories are readable by members and editable by managers. Guests have no memory.
+  Personal (`user`) memory is private; `workspace` memory is shared with the workspace members.
+  Every memory records its author (`author_id`, `author_name`); a workspace memory is editable by
+  managers and by its author. Moving a personal memory to the workspace is an explicit action
+  (`LongTermMemory.share()`, or `memory.update` with `scope: "workspace"`), never the model's own
+  call. `AgentContext.participants` / `is_shared` let handlers keep personal memory out of threads
+  other people read. Guests have no memory.
   `format_memories_for_prompt()` helper.
 - **Schedules** (`features/schedules`): reminders and recurring tasks (`once`, `minutely`,
   `hourly`, `daily`, `weekly`, `monthly`, with interval, weekdays, month day, local time,

@@ -45,6 +45,11 @@ class MemoryRecord(BaseModel):
     source_event_id: str | None = None
     #: ``assistant`` when saved by the agent, ``user:<id>`` when written in the UI.
     created_by: str | None = None
+    #: The person the memory came from — who chatted when the agent saved it, or who wrote it in
+    #: the UI. On ``workspace`` memories this is who may edit/delete it besides the managers, and
+    #: what the panel shows as "added by". Empty on rows written before 0.26.
+    author_id: str = ""
+    author_name: str = ""
     use_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -76,6 +81,8 @@ class MemoryOwner:
     organization_id: str = ""
     workspace_id: str = ""
     user_id: str = ""
+    #: Display name recorded as the author of new memories. Not part of any scope key.
+    user_name: str = ""
 
     @property
     def is_anonymous(self) -> bool:

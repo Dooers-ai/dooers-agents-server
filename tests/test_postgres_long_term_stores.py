@@ -77,6 +77,36 @@ async def test_memory_store_sql(persistence):
     assert (await bob.preferences()).custom_instructions == ""
 
 
+async def test_memory_author_columns_and_sharing_sql(persistence):
+    store = PostgresMemoryStore(persistence)
+    # A table from an earlier 0.26 build, without the author columns, is upgraded in place.
+    async with persistence._pool.acquire() as conn:
+        await conn.execute(
+            f"CREATE TABLE {persistence._prefix}memories (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, "
+            "organization_id TEXT NOT NULL DEFAULT '', workspace_id TEXT NOT NULL DEFAULT '', "
+            "user_id TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT 'user', kind TEXT NOT NULL DEFAULT 'fact', "
+            "content TEXT NOT NULL, dedupe_key TEXT NOT NULL DEFAULT '', tags TEXT[] NOT NULL DEFAULT '{}', "
+            "pinned BOOLEAN NOT NULL DEFAULT FALSE, source_thread_id TEXT, source_event_id TEXT, created_by TEXT, "
+            "use_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_used_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, "
+            "deleted_at TIMESTAMPTZ)"
+        )
+    await store.migrate()
+    ana = LongTermMemory(store, MemoryOwner("a1", "o1", "w1", "ana", user_name="Ana"))
+    bruno = LongTermMemory(store, MemoryOwner("a1", "o1", "w1", "bruno"))
+    personal = await ana.remember("O time usa Notion para specs")
+    assert (await ana.get(personal.id)).author_name == "Ana"
+
+    shared = await ana.share(personal.id)
+    assert shared is not None and shared.scope == "workspace" and shared.author_id == "ana"
+    assert await ana.get(personal.id) is None
+    seen, _ = await bruno.list()
+    assert [(m.content, m.author_name) for m in seen] == [("O time usa Notion para specs", "Ana")]
+    assert bruno.can_modify(seen[0], manager=False) is False
+    assert ana.can_modify(seen[0], manager=False) is True
+    assert bruno.can_modify(seen[0], manager=True) is True
+
+
 async def test_schedule_store_sql_claims_with_lease(persistence):
     store = PostgresScheduleStore(persistence)
     await store.migrate()

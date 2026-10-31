@@ -412,6 +412,7 @@ class HandlerPipeline:
             queues=list(context.queues),
             chat_context=context.chat_context,
             trigger=context.trigger,
+            participants=[u for u in (thread.users or []) if u.user_id and u.user_id != context.agent_id],
         )
         incoming = AgentIncoming(
             message=message,
@@ -1346,6 +1347,7 @@ class HandlerPipeline:
             organization_id=context.organization_id or "",
             workspace_id=context.workspace_id or "",
             user_id=user.user_id or "",
+            user_name=user.user_name or "",
         )
         long_term = LongTermMemory(
             self._memory_store,

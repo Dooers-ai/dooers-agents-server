@@ -18,7 +18,7 @@ agent — a privacy leak once one agent serves a whole organization.
 | Stop | `RunRegistry` per process. Cancel = flag + `Task.cancel()` only while the pipeline awaits the handler, so cancellation never lands inside pipeline persistence. `uncancel()` after a requested stop. |
 | Socket concurrency | One worker task per connection runs queued turns in order; the receive loop keeps serving frames. In-flight turn survives disconnect, queued ones are dropped. |
 | Isolation | `PipelineBroadcaster`: thread frames go to subscribers + participants (`write` access). Supervisors must subscribe (with reason) to watch live. |
-| Memory | SQL tables in the agent DB; scopes `user` (agent, org, workspace, user) and `workspace`; full-text + pinning/usage/recency ranking; preferences per (agent, org, user). |
+| Memory | SQL tables in the agent DB; scopes `user` (agent, org, workspace, user — private) and `workspace` (shared with the members; editable by managers and its author); author recorded on every memory; sharing a personal memory is an explicit action (`share()`); `AgentContext.is_shared` to keep personal memory out of multi-person threads; full-text + pinning/usage/recency ranking; preferences per (agent, org, user). |
 | Schedules | Explicit recurrence model (no cron from LLMs), local time + zoneinfo, lease claim with `SKIP LOCKED`, misfires fire once. Runs are `system` events with `trigger`. |
 | Artifacts | `store_artifact` reuses chat storage keys so hydration re-signs URLs by `ref_id`. |
 | Sandbox | `dooers.tools.sandbox` mirrors `dooers.tools.rag` (service token, runtime context). |
