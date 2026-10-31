@@ -68,6 +68,9 @@ class SandboxContext:
     organization_id: str = ""
     workspace_id: str = ""
     thread_id: str = ""
+    #: Authenticated platform user the turn runs for (empty for guests/channels), recorded by the
+    #: sandbox service so the admin can list and delete a person's sandboxes.
+    user_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,7 @@ def _resolve_context(explicit: SandboxContext | None) -> SandboxContext:
         organization_id=(runtime.organization_id if runtime else "") or "",
         workspace_id=(runtime.workspace_id if runtime else "") or "",
         thread_id=(runtime.thread_id if runtime else "") or "",
+        user_id=(runtime.user_id if runtime else "") or "",
     )
 
 
@@ -238,6 +242,7 @@ async def open(  # noqa: A001 — mirrors ``sandbox.open`` in docs
             "organization_id": ctx.organization_id or "legacy",
             "agent_id": ctx.agent_id,
             "thread_id": ctx.thread_id or None,
+            "user_id": ctx.user_id or None,
             "profile": profile,
         },
         timeout=300.0,
