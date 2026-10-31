@@ -223,10 +223,11 @@ class PostgresMemoryStore:
                     ON {self._table}(agent_id, organization_id, workspace_id, user_id, scope)
                     WHERE deleted_at IS NULL
             """)
+            # Expression indexes need IMMUTABLE functions: to_tsvector with an explicit config is,
+            # array_to_string is not — tags are matched with ILIKE instead.
             await conn.execute(f"""
                 CREATE INDEX IF NOT EXISTS idx_{self._idx}memories_fts
-                    ON {self._table}
-                    USING GIN (to_tsvector('simple', content || ' ' || array_to_string(tags, ' ')))
+                    ON {self._table} USING GIN (to_tsvector('simple', content))
             """)
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self._prefs_table} (
@@ -380,9 +381,10 @@ class PostgresMemoryStore:
         q_index = len(args)
         args.append([f"%{t}%" for t in terms] or ["%%"])
         like_index = len(args)
-        doc = "to_tsvector('simple', content || ' ' || array_to_string(tags, ' '))"
+        doc = "to_tsvector('simple', content)"
         match = (
-            f"(pinned OR ({doc} @@ websearch_to_tsquery('simple', ${q_index})) OR content ILIKE ANY(${like_index}))"
+            f"(pinned OR ({doc} @@ websearch_to_tsquery('simple', ${q_index})) OR content ILIKE ANY(${like_index})"
+            f" OR array_to_string(tags, ' ') ILIKE ANY(${like_index}))"
             if terms
             else "TRUE"
         )
