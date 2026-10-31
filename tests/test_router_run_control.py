@@ -95,29 +95,85 @@ async def test_turn_runs_in_background_and_can_be_stopped():
     assert acks["c2"]["error"]["code"] == "RUN_NOT_FOUND"
 
 
-async def test_turns_of_one_connection_keep_their_order():
-    order: list[str] = []
+def _message(text: str, frame_id: str, thread_id: str | None = None) -> dict:
+    payload: dict = {"event": {"type": "message", "actor": "user", "content": [{"type": "text", "text": text}]}}
+    if thread_id:
+        payload["thread_id"] = thread_id
+    return {"id": frame_id, "type": "event.create", "payload": payload}
 
+
+def _slow_handler(order: list[str], delay: float = 0.05):
     async def handler(incoming, send, memory, analytics, settings):
         order.append(f"start:{incoming.message}")
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(delay)
         order.append(f"end:{incoming.message}")
         yield send.text("ok")
 
-    router, ws, _, _ = await _router(handler, user=User(user_id="u1"))
+    return handler
+
+
+async def test_different_threads_run_in_parallel():
+    order: list[str] = []
+    router, ws, _, _ = await _router(_slow_handler(order), user=User(user_id="u1"))
     for text in ("a", "b"):
-        await router.route(
-            ws,
-            _frame(
-                {
-                    "id": text,
-                    "type": "event.create",
-                    "payload": {"event": {"type": "message", "actor": "user", "content": [{"type": "text", "text": text}]}},
-                }
-            ),
-        )
+        await router.route(ws, _frame(_message(text, text)))  # two new threads
+    await asyncio.wait_for(router.wait_idle(), 2)
+    # Both started before either ended: a long answer in one chat does not hold the other.
+    assert order[:2] == ["start:a", "start:b"]
+
+
+async def test_turns_of_one_thread_keep_their_order():
+    order: list[str] = []
+    router, ws, persistence, _ = await _router(_slow_handler(order, 0.02), user=User(user_id="u1"))
+    await router.route(ws, _frame(_message("a", "f1")))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    thread_id = next(iter(persistence.threads))
+    order.clear()
+    for text in ("b", "c"):
+        await router.route(ws, _frame(_message(text, text, thread_id)))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert order == ["start:b", "end:b", "start:c", "end:c"]
+
+
+async def test_follow_up_to_a_new_thread_waits_for_the_first_turn():
+    order: list[str] = []
+    gate = asyncio.Event()
+
+    async def handler(incoming, send, memory, analytics, settings):
+        order.append(f"start:{incoming.message}")
+        if incoming.message == "a":
+            gate.set()
+            await asyncio.sleep(0.05)
+        order.append(f"end:{incoming.message}")
+        yield send.text("ok")
+
+    router, ws, persistence, _ = await _router(handler, user=User(user_id="u1"))
+    await router.route(ws, _frame(_message("a", "f1")))
+    await asyncio.wait_for(gate.wait(), 1)
+    thread_id = next(iter(persistence.threads))
+    await router.route(ws, _frame(_message("b", "f2", thread_id)))  # queued under the real id
     await asyncio.wait_for(router.wait_idle(), 2)
     assert order == ["start:a", "end:a", "start:b", "end:b"]
+
+
+async def test_parallel_turns_respect_the_connection_limit():
+    running = 0
+    peak = 0
+
+    async def handler(incoming, send, memory, analytics, settings):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        yield send.text("ok")
+
+    router, ws, _, _ = await _router(handler, user=User(user_id="u1"))
+    router._turn_slots = asyncio.Semaphore(2)
+    for i in range(5):
+        await router.route(ws, _frame(_message(f"m{i}", f"f{i}")))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert peak == 2
 
 
 async def _noop(incoming, send, memory, analytics, settings):  # pragma: no cover
@@ -248,3 +304,22 @@ def test_context_knows_when_a_thread_is_shared():
     )
     assert alone.is_shared is False and together.is_shared is True
 
+
+
+async def test_parallel_turns_keep_their_own_execution_context():
+    from dooers.tools.rag.runtime import current_execution_context
+
+    seen: dict[str, str] = {}
+
+    async def handler(incoming, send, memory, analytics, settings):
+        await asyncio.sleep(0.02)  # both turns are in flight here
+        ctx = current_execution_context()
+        seen[incoming.message] = ctx.thread_id if ctx else ""
+        yield send.text("ok")
+
+    router, ws, persistence, _ = await _router(handler, user=User(user_id="u1"))
+    for text in ("a", "b"):
+        await router.route(ws, _frame(_message(text, text)))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert seen["a"] and seen["b"] and seen["a"] != seen["b"]
+    assert set(seen.values()) == set(persistence.threads)

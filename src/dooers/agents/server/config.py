@@ -148,6 +148,10 @@ class AgentConfig:
     )
     #: How long a replica owns a claimed schedule before another may retry it.
     schedule_lease_seconds: int = 900
+    #: Turns of one WebSocket connection that may run at the same time. Turns of the SAME thread
+    #: always run one after the other; different threads run in parallel up to this limit
+    #: (``AGENT_MAX_PARALLEL_TURNS``). 1 restores the old one-turn-at-a-time behaviour.
+    max_parallel_turns: int = field(default_factory=lambda: max(1, int(os.environ.get("AGENT_MAX_PARALLEL_TURNS", "4") or 4)))
 
     #: Service name on exported spans (env ``OTEL_SERVICE_NAME``). Empty → platform default.
     otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())

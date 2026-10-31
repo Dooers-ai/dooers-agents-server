@@ -230,8 +230,13 @@ class Router:
         #: frames are served while the agent works. Defaults on when a run registry is wired
         #: (``AgentServer.handle``); routers built by hand keep the old inline behaviour.
         self._background_turns = run_registry is not None if background_turns is None else background_turns
-        self._turn_queue: asyncio.Queue[tuple[WebSocketProtocol, C2S_EventCreate] | None] | None = None
-        self._turn_worker: asyncio.Task | None = None
+        #: One queue (and one worker task) per thread: a thread's turns keep their order, while
+        #: different threads run in parallel — a long answer in one chat does not hold the others.
+        self._turn_queues: dict[str, asyncio.Queue[tuple[WebSocketProtocol, C2S_EventCreate]]] = {}
+        self._turn_workers: dict[str, asyncio.Task] = {}
+        max_parallel = getattr(agent_config, "max_parallel_turns", 4) if agent_config is not None else 4
+        self._turn_slots = asyncio.Semaphore(max(1, int(max_parallel or 1)))
+        self._thread_locks: dict[str, asyncio.Lock] = {}
         self._persistence = persistence
         self._handler = handler
         self._registry = registry
@@ -438,46 +443,53 @@ class Router:
     # --- background turns --------------------------------------------------------------
 
     def _enqueue_turn(self, ws: WebSocketProtocol, frame: C2S_EventCreate) -> None:
-        """Queue a turn for this connection; turns still run one at a time, in arrival order."""
-        if self._turn_queue is None:
-            self._turn_queue = asyncio.Queue()
-        if self._turn_worker is None or self._turn_worker.done():
-            self._turn_worker = asyncio.create_task(self._turn_worker_loop(), name=f"dooers-turns-{self._ws_id}")
-        self._turn_queue.put_nowait((ws, frame))
+        """Queue a turn behind the earlier turns of the same thread.
 
-    async def _turn_worker_loop(self) -> None:
-        assert self._turn_queue is not None
+        A message without ``thread_id`` opens a new thread, so it gets a queue of its own. Each
+        worker runs in its own task, which keeps per-turn context (RAG scope, sandbox session,
+        OTEL span) isolated: it lives in ContextVars / task-keyed maps.
+        """
+        key = frame.payload.thread_id or f"new:{frame.id}"
+        queue = self._turn_queues.get(key)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._turn_queues[key] = queue
+        queue.put_nowait((ws, frame))
+        worker = self._turn_workers.get(key)
+        if worker is None or worker.done():
+            self._turn_workers[key] = asyncio.create_task(self._turn_worker_loop(key), name=f"dooers-turns-{self._ws_id}-{key}")
+
+    async def _turn_worker_loop(self, key: str) -> None:
+        queue = self._turn_queues[key]
         while True:
-            item = await self._turn_queue.get()
             try:
-                if item is None:
-                    return
-                ws, frame = item
-                await self._handle_event_create(ws, frame)
+                ws, frame = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                # No await between the check and the removal: a turn queued meanwhile cannot be lost.
+                self._turn_queues.pop(key, None)
+                self._turn_workers.pop(key, None)
+                return
+            try:
+                async with self._turn_slots:
+                    await self._handle_event_create(ws, frame)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 — one failed turn must not stop the connection's queue
-                logger.exception("[agents] background turn failed ws=%s", self._ws_id)
-            finally:
-                self._turn_queue.task_done()
+            except Exception:  # noqa: BLE001 — one failed turn must not stop the thread's queue
+                logger.exception("[agents] background turn failed ws=%s thread=%s", self._ws_id, key)
 
     async def wait_idle(self) -> None:
         """Wait until every queued turn of this connection finished (tests, graceful shutdown)."""
-        if self._turn_queue is not None:
-            await self._turn_queue.join()
+        while self._turn_workers:
+            await asyncio.gather(*list(self._turn_workers.values()), return_exceptions=True)
 
     def _stop_turn_worker(self) -> None:
-        """On disconnect: drop turns that never started, let the one in flight finish."""
-        queue = self._turn_queue
-        if queue is None:
-            return
-        while True:
-            try:
-                queue.get_nowait()
-                queue.task_done()
-            except asyncio.QueueEmpty:
-                break
-        queue.put_nowait(None)
+        """On disconnect: drop turns that never started, let the ones in flight finish."""
+        for queue in self._turn_queues.values():
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
     # --- run control ---------------------------------------------------------------------
 
@@ -1619,14 +1631,21 @@ class Router:
             user_name=context.user.user_name or None,
             user_email=context.user.user_email or None,
         )
+        # Turns of one thread never overlap. The per-thread queues already order them, except the
+        # first message of a new thread (queued as ``new:<frame>``) and a follow-up that already
+        # carries the new thread's id — this lock covers that window.
+        lock = self._thread_locks.setdefault(result.thread.id, asyncio.Lock())
         try:
-            async for _event in self._pipeline.execute(context, result):
-                pass
+            async with lock:
+                async for _event in self._pipeline.execute(context, result):
+                    pass
         except HandlerError:
             tracker.fail()
             # Pipeline already handled cleanup (error event, run failure, broadcast)
         finally:
             tracker.end()
+            if not lock.locked() and self._thread_locks.get(result.thread.id) is lock:
+                self._thread_locks.pop(result.thread.id, None)
 
     async def _handle_event_list(self, ws: WebSocketProtocol, frame: C2S_EventList) -> None:
         if not self._agent_id:

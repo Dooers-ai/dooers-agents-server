@@ -30,6 +30,10 @@ check the server version (servers before 0.26.0 close the socket on an unknown f
   per-connection worker (same one-at-a-time order as before), so pings, `run.cancel`,
   subscriptions and settings frames are served while the agent works, and a turn finishes even
   if the browser disconnects. Routers built by hand keep the inline behaviour.
+- **Parallel threads**: turns run off the WebSocket receive loop, one queue per thread — the turns of a
+  thread keep their order, different threads run in parallel (up to `max_parallel_turns`, env
+  `AGENT_MAX_PARALLEL_TURNS`, default 4, per connection). A long answer in one chat no longer holds
+  the others. Per-turn context (RAG scope, sandbox session, OTEL span) stays per task.
 - **Long-term memory** (`features/memory`): tables `{prefix}memories` (scopes `user` /
   `workspace`, kinds, tags, pinned, usage, expiry, soft delete) and `{prefix}memory_prefs`
   (enabled, custom instructions, "about me"). Handler API `memory.long_term`
