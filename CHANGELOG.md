@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1] — 2026-11-01
+
+### Fixed
+
+- A WhatsApp delivery receipt no longer walks a bubble backwards. `read` stays
+  `read` when a late `delivered` arrives, and `failed` is not cleared by a later
+  progress status. `delivered` and `read` still advance an `accepted` send.
+
 ## [0.25.0] — 2026-10-29
 
 ### Added

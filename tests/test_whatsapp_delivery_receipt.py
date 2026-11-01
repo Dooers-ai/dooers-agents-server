@@ -113,3 +113,53 @@ async def test_receipt_missing_wamid_is_not_applied():
 
     assert applied is False
     assert event.data["delivery"]["status"] == "accepted"
+
+
+def _event(status: str) -> tuple[_Persistence, ThreadEvent]:
+    now = _now()
+    event = ThreadEvent(
+        id="ev-1",
+        thread_id="th-1",
+        type="message",
+        actor="assistant",
+        data={"delivery": {"channel": "whatsapp", "status": status, "wa_message_id": "wamid.1"}},
+        created_at=now,
+    )
+    thread = Thread(id="th-1", agent_id="agent-1", created_at=now, updated_at=now, last_event_at=now)
+    return _Persistence(event, thread), event
+
+
+@pytest.mark.asyncio
+async def test_receipt_advances_accepted_to_read():
+    persistence, event = _event("accepted")
+    applied = await apply_whatsapp_delivery_receipt(
+        persistence,
+        "agent-1",
+        b'{"delivery_receipt":true,"wa_message_id":"wamid.1","status":"read"}',
+    )
+    assert applied is True
+    assert event.data["delivery"]["status"] == "read"
+    assert persistence.updated is event
+
+
+@pytest.mark.asyncio
+async def test_receipt_does_not_downgrade_read_or_clear_failure():
+    persistence, event = _event("read")
+    applied = await apply_whatsapp_delivery_receipt(
+        persistence,
+        "agent-1",
+        b'{"delivery_receipt":true,"wa_message_id":"wamid.1","status":"delivered"}',
+    )
+    assert applied is True
+    assert event.data["delivery"]["status"] == "read"
+    assert persistence.updated is None
+
+    persistence, event = _event("failed")
+    applied = await apply_whatsapp_delivery_receipt(
+        persistence,
+        "agent-1",
+        b'{"delivery_receipt":true,"wa_message_id":"wamid.1","status":"delivered"}',
+    )
+    assert applied is True
+    assert event.data["delivery"]["status"] == "failed"
+    assert persistence.updated is None
