@@ -103,6 +103,52 @@ async def test_full_turn_exports_root_and_llm_child_in_one_request():
 
 
 @pytest.mark.asyncio
+async def test_turn_inside_an_open_connection_span_is_exported_when_the_turn_ends():
+    """FastAPI >= 0.162 opens a span per WebSocket connection ("WS /ws") by default. The turn
+    must not hang under it: exported only when the socket closes, under a root without agent.id."""
+    from opentelemetry import trace
+    from opentelemetry.context import attach, detach
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(TOKEN_URL).mock(
+            return_value=httpx.Response(
+                200, json={"success": True, "data": {"accessToken": "jwt-abc", "expiresIn": 300}}
+            )
+        )
+        traces_route = mock.post(TRACES_URL).mock(return_value=httpx.Response(200))
+
+        otel.init_otel(
+            otel_service_url=OTEL_SERVICE_URL,
+            core_base_url=CORE_URL,
+            persistence=FakePersistence({"dooers_runtime_api_key": "rak-1"}),
+            service_name="test-agent",
+        )
+
+        connection = trace.get_tracer("fastapi").start_span("WS /ws")
+        connection_token = attach(trace.set_span_in_context(connection))
+        try:
+            tracker = otel.start_tracker(thread_id="thread-1", event_id="event-1", agent_id="agent-xyz")
+            child = trace.get_tracer("test").start_span("Response", attributes={"openinference.span.kind": "LLM"})
+            child.end()
+            tracker.end()
+            await asyncio.sleep(0.2)
+        finally:
+            detach(connection_token)
+
+        assert traces_route.called, "the turn waited for the connection span to end"
+        connection.end()
+
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+
+    parsed = ExportTraceServiceRequest()
+    parsed.ParseFromString(traces_route.calls.last.request.content)
+    spans = [s for rs in parsed.resource_spans for ss in rs.scope_spans for s in ss.spans]
+    assert sorted(s.name for s in spans) == ["Response", "agent/agent-xyz"]
+    turn = next(s for s in spans if s.name == "agent/agent-xyz")
+    assert turn.parent_span_id == b""
+
+
+@pytest.mark.asyncio
 async def test_turn_without_runtime_api_key_is_not_exported():
     with respx.mock(assert_all_called=False) as mock:
         token_route = mock.post(TOKEN_URL).mock(return_value=httpx.Response(200))

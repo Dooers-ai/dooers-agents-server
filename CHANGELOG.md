@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.2] — 2026-11-03
+
+### Fixed
+
+- Turns are exported again when the agent runs on FastAPI 0.162 or newer. That FastAPI
+  traces every WebSocket connection by default ("WS /ws"), so the turn span became its
+  child; export only fires when a root span ends, so every turn waited for the socket to
+  close and was then dropped under a root without `agent.id` ("turn missing agent.id"),
+  silently and with the LLM spans and their key-source marks. The turn span is now always
+  the root of its own trace, whatever span is open around it.
+
 ## [0.25.1] — 2026-11-01
 
 ### Fixed
