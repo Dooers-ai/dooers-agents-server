@@ -1073,10 +1073,28 @@ class PostgresEffectJournal:
         async with self.db.transaction() as conn:
             await self._ready(conn)
             row = await self._phase(conn, scope, delivery, phase)
-            if row and (str(row["execution_id"]) != execution or row["maestro_fence"] != fence):
-                raise JournalError("JOURNAL_STALE_WRITER")
             if row and (row["context_fingerprint"] != request["context_fingerprint"] or row["retry_policy"] != request["retry_policy"]):
                 raise JournalError("JOURNAL_BINDING_INVALID")
+            if row and (str(row["execution_id"]) != execution or row["maestro_fence"] != fence):
+                # A newer attempt can fail admission before reserving its invocation.
+                # Advance only an already fenced, safe-retry barrier. Never adopt a
+                # running/confirmed/uncertain writer or an equal/older Maestro fence.
+                if row["state"] != "retry_ready" or fence <= row["maestro_fence"]:
+                    raise JournalError("JOURNAL_STALE_WRITER")
+                existing = await conn.fetchval(
+                    "SELECT 1 FROM maestro_journal.invocations WHERE execution_id=$1", UUID(execution)
+                )
+                if existing:
+                    raise JournalError("JOURNAL_STALE_WRITER")
+                await conn.execute(
+                    "UPDATE maestro_journal.phases SET execution_id=$3,maestro_fence=$4 WHERE delivery_id=$1 AND phase_id=$2",
+                    UUID(delivery), phase, UUID(execution), fence,
+                )
+                await conn.execute(
+                    "INSERT INTO maestro_journal.invocations(execution_id,delivery_id,phase_id,maestro_fence,state) VALUES($1,$2,$3,$4,'abandoned')",
+                    UUID(execution), UUID(delivery), phase, fence,
+                )
+                await conn.execute("UPDATE maestro_journal.authority SET invocation_count=invocation_count+1")
             decision = "safe_retry"
             confirmed = None
             if row:

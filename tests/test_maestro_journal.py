@@ -439,3 +439,27 @@ async def test_effect_claim_expiry_requires_reconciliation_even_if_phase_is_aliv
     with pytest.raises(JournalError, match="JOURNAL_STALE_WRITER"):
         await store.record_result(intent, claim, result())
     assert (await store.recovery(h["recovery"]()))["decision"] == "manual_review"
+
+
+async def test_repeated_admission_failure_advances_only_safe_retry_barrier(private_journal):
+    h = private_journal
+    store = h["store"]
+    first = h["recovery"]("unsafe")
+    assert (await store.recovery(first))["decision"] == "safe_retry"
+    second = {**first, "execution_id": str(uuid4()), "maestro_fence": "3"}
+    proof = await store.recovery(second)
+    assert proof["decision"] == "safe_retry" and proof["binding"] == second
+    assert (await store.recovery(second))["decision"] == "safe_retry"
+    with pytest.raises(JournalError, match="JOURNAL_STALE_WRITER"):
+        await store.recovery(first)
+    with pytest.raises(JournalError, match="JOURNAL_STALE_WRITER"):
+        await store.recovery({**second, "execution_id": str(uuid4())})
+    with pytest.raises(JournalError, match="JOURNAL_BINDING_INVALID"):
+        await store.recovery({**second, "execution_id": str(uuid4()), "maestro_fence": "5", "context_fingerprint": "a" * 64})
+
+
+async def test_recovery_cannot_advance_a_running_writer(private_journal):
+    h = private_journal
+    await h["invocation"]("unsafe")
+    with pytest.raises(JournalError, match="JOURNAL_STALE_WRITER"):
+        await h["store"].recovery({**h["recovery"]("unsafe"), "execution_id": str(uuid4()), "maestro_fence": "3"})
