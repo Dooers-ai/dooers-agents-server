@@ -14,6 +14,7 @@ from uuid import uuid4
 from dooers.agents.server.protocol.maestro.contracts import MaestroContractError, MaestroContracts
 
 from .config import MaestroConfig
+from .diagnostics import diagnostic_stage
 from .security import load_public_keys, renewed_capability, strict_json, verify_jwt
 
 
@@ -180,7 +181,8 @@ class MaestroDeliveryAdapter:
             raise MaestroAdmissionError("LEASE_STALE")
         async with asyncio.timeout(remaining):
             async with asyncio.timeout(min(self.config.admission_timeout_seconds, remaining)):
-                lease = await self._lease_gate.admit(admission)
+                with diagnostic_stage("admission.lease", admission.envelope):
+                    lease = await self._lease_gate.admit(admission)
             envelope = admission.envelope
             if isinstance(lease, MaestroConfirmedResult):
                 result = lease

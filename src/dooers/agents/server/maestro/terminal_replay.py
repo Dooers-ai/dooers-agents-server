@@ -93,6 +93,7 @@ class MaestroDurableReplayGate:
                 "Cache-Control": "no-store",
             }
             body = canonical({"format_version": "maestro.confirmed-result.local.v1", "lease_fence": e["lease_fence"]})
+            headers.update(await self.config.transport_headers(self.config.callback_base_url))
             transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
             async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as client:
                 async with client.stream(

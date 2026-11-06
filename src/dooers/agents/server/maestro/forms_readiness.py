@@ -36,7 +36,7 @@ class FormsReadinessAdapter:
             raise JournalError("JOURNAL_CONFIGURATION_INVALID")
         self.adapter, self.executor, self.checkpoints = adapter, adapter._executor, adapter._executor.checkpoints
         self.config = adapter.config
-        self.audience, self.runtime_version = local_url(audience), runtime_version
+        self.audience, self.runtime_version = local_url(audience, adapter.config.remote_transport), runtime_version
         self.resolve_key, self.enabled = resolve_key, enabled
 
     async def __call__(self, scope, receive, send):

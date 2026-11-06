@@ -19,6 +19,7 @@ from dooers.tools.whatsapp.runtime import (
 )
 
 from .client import MaestroContextError
+from .diagnostics import diagnostic_stage
 from .memory import MaestroMemory
 
 if TYPE_CHECKING:
@@ -273,7 +274,8 @@ async def maestro_handler_context(
         if cancellation.cancelled:
             raise MaestroContextError("CONTEXT_EXPIRED")
         memory._client.bind_cancellation(lambda: cancellation.cancelled)
-        snapshot = await memory.snapshot()
+        with diagnostic_stage("context.snapshot", memory._envelope):
+            snapshot = await memory.snapshot()
         from .recipient_options import TurnSettings, prepare_recipient_options
 
         selected_options, assert_options_current = prepare_recipient_options(
@@ -289,14 +291,16 @@ async def maestro_handler_context(
         scope = MaestroPrivateScope(envelope["organization_id"], envelope["workspace_id"], envelope["instance_agent_id"])
         try:
             async with asyncio.timeout(memory._client._check_current()):
-                resources = await private_resolver(scope)
+                with diagnostic_stage("context.private", memory._envelope):
+                    resources = await private_resolver(scope)
         except Exception:
             raise MaestroContextError() from None
         assert_options_current()
         if not isinstance(resources, MaestroPrivateResources) or resources.scope != scope:
             raise MaestroContextError("ACCESS_REVOKED")
         # Recursos privados podem exigir I/O; revalidar acesso remoto antes de expor input.
-        await memory.get_thread()
+        with diagnostic_stage("context.revalidate", memory._envelope):
+            await memory.get_thread()
         if private_resume is not None:
             from .interactions import private_context_bytes
 

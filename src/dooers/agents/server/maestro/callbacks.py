@@ -14,6 +14,7 @@ from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroC
 from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedResult, MaestroCurrentLease, _epoch
 from .client import MaestroContextClient, MaestroContextError
 from .config import MaestroConfig
+from .diagnostics import diagnostic_stage
 from .security import strict_json
 
 
@@ -59,112 +60,116 @@ class MaestroCallbackClient(MaestroContextClient):
         async with self._writes:
             sent = False
             try:
-                if request_schema is None:
-                    from .approvals import validate_approval_suspend
+                with diagnostic_stage("callback." + action, self._envelope):
+                    if request_schema is None:
+                        from .approvals import validate_approval_suspend
 
-                    validate_approval_suspend(value, self._envelope)
-                else:
-                    self._contracts.validate(request_schema, value)
-                self._check_current(reserve_completion=False)
-                if operation not in self._claims["operations"]:
-                    raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
-                remaining = self.admission.remaining_seconds() - self.config.safety_margin_seconds
-                if action != "heartbeat":
-                    remaining = min(remaining, self._check_current(reserve_completion=False))
-                async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
-                    credential = await self._credential(scopes)
+                        validate_approval_suspend(value, self._envelope)
+                    else:
+                        self._contracts.validate(request_schema, value)
                     self._check_current(reserve_completion=False)
-                    headers = {
-                        "Authorization": f"Bearer {credential.token}",
-                        "Maestro-Execution-Capability": self._capability,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "Accept-Encoding": "identity",
-                        "Cache-Control": "no-store",
-                    }
-                    if key is not None:
-                        headers["Idempotency-Key"] = key
-                    raw_request = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-                    if len(raw_request) > self.config.max_output_bytes + 4096:
-                        raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
-                    transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
-                    async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as client:
-                        if action == "stream":
-                            delay = self._stream_last_sent + 0.05 - time.monotonic()
-                            if delay > 0:
-                                await asyncio.sleep(delay)
-                            self._check_current(reserve_completion=False)
-                            self._stream_last_sent = time.monotonic()
-                        sent = True
-                        url = f"{self.config.callback_base_url}/executions/{self._envelope['execution_id']}/{action}"
-                        async with client.stream("POST", url, content=raw_request, headers=headers) as response:
-                            if (
-                                response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
-                                or response.headers.get("content-encoding", "identity") != "identity"
-                            ):
-                                raise MaestroCallbackError(unknown=True)
-                            length = response.headers.get("content-length")
-                            if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
-                                raise MaestroCallbackError(unknown=True)
-                            raw = bytearray()
-                            async for chunk in response.aiter_raw():
-                                raw.extend(chunk)
-                                if len(raw) > self.max_page_bytes:
-                                    raise MaestroCallbackError(unknown=True)
-                            if response.status_code != 200:
-                                error_code = {
-                                    401: "UNAUTHENTICATED",
-                                    403: "FORBIDDEN",
-                                    404: "FORBIDDEN",
-                                    409: "LEASE_STALE",
-                                    410: "LEASE_STALE",
-                                    400: "INVALID_REQUEST",
-                                    413: "PAYLOAD_TOO_LARGE",
-                                    422: "UNSUPPORTED_CAPABILITY",
-                                    429: "RATE_LIMITED",
-                                }.get(response.status_code, "DEPENDENCY_UNAVAILABLE")
-                                if response.status_code in {401, 403, 404, 409, 410}:
-                                    self._closed = True
-                                if response.status_code in {409, 422, 429}:
-                                    try:
-                                        error = self._contracts.validate("Public.Error", strict_json(bytes(raw)))["error"]["code"]
-                                        if (
-                                            response.status_code == 409
-                                            and error in {"LEASE_STALE", "EXECUTION_TERMINAL", "IDEMPOTENCY_CONFLICT"}
-                                        ) or (response.status_code in {422, 429} and error == "QUOTA_EXCEEDED"):
-                                            error_code = error
-                                    except Exception:
-                                        pass
-                                raise MaestroCallbackError(error_code, unknown=response.status_code >= 500)
-                            result = self._contracts.validate(response_schema, strict_json(bytes(raw)))
-                            if time.time() >= credential.expires_at:
-                                raise MaestroCallbackError("UNAUTHENTICATED", unknown=True)
-                            if action == "heartbeat":
-                                # ACK pode atravessar exp antiga. Nova assinatura e lease
-                                # são verificadas antes de serem expostas à memória.
-                                old = self._capability, self._claims, self._lease
-                                try:
-                                    renewal = response.headers.get("Maestro-Execution-Capability")
-                                    if renewal is not None:
-                                        self.update_capability(renewal)
-                                    lease = MaestroCurrentLease(
-                                        self._envelope["execution_id"], self._envelope["lease_fence"], result["lease_until"]
-                                    )
-                                    if self._gate_pending:
-                                        if not time.time() < _epoch(lease.lease_until) <= _epoch(self._envelope["deadline_at"]):
-                                            raise ValueError
-                                        self._lease = lease
-                                        self._gate_pending = False
-                                    else:
-                                        self.update_lease(lease)
-                                    self._check_current(reserve_completion=False)
-                                except Exception:
-                                    self._capability, self._claims, self._lease = old
-                                    self._closed = True
-                                    raise MaestroCallbackError("UNAUTHENTICATED") from None
-                            else:
+                    if operation not in self._claims["operations"]:
+                        raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
+                    remaining = self.admission.remaining_seconds() - self.config.safety_margin_seconds
+                    if action != "heartbeat":
+                        remaining = min(remaining, self._check_current(reserve_completion=False))
+                    async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
+                        with diagnostic_stage("auth.credential", self._envelope):
+                            credential = await self._credential(scopes)
+                        self._check_current(reserve_completion=False)
+                        headers = {
+                            "Authorization": f"Bearer {credential.token}",
+                            "Maestro-Execution-Capability": self._capability,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                            "Accept-Encoding": "identity",
+                            "Cache-Control": "no-store",
+                        }
+                        if key is not None:
+                            headers["Idempotency-Key"] = key
+                        raw_request = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+                        if len(raw_request) > self.config.max_output_bytes + 4096:
+                            raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
+                        with diagnostic_stage("auth.workload_identity", self._envelope):
+                            headers.update(await self.config.transport_headers(self.config.callback_base_url))
+                        transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+                        async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as client:
+                            if action == "stream":
+                                delay = self._stream_last_sent + 0.05 - time.monotonic()
+                                if delay > 0:
+                                    await asyncio.sleep(delay)
                                 self._check_current(reserve_completion=False)
-                            return result
+                                self._stream_last_sent = time.monotonic()
+                            sent = True
+                            url = f"{self.config.callback_base_url}/executions/{self._envelope['execution_id']}/{action}"
+                            async with client.stream("POST", url, content=raw_request, headers=headers) as response:
+                                if (
+                                    response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
+                                    or response.headers.get("content-encoding", "identity") != "identity"
+                                ):
+                                    raise MaestroCallbackError(unknown=True)
+                                length = response.headers.get("content-length")
+                                if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
+                                    raise MaestroCallbackError(unknown=True)
+                                raw = bytearray()
+                                async for chunk in response.aiter_raw():
+                                    raw.extend(chunk)
+                                    if len(raw) > self.max_page_bytes:
+                                        raise MaestroCallbackError(unknown=True)
+                                if response.status_code != 200:
+                                    error_code = {
+                                        401: "UNAUTHENTICATED",
+                                        403: "FORBIDDEN",
+                                        404: "FORBIDDEN",
+                                        409: "LEASE_STALE",
+                                        410: "LEASE_STALE",
+                                        400: "INVALID_REQUEST",
+                                        413: "PAYLOAD_TOO_LARGE",
+                                        422: "UNSUPPORTED_CAPABILITY",
+                                        429: "RATE_LIMITED",
+                                    }.get(response.status_code, "DEPENDENCY_UNAVAILABLE")
+                                    if response.status_code in {401, 403, 404, 409, 410}:
+                                        self._closed = True
+                                    if response.status_code in {409, 422, 429}:
+                                        try:
+                                            error = self._contracts.validate("Public.Error", strict_json(bytes(raw)))["error"]["code"]
+                                            if (
+                                                response.status_code == 409
+                                                and error in {"LEASE_STALE", "EXECUTION_TERMINAL", "IDEMPOTENCY_CONFLICT"}
+                                            ) or (response.status_code in {422, 429} and error == "QUOTA_EXCEEDED"):
+                                                error_code = error
+                                        except Exception:
+                                            pass
+                                    raise MaestroCallbackError(error_code, unknown=response.status_code >= 500)
+                                result = self._contracts.validate(response_schema, strict_json(bytes(raw)))
+                                if time.time() >= credential.expires_at:
+                                    raise MaestroCallbackError("UNAUTHENTICATED", unknown=True)
+                                if action == "heartbeat":
+                                    # ACK pode atravessar exp antiga. Nova assinatura e lease
+                                    # são verificadas antes de serem expostas à memória.
+                                    old = self._capability, self._claims, self._lease
+                                    try:
+                                        renewal = response.headers.get("Maestro-Execution-Capability")
+                                        if renewal is not None:
+                                            self.update_capability(renewal)
+                                        lease = MaestroCurrentLease(
+                                            self._envelope["execution_id"], self._envelope["lease_fence"], result["lease_until"]
+                                        )
+                                        if self._gate_pending:
+                                            if not time.time() < _epoch(lease.lease_until) <= _epoch(self._envelope["deadline_at"]):
+                                                raise ValueError
+                                            self._lease = lease
+                                            self._gate_pending = False
+                                        else:
+                                            self.update_lease(lease)
+                                        self._check_current(reserve_completion=False)
+                                    except Exception:
+                                        self._capability, self._claims, self._lease = old
+                                        self._closed = True
+                                        raise MaestroCallbackError("UNAUTHENTICATED") from None
+                                else:
+                                    self._check_current(reserve_completion=False)
+                                return result
             except MaestroCallbackError:
                 raise
             except MaestroContextError:

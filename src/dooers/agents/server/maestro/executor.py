@@ -16,6 +16,7 @@ from .client import MaestroContextError
 from .commercial import MaestroCommercialBlocked
 from .config import MaestroConfig
 from .context import MaestroCancellation, MaestroPrivateResolver, maestro_handler_context
+from .diagnostics import diagnostic_stage
 from .memory import MaestroMemory
 from .sink import MaestroEventSink, MaestroSend
 
@@ -59,7 +60,8 @@ class MaestroTextExecutor:
         if journal_execution:
             journal_execution.approvals = self.approvals
             try:
-                await journal_execution.reserve()
+                with diagnostic_stage("journal.reserve", admission.envelope):
+                    await journal_execution.reserve()
             except Exception:
                 client.close()
                 raise MaestroCallbackError("DEPENDENCY_UNAVAILABLE") from None

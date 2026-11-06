@@ -15,6 +15,7 @@ from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroC
 
 from .adapter import MaestroAdmission, MaestroCurrentLease, _epoch
 from .config import MaestroConfig, MaestroCredentialRequest, MaestroInstanceCredential
+from .diagnostics import diagnostic_stage
 from .security import _decode, load_public_keys, renewed_capability, strict_json
 
 
@@ -138,46 +139,50 @@ class MaestroContextClient:
     async def page(self, cursor: str, *, limit: int = 100) -> dict[str, Any]:
         """Cada página renova autorização remota, inclusive chamadas repetidas."""
         try:
-            self._contracts.validate("Public.PageQuery", {"cursor": cursor, "limit": limit})
-            remaining = self._check_current()
-            async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
-                credential = await self._credential()
-                self._check_current()
-                headers = {
-                    "Authorization": f"Bearer {credential.token}",
-                    "Maestro-Execution-Capability": self._capability,
-                    "Accept": "application/json",
-                    "Accept-Encoding": "identity",
-                    "Cache-Control": "no-store",
-                }
-                transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
-                async with httpx.AsyncClient(
-                    transport=transport, trust_env=False, follow_redirects=False, timeout=self.config.network_timeout_seconds
-                ) as client:
-                    url = f"{self.config.callback_base_url}/deliveries/{self._envelope['delivery_id']}/context"
-                    async with client.stream("GET", url, params={"cursor": cursor, "limit": limit}, headers=headers) as response:
-                        if response.status_code in {401, 403, 404, 409, 410}:
-                            self._closed = True
-                            raise MaestroContextError("ACCESS_REVOKED")
-                        if response.status_code != 200:
-                            raise MaestroContextError()
-                        if (
-                            response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
-                            or response.headers.get("content-encoding", "identity") != "identity"
-                        ):
-                            raise MaestroContextError("CONTEXT_INVALID")
-                        length = response.headers.get("content-length")
-                        if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
-                            raise MaestroContextError("CONTEXT_LIMIT")
-                        raw = bytearray()
-                        async for chunk in response.aiter_raw():
-                            raw.extend(chunk)
-                            if len(raw) > self.max_page_bytes:
+            with diagnostic_stage("context.page", self._envelope):
+                self._contracts.validate("Public.PageQuery", {"cursor": cursor, "limit": limit})
+                remaining = self._check_current()
+                async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
+                    with diagnostic_stage("auth.credential", self._envelope):
+                        credential = await self._credential()
+                    self._check_current()
+                    headers = {
+                        "Authorization": f"Bearer {credential.token}",
+                        "Maestro-Execution-Capability": self._capability,
+                        "Accept": "application/json",
+                        "Accept-Encoding": "identity",
+                        "Cache-Control": "no-store",
+                    }
+                    with diagnostic_stage("auth.workload_identity", self._envelope):
+                        headers.update(await self.config.transport_headers(self.config.callback_base_url))
+                    transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+                    async with httpx.AsyncClient(
+                        transport=transport, trust_env=False, follow_redirects=False, timeout=self.config.network_timeout_seconds
+                    ) as client:
+                        url = f"{self.config.callback_base_url}/deliveries/{self._envelope['delivery_id']}/context"
+                        async with client.stream("GET", url, params={"cursor": cursor, "limit": limit}, headers=headers) as response:
+                            if response.status_code in {401, 403, 404, 409, 410}:
+                                self._closed = True
+                                raise MaestroContextError("ACCESS_REVOKED")
+                            if response.status_code != 200:
+                                raise MaestroContextError()
+                            if (
+                                response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
+                                or response.headers.get("content-encoding", "identity") != "identity"
+                            ):
+                                raise MaestroContextError("CONTEXT_INVALID")
+                            length = response.headers.get("content-length")
+                            if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
                                 raise MaestroContextError("CONTEXT_LIMIT")
-                        self._check_current()
-                        if time.time() >= credential.expires_at:
-                            raise MaestroContextError("ACCESS_REVOKED")
-                        return self._contracts.validate("Public.ContextResponse", strict_json(bytes(raw)))
+                            raw = bytearray()
+                            async for chunk in response.aiter_raw():
+                                raw.extend(chunk)
+                                if len(raw) > self.max_page_bytes:
+                                    raise MaestroContextError("CONTEXT_LIMIT")
+                            self._check_current()
+                            if time.time() >= credential.expires_at:
+                                raise MaestroContextError("ACCESS_REVOKED")
+                            return self._contracts.validate("Public.ContextResponse", strict_json(bytes(raw)))
         except MaestroContextError as error:
             if error.code == "ACCESS_REVOKED":
                 self._closed = True
@@ -190,61 +195,65 @@ class MaestroContextClient:
     async def interaction_context(self, *, approval: bool = False) -> dict[str, Any]:
         """Private candidate read: current instance + execution capability, never public history."""
         try:
-            if not self._envelope.get("resume"):
-                raise MaestroContextError("CONTEXT_INVALID")
-            remaining = self._check_current()
-            async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
-                credential = await self._credential()
-                self._check_current()
-                headers = {
-                    "Authorization": f"Bearer {credential.token}",
-                    "Maestro-Execution-Capability": self._capability,
-                    "Accept": "application/json",
-                    "Accept-Encoding": "identity",
-                    "Cache-Control": "no-store",
-                }
-                transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
-                async with httpx.AsyncClient(
-                    transport=transport, trust_env=False, follow_redirects=False, timeout=self.config.network_timeout_seconds
-                ) as client:
-                    suffix = "approval-context" if approval else "interaction-context"
-                    url = f"{self.config.callback_base_url}/deliveries/{self._envelope['delivery_id']}/{suffix}"
-                    async with client.stream("GET", url, headers=headers) as response:
-                        if response.status_code in {401, 403, 404, 409, 410}:
-                            self._closed = True
-                            raise MaestroContextError("ACCESS_REVOKED")
-                        if response.status_code != 200:
-                            raise MaestroContextError()
-                        if (
-                            response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
-                            or response.headers.get("content-encoding", "identity") != "identity"
-                        ):
-                            raise MaestroContextError("CONTEXT_INVALID")
-                        length = response.headers.get("content-length")
-                        if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
-                            raise MaestroContextError("CONTEXT_LIMIT")
-                        raw = bytearray()
-                        async for chunk in response.aiter_raw():
-                            raw.extend(chunk)
-                            if len(raw) > self.max_page_bytes:
+            with diagnostic_stage("context.interaction", self._envelope):
+                if not self._envelope.get("resume"):
+                    raise MaestroContextError("CONTEXT_INVALID")
+                remaining = self._check_current()
+                async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
+                    with diagnostic_stage("auth.credential", self._envelope):
+                        credential = await self._credential()
+                    self._check_current()
+                    headers = {
+                        "Authorization": f"Bearer {credential.token}",
+                        "Maestro-Execution-Capability": self._capability,
+                        "Accept": "application/json",
+                        "Accept-Encoding": "identity",
+                        "Cache-Control": "no-store",
+                    }
+                    with diagnostic_stage("auth.workload_identity", self._envelope):
+                        headers.update(await self.config.transport_headers(self.config.callback_base_url))
+                    transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+                    async with httpx.AsyncClient(
+                        transport=transport, trust_env=False, follow_redirects=False, timeout=self.config.network_timeout_seconds
+                    ) as client:
+                        suffix = "approval-context" if approval else "interaction-context"
+                        url = f"{self.config.callback_base_url}/deliveries/{self._envelope['delivery_id']}/{suffix}"
+                        async with client.stream("GET", url, headers=headers) as response:
+                            if response.status_code in {401, 403, 404, 409, 410}:
+                                self._closed = True
+                                raise MaestroContextError("ACCESS_REVOKED")
+                            if response.status_code != 200:
+                                raise MaestroContextError()
+                            if (
+                                response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
+                                or response.headers.get("content-encoding", "identity") != "identity"
+                            ):
+                                raise MaestroContextError("CONTEXT_INVALID")
+                            length = response.headers.get("content-length")
+                            if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
                                 raise MaestroContextError("CONTEXT_LIMIT")
-                        self._check_current()
-                        if time.time() >= credential.expires_at:
-                            raise MaestroContextError("ACCESS_REVOKED")
-                        from .interactions import validate_private_context
+                            raw = bytearray()
+                            async for chunk in response.aiter_raw():
+                                raw.extend(chunk)
+                                if len(raw) > self.max_page_bytes:
+                                    raise MaestroContextError("CONTEXT_LIMIT")
+                            self._check_current()
+                            if time.time() >= credential.expires_at:
+                                raise MaestroContextError("ACCESS_REVOKED")
+                            from .interactions import validate_private_context
 
-                        if approval:
-                            from .approvals import validate_approval_context
+                            if approval:
+                                from .approvals import validate_approval_context
 
-                            value = validate_approval_context(strict_json(bytes(raw)), self._envelope)
-                        else:
-                            value = validate_private_context(strict_json(bytes(raw)), self._envelope)
-                        # Validation/deepcopy are synchronous work and may outlast
-                        # network timeout callbacks; expose nothing after that budget.
-                        self._check_current()
-                        if time.time() >= credential.expires_at:
-                            raise MaestroContextError("ACCESS_REVOKED")
-                        return value
+                                value = validate_approval_context(strict_json(bytes(raw)), self._envelope)
+                            else:
+                                value = validate_private_context(strict_json(bytes(raw)), self._envelope)
+                            # Validation/deepcopy are synchronous work and may outlast
+                            # network timeout callbacks; expose nothing after that budget.
+                            self._check_current()
+                            if time.time() >= credential.expires_at:
+                                raise MaestroContextError("ACCESS_REVOKED")
+                            return value
         except MaestroContextError as error:
             if error.code == "ACCESS_REVOKED":
                 self._closed = True

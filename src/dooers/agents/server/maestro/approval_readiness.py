@@ -42,7 +42,7 @@ class ApprovalReadinessAdapter:
         self.config = adapter.config
         self.approvals = self.executor.approvals
         self.capability, self.commercial = self.approvals.capability, self.approvals.commercial
-        self.audience, self.runtime_version = local_url(audience), runtime_version
+        self.audience, self.runtime_version = local_url(audience, adapter.config.remote_transport), runtime_version
         self.resolve_key, self.enabled = resolve_key, enabled
 
     async def __call__(self, scope, receive, send):

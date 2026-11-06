@@ -213,11 +213,11 @@ def answer_messages(
         else "- Responda à última mensagem do Humano.",
         f"- Nesta rodada já responderam: {', '.join(n for n in spoke if n)}. Acrescente só o que é da sua especialidade"
         " e ainda não foi dito; nunca repita nem reformule o que eles disseram."
-        if spoke
-        else "- Você é o primeiro a responder nesta rodada.",
+        if spoke and may_stay_silent
+        else "- Responda por você à solicitação, mesmo que outros agentes já tenham respondido.",
         f"- Se não tiver nada novo a acrescentar, escreva exatamente {SILENCE} e nada mais."
         if may_stay_silent
-        else "- Você foi chamado pelo nome: responda, mesmo que brevemente.",
+        else "- Você foi acionado explicitamente: responda, mesmo que brevemente. Não opte pelo silêncio.",
     ]
     roster = _roster_text(_roster(snapshot, own_instance_id, directory))
     system = "\n\n".join(
@@ -274,6 +274,6 @@ async def decide_group_turn(
     if not decision.answer:
         return decision
     messages = answer_messages(
-        system_prompt, snapshot, own_instance_id, directory, history_limit, may_stay_silent=decision.reason != "mentioned"
+        system_prompt, snapshot, own_instance_id, directory, history_limit, may_stay_silent=decision.reason not in ("mentioned", "invoked")
     )
     return MaestroGroupTurn(True, decision.reason, tuple(messages), decision.owners)

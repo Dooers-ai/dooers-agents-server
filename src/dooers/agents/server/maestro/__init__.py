@@ -12,8 +12,13 @@ from .adapter import (
 from .artifacts import MaestroArtifactsClient, MaestroHydratedArtifact
 from .callbacks import MaestroCallbackClient, MaestroCallbackError, MaestroHeartbeatGate
 from .config import MaestroConfig, MaestroConfigurationError, MaestroCredentialRequest, MaestroInstanceCredential
+from .remote import MaestroRemoteTransport, cloud_run_transport
+from .remote_credentials import remote_core_credentials
 
 __all__ = [
+    "MaestroRemoteTransport",
+    "cloud_run_transport",
+    "remote_core_credentials",
     "MaestroAdmission",
     "MaestroAdmissionError",
     "MaestroConfig",

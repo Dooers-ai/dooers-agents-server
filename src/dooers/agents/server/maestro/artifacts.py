@@ -72,6 +72,7 @@ class MaestroArtifactsClient:
                 raise MaestroContextError("CONTEXT_LIMIT")
             async with asyncio.timeout(budget):
                 headers, expires_at = await self._headers()
+                headers.update(await client.config.transport_headers(client.config.callback_base_url))
                 transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
                 async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as http:
                     url = f"{client.config.callback_base_url}/artifacts/{reference.artifact_id}/download"
@@ -153,6 +154,7 @@ class MaestroArtifactsClient:
                     ("metadata", (None, json.dumps(value, ensure_ascii=False, separators=(",", ":")))),
                     ("file", (filename, data, mime_type)),
                 ]
+                headers.update(await client.config.transport_headers(client.config.callback_base_url))
                 transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
                 async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as http:
                     async with http.stream(

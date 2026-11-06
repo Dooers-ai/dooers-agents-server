@@ -173,3 +173,24 @@ def test_explicit_invocation_uses_original_request_without_classification():
     assert decision.answer is True
     assert decision.reason == "invoked"
     assert pre_decision(context, JUR, PART[JUR]).answer is False
+
+
+def test_invoked_broadcast_after_other_reply_requires_answer():
+    original = message("e1", HUMAN, "@todos se apresentem")
+    original["payload"]["routing_decision"] = {"version": 1, "mode": "all", "recipients": [PART[FIN], PART[JUR]], "execution": "sequential"}
+    context = snapshot([original, message("e2", agent(JUR), "Jurídico confirmado")])
+    context["invocation_event"] = original
+
+    class Memory:
+        _envelope = {"instance_agent_id": FIN, "recipient_participant_id": PART[FIN]}
+        async def snapshot(self):
+            return context
+
+    async def classify(_):
+        raise AssertionError("Explicit invocation must not classify")
+
+    turn = asyncio.run(decide_group_turn(Memory(), classify=classify, directory=DIRECTORY))
+    assert turn.reason == "invoked"
+    assert SILENCE not in turn.messages[0]["content"]
+    assert "nunca repita" not in turn.messages[0]["content"]
+    assert "acionado explicitamente" in turn.messages[0]["content"]

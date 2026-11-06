@@ -9,6 +9,8 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from .remote import MaestroRemoteTransport
+
 
 class MaestroConfigurationError(ValueError):
     """Erro de startup sem valores de configuração ou material de chave."""
@@ -110,6 +112,7 @@ class MaestroConfig:
     max_artifact_bytes: int = 8388608
     max_hydrated_bytes: int = 16777216
     artifact_timeout_seconds: int = 5
+    remote_transport: MaestroRemoteTransport | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.product_capabilities) is not tuple or any(value != "stream.delta" for value in self.product_capabilities):
@@ -122,15 +125,24 @@ class MaestroConfig:
             )
         ):
             raise MaestroConfigurationError("MAESTRO_CAPABILITY_INVALID")
-        if type(self.allow_local_http) is not bool or not self.allow_local_http:
+        if type(self.allow_local_http) is not bool or (not self.allow_local_http and self.remote_transport is None):
             raise MaestroConfigurationError("MAESTRO_LOCAL_HTTP_OPT_IN_REQUIRED")
+        if self.remote_transport is not None and (self.allow_local_http or not isinstance(self.remote_transport, MaestroRemoteTransport)):
+            raise MaestroConfigurationError("MAESTRO_REMOTE_PROFILE_INVALID")
         for value in (self.organization_id, self.instance_agent_id, self.runtime_id):
             _uuid(value)
         if self.workspace_id is not None:
             _uuid(self.workspace_id)
-        path = _local_url(self.runtime_endpoint)
-        _local_url(self.callback_base_url)
-        _local_url(self.core_base_url, allow_origin=True)
+        if self.remote_transport is None:
+            path = _local_url(self.runtime_endpoint)
+            _local_url(self.callback_base_url)
+            _local_url(self.core_base_url, allow_origin=True)
+        else:
+            for endpoint in (self.runtime_endpoint, self.callback_base_url, self.core_base_url):
+                self.remote_transport.validate_url(endpoint)
+            if urlsplit(self.core_base_url).path or not urlsplit(self.callback_base_url).path or self.callback_base_url.endswith("/"):
+                raise MaestroConfigurationError("MAESTRO_REMOTE_PROFILE_INVALID")
+            path = urlsplit(self.runtime_endpoint).path
         if not path.endswith("/maestro/deliveries"):
             raise MaestroConfigurationError("MAESTRO_DELIVERY_PATH_INVALID")
         if not callable(self.credential_resolver):
@@ -192,3 +204,6 @@ class MaestroConfig:
     @property
     def delivery_path(self) -> str:
         return urlsplit(self.runtime_endpoint).path
+
+    async def transport_headers(self, url: str) -> dict[str, str]:
+        return await self.remote_transport.headers(url) if self.remote_transport else {}

@@ -21,13 +21,19 @@ import httpx
 from dooers.agents.server.protocol.maestro.journal import EffectProjection
 
 from .journal_store import JournalError, PostgresEffectJournal, canonical, decimal, decode, projection_data, scope_data, uuid
+from .remote import MaestroRemoteTransport
 
 MAX_BODY = 16384
 HEADER = "Maestro-Journal-Authorization"
 
 
-def local_url(value: str) -> str:
+def local_url(value: str, remote_transport: MaestroRemoteTransport | None = None) -> str:
     try:
+        if remote_transport is not None:
+            remote_transport.validate_url(value)
+            if not urlsplit(value).path:
+                raise ValueError
+            return value
         url = urlsplit(value)
         if (
             url.scheme != "http"
@@ -58,9 +64,10 @@ class JournalServiceKey:
     organization_id: str
     workspace_id: str | None
     instance_agent_id: str
+    remote_transport: MaestroRemoteTransport | None = field(default=None, repr=False)
 
     def __post_init__(self):
-        local_url(self.audience)
+        local_url(self.audience, self.remote_transport)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.key_id) or type(self.secret) is not bytes or len(self.secret) < 32:
             raise JournalError("JOURNAL_CONFIGURATION_INVALID")
         if self.operation not in {"projection", "recovery", "approval_outcome", "forms_readiness", "approval_readiness"}:
@@ -138,6 +145,9 @@ async def post_operation(key: JournalServiceKey, body: dict[str, Any]) -> dict[s
     authorization = sign_request(key, raw)
     try:
         async with asyncio.timeout(5):
+            headers = {HEADER: authorization, "Content-Type": "application/json", "Accept-Encoding": "identity"}
+            if key.remote_transport:
+                headers.update(await key.remote_transport.headers(key.audience))
             async with httpx.AsyncClient(
                 transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False), trust_env=False, follow_redirects=False, timeout=4
             ) as client:
@@ -145,7 +155,7 @@ async def post_operation(key: JournalServiceKey, body: dict[str, Any]) -> dict[s
                     "POST",
                     key.audience,
                     content=raw,
-                    headers={HEADER: authorization, "Content-Type": "application/json", "Accept-Encoding": "identity"},
+                    headers=headers,
                 ) as response:
                     if (
                         response.headers.get("content-type", "").split(";")[0] != "application/json"
@@ -216,8 +226,10 @@ class JournalRecoveryAdapter:
     async def read(self, body):
         return await self.journal.recovery(body)
 
-    def __init__(self, journal: PostgresEffectJournal, *, audience: str, resolve_key):
-        self.journal, self.audience, self.resolve_key = journal, local_url(audience), resolve_key
+    def __init__(
+        self, journal: PostgresEffectJournal, *, audience: str, resolve_key, remote_transport: MaestroRemoteTransport | None = None
+    ):
+        self.journal, self.audience, self.resolve_key = journal, local_url(audience, remote_transport), resolve_key
 
     async def __call__(self, scope, receive, send):
         status, result, reply_auth = 503, {"error": "JOURNAL_UNAVAILABLE"}, None
