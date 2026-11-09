@@ -394,7 +394,7 @@ class HandlerPipeline:
             incoming.form_event_id = context.data.get("form_event_id")
 
         send = AgentSend()
-        memory = AgentMemory(thread_id=thread_id, persistence=self._persistence)
+        memory = AgentMemory(thread_id=thread_id, persistence=self._persistence, context=agent_context)
 
         analytics = self._create_analytics(
             agent_id=context.agent_id,
