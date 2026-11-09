@@ -211,6 +211,8 @@ class Router:
         self._workspace_id: str = ""
         self._workspace_queues: list[WorkspaceQueueCatalog] = []
         self._agent_owner_user_id: str | None = None
+        # Core-signed dashboard handshake; kept inside the SDK, not the LLM context.
+        self._auth_assertion: str | None = None
         self._can_configure_settings: bool = False
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
@@ -447,6 +449,7 @@ class Router:
         self._workspace_id = ""
         self._workspace_queues = []
         self._agent_owner_user_id = None
+        self._auth_assertion = None
         self._can_configure_settings = False
         self._rate_limits = {}
         self._subscriptions.pop(self._ws_id, None)
@@ -575,6 +578,15 @@ class Router:
         self._user = user
         self._rate_limits = rate_limits
         self._agent_owner_user_id = agent_owner_user_id
+        # The Core exchange endpoint verifies dashboard JWTs again; public/legacy
+        # tokens cannot be promoted to delegated service identity.
+        self._auth_assertion = (
+            frame.payload.auth_token
+            if self._auth_validator is not None and user is not None
+            and user.user_id and not user.user_id.startswith("guest:")
+            and (user.connection_type or "") != "guest"
+            else None
+        )
         self._can_configure_settings = can_configure_settings
         self._workspace_queues = workspace_queues
         self._ws = ws
@@ -1188,6 +1200,7 @@ class Router:
             channel=channel,
             channel_meta=channel_meta,
             user=user,
+            auth_assertion=self._auth_assertion if channel == "dooers-platform" else None,
             thread_id=frame.payload.thread_id,
             content=content_parts,
             data=frame.payload.event.data,
