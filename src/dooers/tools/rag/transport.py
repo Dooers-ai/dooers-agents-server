@@ -79,21 +79,45 @@ async def _core_jwt(*, agent_id: str, workspace_id: str) -> str:
     return token
 
 
+async def _delegated_core_jwt(auth_assertion: str) -> str:
+    # A runtime credential alone cannot impersonate a human. The assertion is
+    # a Core-signed dashboard handshake obtained from an authenticated WS.
+    url = f"{_core_base_url()}/api/v2/identity/service-token/exchange"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json={
+                "audience": _RAG_AUDIENCE,
+                "token": auth_assertion,
+                "scopes": list(_RAG_SCOPES),
+            })
+        resp.raise_for_status()
+        token = (resp.json().get("data") or {}).get("accessToken")
+        if not isinstance(token, str) or not token:
+            raise RAGToolsError("Core did not issue a delegated RAG token")
+        return token
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RAGToolsError("Could not validate active user delegation with Core") from exc
+
+
 async def post(path: str, payload: dict[str, Any]) -> Any:
     base = _base_url()
     runtime = current_execution_context()
     agent_id = runtime.agent_id if runtime and runtime.agent_id else require_agent_id()
     workspace_id = (runtime.workspace_id if runtime else "") or ""
     body_payload: dict[str, Any] = {"agent_id": agent_id, **payload}
-    if runtime:
-        if runtime.workspace_id:
-            body_payload["workspace_id"] = runtime.workspace_id
-        if runtime.user_id:
-            body_payload["user_id"] = runtime.user_id
-            body_payload["on_behalf"] = runtime.on_behalf
+    if runtime and runtime.workspace_id:
+        body_payload["workspace_id"] = runtime.workspace_id
+    if runtime and runtime.auth_assertion and runtime.user_id:
+        body_payload["user_id"] = runtime.user_id
+        body_payload["on_behalf"] = True
+        token = await _delegated_core_jwt(runtime.auth_assertion)
+    else:
+        # Agent-only access is safe for shared KBs; user-restricted KBs are
+        # denied server-side without a verified delegation.
+        token = await _core_jwt(agent_id=agent_id, workspace_id=workspace_id)
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        "Authorization": f"Bearer {await _core_jwt(agent_id=agent_id, workspace_id=workspace_id)}",
+        "Authorization": f"Bearer {token}",
     }
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
