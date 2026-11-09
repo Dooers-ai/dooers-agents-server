@@ -1149,6 +1149,29 @@ class Router:
         content_parts = list(frame.payload.event.content)
 
         user = self._user or User(user_id="")
+        # The original dashboard handshake JWT expires quickly. Accept a fresh
+        # signed assertion on each turn; never use it to change the WS identity.
+        turn_auth_assertion = self._auth_assertion
+        if frame.payload.auth_token and self._auth_validator is not None and user.connection_type == "dashboard":
+            result = await self._auth_validator.validate(
+                auth_token=frame.payload.auth_token,
+                agent_id=self._agent_id,
+                guest_user_id="",
+                organization_id=self._organization_id,
+                workspace_id=self._workspace_id,
+                user_id=user.user_id,
+            )
+            if (
+                not result.valid or result.user is None or
+                result.user.user_id != user.user_id or
+                result.organization_id != self._organization_id or
+                (result.workspace_id or "") != (self._workspace_id or "") or
+                result.agent_id != self._agent_id
+            ):
+                turn_auth_assertion = None
+                logger.warning("[agents] ignored invalid refreshed Core dashboard identity")
+            else:
+                turn_auth_assertion = frame.payload.auth_token
 
         # Existing threads require write; check before setup so we do not persist a forbidden message.
         existing_thread_id = (frame.payload.thread_id or "").strip()
@@ -1200,7 +1223,7 @@ class Router:
             channel=channel,
             channel_meta=channel_meta,
             user=user,
-            auth_assertion=self._auth_assertion if channel == "dooers-platform" else None,
+            auth_assertion=turn_auth_assertion if channel == "dooers-platform" else None,
             thread_id=frame.payload.thread_id,
             content=content_parts,
             data=frame.payload.event.data,
