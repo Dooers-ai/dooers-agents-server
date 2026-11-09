@@ -68,6 +68,7 @@ class EventCreateEventPayload(BaseModel):
 class EventCreatePayload(BaseModel):
     thread_id: str | None = None
     client_event_id: str | None = None
+    auth_token: str | None = None  # refreshed Core dashboard JWT, verified per turn
     event: EventCreateEventPayload
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
