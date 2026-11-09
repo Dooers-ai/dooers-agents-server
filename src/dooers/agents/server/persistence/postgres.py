@@ -332,6 +332,43 @@ class PostgresPersistence:
                     ON {analytics_table}(timestamp)
             """)
 
+            # Memory is agent-owned, not a general knowledge base. Users never
+            # choose the tenant keys; the SDK binds them from the Core session.
+            memories = f"{self._prefix}long_term_memories"
+            snapshots = f"{self._prefix}thread_context_snapshots"
+            await conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {memories} (
+                    id UUID PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK (scope IN ('user')),
+                    scope_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    source_thread_id TEXT,
+                    source_event_id TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','deleted')),
+                    index_state TEXT NOT NULL DEFAULT 'pending' CHECK (index_state IN ('pending','ready')),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+            await conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}memory_subject
+                ON {memories} (organization_id,agent_id,scope,scope_id,status,updated_at DESC)
+            """)
+            await conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {snapshots} (
+                    thread_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    last_event_id TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+
     async def create_thread(self, thread: Thread) -> None:
         if not self._pool:
             raise RuntimeError("Not connected")
