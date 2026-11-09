@@ -135,6 +135,7 @@ class HandlerContext:
     workspace_id: str = ""
     channel: str = "dooers-platform"
     channel_meta: dict[str, Any] | None = None
+    auth_assertion: str | None = None  # SDK-internal, never included in AgentContext
     user: User = None  # type: ignore[assignment]
     thread_id: str | None = None
     thread_title: str | None = None
@@ -375,6 +376,15 @@ class HandlerPipeline:
             message=message,
             content=handler_content,
             context=agent_context,
+        )
+        from dooers.tools.rag.runtime import bind_execution_context
+        bind_execution_context(
+            agent_id=context.agent_id,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            user_id=context.user.user_id,
+            channel=context.channel,
+            auth_assertion=context.auth_assertion,
         )
 
         # Populate form response fields if this is a form.response event
