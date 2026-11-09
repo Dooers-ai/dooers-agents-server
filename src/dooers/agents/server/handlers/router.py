@@ -584,7 +584,7 @@ class Router:
             frame.payload.auth_token
             if self._auth_validator is not None and user is not None
             and user.user_id and not user.user_id.startswith("guest:")
-            and (user.connection_type or "") != "guest"
+            and user.connection_type == "dashboard"
             else None
         )
         self._can_configure_settings = can_configure_settings
