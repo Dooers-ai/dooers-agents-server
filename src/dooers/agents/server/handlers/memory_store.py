@@ -61,9 +61,14 @@ class LongTermMemoryStore:
             self.context.thread_id, self.context.event_id,
         )
         # Store first; failed indexing remains pending and can be safely retried.
-        await rag.memory_upsert(memory_id=str(memory_id), content=content, metadata=metadata)
-        await self._mark_indexed(memory_id)
-        return {"memory_id": str(memory_id), "content": content}
+        try:
+            await rag.memory_upsert(memory_id=str(memory_id), content=content, metadata=metadata)
+            await self._mark_indexed(memory_id)
+            indexed = True
+        except Exception:
+            logger.warning("Memory persisted; semantic indexing pending", exc_info=True)
+            indexed = False
+        return {"memory_id": str(memory_id), "content": content, "indexed": indexed}
 
     async def _mark_indexed(self, memory_id: UUID) -> None:
         org, agent, uid = self._identity()
@@ -79,9 +84,9 @@ class LongTermMemoryStore:
 
         org, agent, uid = self._identity()
         rows = await self.db.fetch(
-            f"""SELECT id,content,metadata FROM {self.memories_table}
+            f"""SELECT id,content,metadata,status FROM {self.memories_table}
                 WHERE organization_id=$1 AND agent_id=$2 AND scope='user'
-                  AND scope_id=$3 AND status='active' AND index_state='pending'
+                  AND scope_id=$3 AND index_state='pending'
                 ORDER BY created_at ASC LIMIT $4""",
             org, agent, uid, max(1, min(limit, 100)),
         )
@@ -91,8 +96,17 @@ class LongTermMemoryStore:
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
             try:
-                await rag.memory_upsert(memory_id=str(row["id"]), content=row["content"], metadata=metadata)
-                await self._mark_indexed(row["id"])
+                if row["status"] == "deleted":
+                    await rag.memory_delete(str(row["id"]))
+                    await self.db.execute(
+                        f"""UPDATE {self.memories_table} SET index_state='ready'
+                            WHERE id=$1 AND organization_id=$2 AND agent_id=$3
+                              AND scope_id=$4 AND status='deleted'""",
+                        row["id"], org, agent, uid,
+                    )
+                else:
+                    await rag.memory_upsert(memory_id=str(row["id"]), content=row["content"], metadata=metadata)
+                    await self._mark_indexed(row["id"])
                 count += 1
             except Exception:
                 logger.warning("memory index retry failed for memory %s", row["id"], exc_info=True)
@@ -169,7 +183,7 @@ class LongTermMemoryStore:
         mid = UUID(memory_id)
         row = await self.db.fetchrow(
             f"""UPDATE {self.memories_table}
-                SET status='deleted',updated_at=now()
+                SET status='deleted',index_state='pending',updated_at=now()
                 WHERE id=$1 AND organization_id=$2 AND agent_id=$3
                   AND scope='user' AND scope_id=$4 AND status='active'
                 RETURNING id""",
@@ -178,7 +192,16 @@ class LongTermMemoryStore:
         if row is None:
             return False
         # SQL tombstone takes effect before the search index deletion.
-        await rag.memory_delete(memory_id)
+        try:
+            await rag.memory_delete(memory_id)
+            await self.db.execute(
+                f"""UPDATE {self.memories_table} SET index_state='ready'
+                    WHERE id=$1 AND organization_id=$2 AND agent_id=$3
+                      AND scope='user' AND scope_id=$4 AND status='deleted'""",
+                mid,org,agent,uid,
+            )
+        except Exception:
+            logger.warning("Memory tombstoned; semantic index deletion pending", exc_info=True)
         return True
 
     async def get_summary(self) -> dict[str, str] | None:
