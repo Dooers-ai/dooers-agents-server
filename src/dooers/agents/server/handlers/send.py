@@ -125,6 +125,14 @@ class AgentSend:
     def __init__(self) -> None:
         self.whatsapp = _WhatsappSend(self)
 
+    def text_delta(self, text: str) -> AgentEvent:
+        """Transient incremental text fragment; never persisted as a chat message.
+
+        The handler must follow it with exactly one final send.text(...) or
+        send.run_end(status="failed"). Intended for live web chat only.
+        """
+        return AgentEvent(send_type="text_delta", data={"text": text})
+
     def text(self, text: str, author: str | None = None) -> AgentEvent:
         return AgentEvent(
             send_type="text",

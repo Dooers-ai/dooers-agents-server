@@ -68,6 +68,7 @@ class EventCreateEventPayload(BaseModel):
 class EventCreatePayload(BaseModel):
     thread_id: str | None = None
     client_event_id: str | None = None
+    auth_token: str | None = None  # refreshed Core dashboard JWT, verified per turn
     event: EventCreateEventPayload
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
@@ -343,6 +344,13 @@ class EventAppendPayload(BaseModel):
     events: list[ThreadEvent]
 
 
+class TextDeltaPayload(BaseModel):
+    thread_id: str
+    run_id: str
+    sequence: int
+    text: str
+
+
 class ThreadUpsertPayload(BaseModel):
     thread: Thread
 
@@ -379,6 +387,12 @@ class S2C_EventAppend(BaseModel):
     id: str
     type: Literal["event.append"] = "event.append"
     payload: EventAppendPayload
+
+
+class S2C_TextDelta(BaseModel):
+    id: str
+    type: Literal["text.delta"] = "text.delta"
+    payload: TextDeltaPayload
 
 
 class S2C_ThreadUpsert(BaseModel):
@@ -497,6 +511,7 @@ ServerToClient = (
     | S2C_ThreadSearchResult
     | S2C_ThreadSnapshot
     | S2C_EventAppend
+    | S2C_TextDelta
     | S2C_EventListResult
     | S2C_ThreadArtifactsListResult
     | S2C_ThreadUpsert

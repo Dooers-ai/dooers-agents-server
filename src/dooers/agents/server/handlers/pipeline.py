@@ -135,6 +135,7 @@ class HandlerContext:
     workspace_id: str = ""
     channel: str = "dooers-platform"
     channel_meta: dict[str, Any] | None = None
+    auth_assertion: str | None = None  # SDK-internal, never included in AgentContext
     user: User = None  # type: ignore[assignment]
     thread_id: str | None = None
     thread_title: str | None = None
@@ -376,6 +377,15 @@ class HandlerPipeline:
             content=handler_content,
             context=agent_context,
         )
+        from dooers.tools.rag.runtime import bind_execution_context
+        bind_execution_context(
+            agent_id=context.agent_id,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            user_id=context.user.user_id,
+            channel=context.channel,
+            auth_assertion=context.auth_assertion,
+        )
 
         # Populate form response fields if this is a form.response event
         if result.user_event.type == "form.response" and context.data:
@@ -384,7 +394,7 @@ class HandlerPipeline:
             incoming.form_event_id = context.data.get("form_event_id")
 
         send = AgentSend()
-        memory = AgentMemory(thread_id=thread_id, persistence=self._persistence)
+        memory = AgentMemory(thread_id=thread_id, persistence=self._persistence, context=agent_context)
 
         analytics = self._create_analytics(
             agent_id=context.agent_id,
@@ -398,6 +408,7 @@ class HandlerPipeline:
 
         current_run_id: str | None = None
         current_agent_id: str | None = None
+        delta_sequence = 0
 
         policy_denial: str | None = None
         if result.user_event.type == "message":
@@ -487,6 +498,25 @@ class HandlerPipeline:
                         )
                         current_run_id = None
                         current_agent_id = None
+
+                elif event.send_type == "text_delta":
+                    # Streaming data is ephemeral. Do not persist fragments in history
+                    # or dispatch them as individual WhatsApp messages.
+                    delta = event.data.get("text")
+                    if current_run_id and isinstance(delta, str) and delta and len(delta) <= 8192:
+                        delta_sequence += 1
+                        await self._broadcast(
+                            context.agent_id,
+                            {
+                                "type": "text.delta",
+                                "thread_id": thread_id,
+                                # Internal trusted object avoids a DB read per token.
+                                "thread": thread,
+                                "run_id": current_run_id,
+                                "sequence": delta_sequence,
+                                "text": delta,
+                            },
+                        )
 
                 elif event.send_type == "text":
                     event_id = _generate_id()

@@ -51,6 +51,8 @@ from dooers.agents.server.protocol.frames import (
     S2C_Ack,
     S2C_EventAppend,
     S2C_EventListResult,
+    S2C_TextDelta,
+    TextDeltaPayload,
     S2C_FeedbackAck,
     S2C_Pong,
     S2C_RunUpsert,
@@ -103,6 +105,7 @@ class WebSocketProtocol(Protocol):
 
 # Re-export for tests that still import from router
 _user_is_thread_participant = user_is_thread_participant
+resolve_scope = resolve_list_scope  # Backwards-compatible alias for scoped personal threads
 
 
 def _can_access_thread(user: User, thread: Thread, *, connection_workspace_id: str) -> bool:
@@ -208,6 +211,8 @@ class Router:
         self._workspace_id: str = ""
         self._workspace_queues: list[WorkspaceQueueCatalog] = []
         self._agent_owner_user_id: str | None = None
+        # Core-signed dashboard handshake; kept inside the SDK, not the LLM context.
+        self._auth_assertion: str | None = None
         self._can_configure_settings: bool = False
         self._subscribed_threads: set[str] = set()
         self._rate_limits: dict[str, Any] = {}
@@ -310,6 +315,36 @@ class Router:
                     events=evs,
                 ),
             )
+        elif payload_type == "text.delta":
+            # The pipeline already holds this authenticated thread snapshot.
+            # Do not make a persistence round trip for every model token.
+            thread = payload.get("thread")
+            if not isinstance(thread, Thread):
+                thread = await self._persistence.get_thread(payload["thread_id"])
+            if not thread or thread.id != payload["thread_id"] or thread.agent_id != agent_id:
+                return
+            frame = S2C_TextDelta(
+                id=_generate_id(),
+                payload=TextDeltaPayload(
+                    thread_id=payload["thread_id"], run_id=payload["run_id"],
+                    sequence=payload["sequence"], text=payload["text"],
+                ),
+            )
+            message = serialize_frame(frame)
+            # Unlike agent-wide event broadcasts, live fragments must never
+            # leak to sockets without actual read access to this thread.
+            recipients = []
+            for ws in self._registry.get_connections(agent_id):
+                session = self._registry.session_for(ws)
+                if session and resolve_thread_access(
+                    session.user, thread, connection_workspace_id=session.workspace_id,
+                ).read:
+                    recipients.append(ws)
+            await asyncio.gather(
+                *(self._registry._safe_send(ws, message) for ws in recipients),
+                return_exceptions=True,
+            )
+            return
         elif payload_type == "run.upsert":
             frame = S2C_RunUpsert(
                 id=_generate_id(),
@@ -414,6 +449,7 @@ class Router:
         self._workspace_id = ""
         self._workspace_queues = []
         self._agent_owner_user_id = None
+        self._auth_assertion = None
         self._can_configure_settings = False
         self._rate_limits = {}
         self._subscriptions.pop(self._ws_id, None)
@@ -542,6 +578,15 @@ class Router:
         self._user = user
         self._rate_limits = rate_limits
         self._agent_owner_user_id = agent_owner_user_id
+        # The Core exchange endpoint verifies dashboard JWTs again; public/legacy
+        # tokens cannot be promoted to delegated service identity.
+        self._auth_assertion = (
+            frame.payload.auth_token
+            if self._auth_validator is not None and user is not None
+            and user.user_id and not user.user_id.startswith("guest:")
+            and user.connection_type == "dashboard"
+            else None
+        )
         self._can_configure_settings = can_configure_settings
         self._workspace_queues = workspace_queues
         self._ws = ws
@@ -1104,6 +1149,29 @@ class Router:
         content_parts = list(frame.payload.event.content)
 
         user = self._user or User(user_id="")
+        # The original dashboard handshake JWT expires quickly. Accept a fresh
+        # signed assertion on each turn; never use it to change the WS identity.
+        turn_auth_assertion = self._auth_assertion
+        if frame.payload.auth_token and self._auth_validator is not None and user.connection_type == "dashboard":
+            result = await self._auth_validator.validate(
+                auth_token=frame.payload.auth_token,
+                agent_id=self._agent_id,
+                guest_user_id="",
+                organization_id=self._organization_id,
+                workspace_id=self._workspace_id,
+                user_id=user.user_id,
+            )
+            if (
+                not result.valid or result.user is None or
+                result.user.user_id != user.user_id or
+                result.organization_id != self._organization_id or
+                (result.workspace_id or "") != (self._workspace_id or "") or
+                result.agent_id != self._agent_id
+            ):
+                turn_auth_assertion = None
+                logger.warning("[agents] ignored invalid refreshed Core dashboard identity")
+            else:
+                turn_auth_assertion = frame.payload.auth_token
 
         # Existing threads require write; check before setup so we do not persist a forbidden message.
         existing_thread_id = (frame.payload.thread_id or "").strip()
@@ -1155,6 +1223,7 @@ class Router:
             channel=channel,
             channel_meta=channel_meta,
             user=user,
+            auth_assertion=turn_auth_assertion if channel == "dooers-platform" else None,
             thread_id=frame.payload.thread_id,
             content=content_parts,
             data=frame.payload.event.data,

@@ -18,6 +18,9 @@ __all__ = [
     "delete",
     "get",
     "list_documents",
+    "memory_upsert",
+    "memory_search",
+    "memory_delete",
     "list_knowledge_bases",
     "search",
     "upload",
@@ -112,3 +115,29 @@ async def delete(document_id: str) -> dict[str, Any]:
     """Delete a source only when it belongs to a KB scoped to this agent."""
     data = await post("/documents/delete", {"document_id": document_id})
     return data if isinstance(data, dict) else {"ok": True, "document_id": document_id}
+
+
+async def memory_upsert(*, memory_id: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+    """Index a canonical memory for the Core-verified user only."""
+    from dooers.tools.rag.runtime import current_execution_context
+    ctx = current_execution_context()
+    if not ctx or not ctx.auth_assertion or not ctx.user_id:
+        raise RAGToolsError("Verified user delegation is required for personal memory")
+    await post("/memories/upsert", {"memory_id": memory_id, "content": content, "metadata": metadata or {}})
+
+
+async def memory_search(query: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    from dooers.tools.rag.runtime import current_execution_context
+    ctx = current_execution_context()
+    if not ctx or not ctx.auth_assertion or not ctx.user_id:
+        raise RAGToolsError("Verified user delegation is required for personal memory")
+    result = await post("/memories/search", {"query": query, "limit": max(1, min(int(limit), 50))})
+    return result.get("results", []) if isinstance(result, dict) else []
+
+
+async def memory_delete(memory_id: str) -> None:
+    from dooers.tools.rag.runtime import current_execution_context
+    ctx = current_execution_context()
+    if not ctx or not ctx.auth_assertion or not ctx.user_id:
+        raise RAGToolsError("Verified user delegation is required for personal memory")
+    await post("/memories/delete", {"memory_id": memory_id})

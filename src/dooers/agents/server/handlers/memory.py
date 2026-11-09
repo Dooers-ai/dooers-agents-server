@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, Any, Literal
 
+from dooers.agents.server.handlers.context import AgentContext
+
 from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
 from dooers.agents.server.protocol.models import Thread, ThreadArtifact, ThreadEvent
 
@@ -26,9 +28,42 @@ HistoryFormat = Literal[
 
 
 class AgentMemory:
-    def __init__(self, thread_id: str, persistence: "Persistence"):
+    def __init__(self, thread_id: str, persistence: "Persistence", context: "AgentContext | None" = None):
         self._thread_id = thread_id
         self._persistence = persistence
+        self._context = context
+
+    def _long_term(self):
+        from dooers.agents.server.handlers.memory_store import LongTermMemoryStore, MemoryUnavailableError
+        from dooers.agents.server.persistence.postgres import PostgresPersistence
+        if not isinstance(self._persistence, PostgresPersistence) or self._context is None:
+            raise MemoryUnavailableError("Long-term memory requires an authenticated turn and AlloyDB/PostgreSQL")
+        return LongTermMemoryStore(self._persistence, self._context)
+
+    async def remember(self, content: str, *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._long_term().remember(content, metadata=metadata)
+
+    async def search(self, query: str, *, limit: int = 8) -> list[dict[str, Any]]:
+        return await self._long_term().search(query, limit=limit)
+
+    async def forget(self, memory_id: str) -> bool:
+        return await self._long_term().forget(memory_id)
+
+    async def update(self, memory_id: str, content: str) -> bool:
+        return await self._long_term().update(memory_id, content)
+
+    async def prepare_context(self, query: str, *, token_budget: int = 2000) -> dict[str, Any]:
+        return await self._long_term().prepare_context(query, token_budget=token_budget)
+
+    async def compact_history(self, summary: str, *, last_event_id: str) -> None:
+        await self._long_term().compact_history(summary, last_event_id=last_event_id)
+
+    async def get_context_snapshot(self) -> dict[str, str] | None:
+        return await self._long_term().get_summary()
+
+    async def sync_pending(self) -> int:
+        return await self._long_term().sync_pending()
+
 
     async def get_thread(self) -> Thread | None:
         return await self._persistence.get_thread(self._thread_id)
@@ -38,12 +73,16 @@ class AgentMemory:
         limit: int = 50,
         order: "EventOrder" = "asc",
         filters: dict[str, str] | None = None,
+        after_event_id: str | None = None,
+        before_event_id: str | None = None,
     ) -> list[ThreadEvent]:
         return await self._persistence.get_events(
             self._thread_id,
             limit=limit,
             order=order,
             filters=filters,
+            after_event_id=after_event_id,
+            before_event_id=before_event_id,
         )
 
     async def get_history(
