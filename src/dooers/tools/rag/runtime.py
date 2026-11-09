@@ -1,14 +1,13 @@
-"""Deterministic handler execution context for managed RAG authorization.
+"""Trusted per-turn identity for managed RAG.
 
-The context is keyed by the current asyncio Task rather than passed through LLM/tool
-arguments. AgentIncoming binds it before creator handler code runs; weak task keys
-are discarded when request tasks are collected.
+Context variables propagate into child asyncio tasks, including agent tool tasks.
+Only the SDK's authenticated connection handling may attach an assertion.
+Do not accept user identity or assertions from LLM/tool arguments.
 """
 from __future__ import annotations
 
-import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass
-from weakref import WeakKeyDictionary
 
 
 @dataclass(frozen=True)
@@ -18,9 +17,10 @@ class RAGExecutionContext:
     workspace_id: str = ""
     user_id: str = ""
     on_behalf: bool = False
+    auth_assertion: str | None = None
 
 
-_contexts: WeakKeyDictionary[asyncio.Task, RAGExecutionContext] = WeakKeyDictionary()
+_current: ContextVar[RAGExecutionContext | None] = ContextVar("dooers_rag_context", default=None)
 
 
 def bind_execution_context(
@@ -30,34 +30,31 @@ def bind_execution_context(
     workspace_id: str = "",
     user_id: str = "",
     channel: str = "",
+    auth_assertion: str | None = None,
 ) -> None:
-    try:
-        task = asyncio.current_task()
-    except RuntimeError:
-        # AgentIncoming also appears in synchronous preflight/tests: no task
-        # exists yet and there is no privileged execution context to bind.
-        return
-    if task is None:
-        return
+    agent_id = (agent_id or "").strip()
+    prior = _current.get()
+    # Child-tool rebinds must not erase a previously verified delegation.
+    # Never reuse it if the caller changes agent or user identity.
+    if prior and prior.agent_id == agent_id and not user_id and not organization_id and not workspace_id:
+        user_id = prior.user_id
+        organization_id = prior.organization_id
+        workspace_id = prior.workspace_id
+        channel = channel or ("dooers-platform" if prior.on_behalf else "")
+        auth_assertion = auth_assertion or prior.auth_assertion
     user_id = (user_id or "").strip()
-    channel = (channel or "").strip()
     authenticated_user = (
-        user_id
-        if user_id and not user_id.startswith("guest:") and channel == "dooers-platform"
-        else ""
+        user_id if user_id and not user_id.startswith("guest:") and channel == "dooers-platform" else ""
     )
-    _contexts[task] = RAGExecutionContext(
-        agent_id=(agent_id or "").strip(),
+    _current.set(RAGExecutionContext(
+        agent_id=agent_id,
         organization_id=(organization_id or "").strip(),
         workspace_id=(workspace_id or "").strip(),
         user_id=authenticated_user,
-        on_behalf=bool(authenticated_user),
-    )
+        on_behalf=bool(authenticated_user and auth_assertion),
+        auth_assertion=auth_assertion if authenticated_user else None,
+    ))
 
 
 def current_execution_context() -> RAGExecutionContext | None:
-    try:
-        task = asyncio.current_task()
-    except RuntimeError:
-        return None
-    return _contexts.get(task) if task is not None else None
+    return _current.get()
