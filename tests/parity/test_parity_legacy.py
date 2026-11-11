@@ -12,6 +12,7 @@ import pytest
 from tests.parity.harness import ParityResult, run_legacy
 from tests.parity.normalize import DATE_FIELDS, ID_FIELDS, URL_FIELD, normalize
 from tests.parity.scenarios import SCENARIOS
+from tests.parity.subjects import SUBJECTS, assert_subject
 
 HISTORY_FORMATS = (
     "openai",
@@ -64,12 +65,21 @@ def test_scenario_names_match_the_brief():
     assert set(SCENARIOS) == EXPECTED_SCENARIOS
 
 
+def test_every_scenario_declares_its_subject():
+    assert set(SUBJECTS) == set(SCENARIOS)
+    assert all(subject.non_empty for subject in SUBJECTS.values())
+
+
 @pytest.mark.parametrize("name", sorted(SCENARIOS))
 async def test_legacy_scenario_is_stable(name):
-    first = normalize(await run_legacy(name))
+    raw = await run_legacy(name)
+    first = normalize(raw)
     second = normalize(await run_legacy(name))
     assert first == second
-    assert first.events  # todo cenário grava ao menos um evento
+    # Replaces the plan's `assert first.events`: each scenario's subject (events, incoming,
+    # histories or outputs) must hold what production produced, so an empty capture on both
+    # sides can never count as parity.
+    assert_subject(name, raw)
 
 
 def test_normalize_keeps_author():
@@ -78,8 +88,23 @@ def test_normalize_keeps_author():
     assert normalize(a) != normalize(b)
 
 
+def test_normalize_treats_ref_id_as_an_id():
+    def result(ref_id, author="Ana Souza"):
+        part = {"type": "image", "ref_id": ref_id, "url": None}
+        return _result(
+            _event(actor="user", author=author, content=[part]),
+            outputs={"chat_upload": {"ref_id": ref_id, "filename": "foto.png"}},
+        )
+
+    assert normalize(result("ref-a")) == normalize(result("ref-b"))
+    assert normalize(result("ref-a")) != normalize(result("ref-b", author="Outra Pessoa"))
+    normalized = normalize(result("ref-a"))
+    assert normalized.outputs["chat_upload"]["ref_id"] == normalized.events[0]["content"][0]["ref_id"]
+    assert normalized.outputs["chat_upload"]["ref_id"].startswith("<id:")
+
+
 def test_ignored_field_list_is_fixed():
-    assert ID_FIELDS == frozenset({"id", "event_id", "thread_id", "run_id"})
+    assert ID_FIELDS == frozenset({"id", "event_id", "thread_id", "run_id", "ref_id"})
     assert DATE_FIELDS == frozenset({"created_at", "updated_at", "last_event_at"})
     assert URL_FIELD == "url"
 
@@ -102,7 +127,12 @@ def _event(**overrides):
 
 
 def _result(*events, **kwargs):
-    return ParityResult(events=list(events), incoming=kwargs.get("incoming", {}), histories={})
+    return ParityResult(
+        events=list(events),
+        incoming=kwargs.get("incoming", {}),
+        histories={},
+        outputs=kwargs.get("outputs", {}),
+    )
 
 
 @pytest.mark.parametrize(

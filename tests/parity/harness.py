@@ -4,7 +4,6 @@
 
 - ``_build_persistence`` returns ``MemoryPersistence`` (Postgres row semantics);
 - ``init_otel`` is a no-op and OTEL stays off (the platform default would export spans);
-- ``upload_store`` gets sequential UUIDs, so ``ref_id`` values repeat between runs;
 - ``respx`` serves a fake tools-whatsapp and a fake core. Any other HTTP request
   raises (``assert_all_mocked``), so nothing reaches the network.
 
@@ -19,7 +18,6 @@ import base64
 import copy
 import json
 import os
-import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from typing import Any
@@ -30,7 +28,6 @@ import respx
 
 import dooers.agents.server.observability.otel as otel
 import dooers.agents.server.server as server_module
-import dooers.agents.server.upload_store as upload_store_module
 from dooers.agents.server.auth_validation import (
     CORE_ISSUER,
     DASHBOARD_VALIDATION_PATH,
@@ -66,17 +63,6 @@ __all__ = ["ParityResult", "run_legacy"]
 
 class WebSocketDisconnect(Exception):
     """Same name as Starlette's, so ``AgentServer.handle`` treats it as a normal close."""
-
-
-class _SequentialUuid:
-    """Stands in for the ``uuid`` module inside ``upload_store``."""
-
-    def __init__(self) -> None:
-        self._count = 0
-
-    def uuid4(self) -> uuid.UUID:
-        self._count += 1
-        return uuid.UUID(int=self._count)
 
 
 def _b64(data: dict[str, Any]) -> str:
@@ -138,7 +124,6 @@ def _offline_environment(persistence: MemoryPersistence, connect: Connect) -> It
         stack.enter_context(patch.object(server_module, "_build_persistence", lambda _config: persistence))
         stack.enter_context(patch.object(otel, "init_otel", lambda **_kwargs: None))
         stack.enter_context(patch.object(otel, "_otel_enabled", False))
-        stack.enter_context(patch.object(upload_store_module, "uuid", _SequentialUuid()))
         mock = stack.enter_context(respx.mock(assert_all_called=False))
         mock.post(f"{TOOLS_BASE}/api/v1/messages").mock(side_effect=fakes.whatsapp_tools)
         mock.post(f"{CORE_BASE}{DASHBOARD_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
