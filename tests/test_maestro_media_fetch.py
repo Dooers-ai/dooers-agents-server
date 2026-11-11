@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from contextlib import asynccontextmanager
 from functools import partial
 
@@ -306,8 +307,100 @@ async def test_fetch_guard_is_closed_by_default(server):
     assert exc.value.reason == "blocked"
 
 
-async def test_fetch_allows_public_literal_ip():
-    """A public address passes the guard (then fails to connect/times out quickly, never 'blocked')."""
+def test_public_addresses_pass_the_guard_without_any_network():
+    for address in ("93.184.216.34", "8.8.8.8", "2606:2800:220:1:248:1893:25c8:1946"):
+        assert module._is_public(ipaddress.ip_address(address))
+    for address in ("fec0::1", "fec0::ffff:1", "10.0.0.1", "169.254.169.254", "::ffff:10.0.0.1"):
+        assert not module._is_public(ipaddress.ip_address(address))
+
+
+async def test_fetch_blocks_site_local_ipv6(no_connect):
     with pytest.raises(MediaFetchError) as exc:
-        await module.fetch_media("http://93.184.216.34:9/x", timeout_s=0.3)
-    assert exc.value.reason in {"timeout", "network"}
+        await module.fetch_media("http://[fec0::1]/")
+    assert exc.value.reason == "blocked"
+    assert no_connect == []
+
+
+async def test_fetch_idn_host_is_sent_as_idna_host_header(server):
+    resolved: list[str] = []
+
+    async def resolver(host, port):
+        resolved.append(host)
+        return ["127.0.0.1"]
+
+    server.add("/a.png", b"PNG", headers={"Content-Type": "image/png"})
+    port = server.base.rsplit(":", 1)[1]
+    media = await module.fetch_media(f"http://ex\u00e4mple.com:{port}/a.png", _resolver=resolver, _allow_hosts={"ex\u00e4mple.com"})
+    assert media.data == b"PNG"
+    assert resolved == ["xn--exmple-cua.com"]
+    assert server.hosts == [f"xn--exmple-cua.com:{port}"]
+
+
+async def test_fetch_idn_host_resolving_to_private_ip_is_blocked(no_connect):
+    async def resolver(host, port):
+        return ["10.0.0.1"]
+
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media("http://ex\u00e4mple.com/a.png", _resolver=resolver)
+    assert exc.value.reason == "blocked"
+    assert no_connect == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://exa\x00mple.com/a.png",
+        "http://exa mple.com/a.png",
+        "http://" + "a" * 64 + ".example.com/a.png",
+        "http://" + "\u00e4" * 64 + ".example.com/a.png",
+        "http://a..b/a.png",
+        "http://[::1/a.png",
+    ],
+)
+async def test_fetch_malformed_hosts_raise_scheme_not_other_exceptions(url, no_connect):
+    async def resolver(host, port):  # a real resolver would also reject these
+        raise UnicodeError("label empty or too long")
+
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media(url, _resolver=resolver)
+    assert exc.value.reason in {"scheme", "network"}
+    assert no_connect == []
+
+
+@pytest.mark.parametrize("url", ["http://exa\x00mple.com/a.png", "http://" + "a" * 64 + ".example.com/a.png"])
+async def test_fetch_nul_byte_and_long_label_are_scheme(url):
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media(url)
+    assert exc.value.reason == "scheme"
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("boom"), KeyError("k"), UnicodeEncodeError("ascii", "\u00e4", 0, 1, "bad"), ValueError("v")]
+)
+async def test_fetch_resolver_exceptions_become_media_fetch_error(error):
+    async def resolver(host, port):
+        raise error
+
+    with pytest.raises(MediaFetchError):
+        await module.fetch_media("http://media.example.com/a.png", _resolver=resolver)
+
+
+async def test_fetch_unexpected_internal_error_becomes_media_fetch_error(monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(module, "_download", boom)
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media("http://media.example.com/a.png")
+    assert exc.value.reason == "network"
+
+
+async def test_fetch_closed_loopback_port_raises_network(server):
+    """A port nobody listens on: network error against loopback only (no external traffic)."""
+    srv = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    srv.close()
+    await srv.wait_closed()
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"http://127.0.0.1:{port}/x")
+    assert exc.value.reason == "network"

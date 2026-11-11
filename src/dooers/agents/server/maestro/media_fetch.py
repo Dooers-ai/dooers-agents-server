@@ -21,6 +21,7 @@ FALLBACK_MIME = "application/octet-stream"
 FALLBACK_FILENAME = "file"
 
 NAT64_NETWORK = ipaddress.IPv6Network("64:ff9b::/96")
+SITE_LOCAL_NETWORK = ipaddress.IPv6Network("fec0::/10")  # deprecated site-local; not flagged by is_global
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 
@@ -69,6 +70,8 @@ def _is_public(ip: IPAddress) -> bool:
         embedded = _embedded_ipv4(ip)
         if embedded is not None:
             return _is_public(embedded)
+    if isinstance(ip, ipaddress.IPv6Address) and ip in SITE_LOCAL_NETWORK:
+        return False
     return ip.is_global and not (ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
@@ -80,8 +83,20 @@ def _literal_ip(host: str) -> IPAddress | None:
         pass
     try:
         return ipaddress.IPv4Address(socket.inet_aton(host))
-    except OSError:
+    except (OSError, ValueError):
         return None
+
+
+def _idna_host(host: str) -> str:
+    """Lowercase ASCII (IDNA) form of the host. Raises ValueError for hosts that cannot be encoded."""
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in host):
+        raise ValueError("host contains control or space characters")
+    if host.isascii():
+        host = host.lower()
+        if any(len(label) > 63 for label in host.split(".")):
+            raise ValueError("host label is longer than 63 characters")
+        return host
+    return host.encode("idna").decode("ascii").lower()  # UnicodeError (a ValueError) on invalid labels
 
 
 async def _system_resolver(host: str, port: int) -> list[str]:
@@ -110,15 +125,21 @@ async def _resolve_target(url: str, resolver: Resolver, allow_hosts: Collection[
     if not host:
         raise MediaFetchError("scheme", "URL has no host")
     port = port or (443 if scheme == "https" else 80)
-    literal = _literal_ip(host)
+    try:
+        host = _idna_host(host)
+        literal = _literal_ip(host)
+    except ValueError as exc:
+        raise MediaFetchError("scheme", f"invalid host: {exc}") from exc
     try:
         addresses = [str(literal)] if literal is not None else await resolver(host, port)
     except OSError as exc:
         raise MediaFetchError("network", f"DNS resolution failed for {host}: {exc}") from exc
+    except ValueError as exc:  # includes UnicodeError
+        raise MediaFetchError("scheme", f"invalid host {host}: {exc}") from exc
     if not addresses:
         raise MediaFetchError("network", f"DNS resolution returned no address for {host}")
     parsed = [ipaddress.ip_address(address) for address in addresses]
-    if host.lower() not in allow_hosts and not all(_is_public(ip) for ip in parsed):
+    if host not in allow_hosts and not all(_is_public(ip) for ip in parsed):
         raise MediaFetchError("blocked", f"host {host} resolves to a non-public address")
     return _Target(url=url, host=host, port=port, ip=addresses[0])
 
@@ -158,12 +179,18 @@ async def fetch_media(
     callers must not pass them.
     """
     resolver = _resolver or _system_resolver
-    allow_hosts = frozenset(host.lower() for host in _allow_hosts)
+    allow_hosts = frozenset(_idna_host(host) for host in _allow_hosts)
     try:
         async with asyncio.timeout(timeout_s):
             data, content_type, final_url = await _download(url, max_bytes, timeout_s, resolver, allow_hosts)
+    except MediaFetchError:
+        raise
     except TimeoutError as exc:
         raise MediaFetchError("timeout") from exc
+    except ValueError as exc:  # includes UnicodeError: malformed URL or host
+        raise MediaFetchError("scheme", f"invalid URL: {exc}") from exc
+    except Exception as exc:  # last guard: callers only ever see MediaFetchError
+        raise MediaFetchError("network", f"{type(exc).__name__}: {exc}") from exc
     filename = hint_filename or _filename_from_url(final_url)
     mime = _clean_mime(hint_mime) or _clean_mime(content_type) or mimetypes.guess_type(filename)[0] or FALLBACK_MIME
     return FetchedMedia(data=data, mime_type=mime, filename=filename)
