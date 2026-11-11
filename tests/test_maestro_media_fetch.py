@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from functools import partial
 
 import pytest
 
-from dooers.agents.server.maestro.media_fetch import FetchedMedia, MediaFetchError, fetch_media
+from dooers.agents.server.maestro import media_fetch as module
+from dooers.agents.server.maestro.media_fetch import FetchedMedia, MediaFetchError
 
 LIMIT = 26214400
+
+# Loopback fixtures: only tests may open the guard, and only for this literal host.
+fetch_media = partial(module.fetch_media, _allow_hosts={"127.0.0.1"})
 
 
 class Server:
     def __init__(self) -> None:
         self.routes: dict[str, tuple[str, dict[str, str], bytes]] = {}
         self.base = ""
+        self.hosts: list[str] = []
+        self.no_length: set[str] = set()
 
     def add(self, path: str, body: bytes = b"", *, status: str = "200 OK", headers: dict[str, str] | None = None) -> None:
         self.routes[path] = (status, headers or {}, body)
@@ -21,9 +28,13 @@ class Server:
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             raw = await reader.readuntil(b"\r\n\r\n")
-            path = raw.decode().split(" ", 2)[1].split("?", 1)[0]
+            text = raw.decode()
+            path = text.split(" ", 2)[1].split("?", 1)[0]
+            self.hosts.append(next((ln.split(": ", 1)[1] for ln in text.split("\r\n") if ln.lower().startswith("host: ")), ""))
             status, headers, body = self.routes.get(path, ("404 Not Found", {}, b"missing"))
-            head = {"Content-Length": str(len(body)), "Connection": "close", **headers}
+            head = {"Connection": "close", **headers}
+            if path not in self.no_length:
+                head["Content-Length"] = str(len(body))
             writer.write(f"HTTP/1.1 {status}\r\n".encode())
             writer.write("".join(f"{k}: {v}\r\n" for k, v in head.items()).encode() + b"\r\n")
             writer.write(body)
@@ -104,8 +115,10 @@ async def test_fetch_exactly_at_limit_ok(server):
 
 
 async def test_fetch_timeout_raises_timeout():
+    release = asyncio.Event()
+
     async def slow(reader, writer):
-        await asyncio.sleep(5)
+        await release.wait()
         writer.close()
 
     srv = await asyncio.start_server(slow, "127.0.0.1", 0)
@@ -115,7 +128,9 @@ async def test_fetch_timeout_raises_timeout():
             await fetch_media(f"http://127.0.0.1:{port}/x", timeout_s=0.2)
         assert exc.value.reason == "timeout"
     finally:
+        release.set()
         srv.close()
+        await srv.wait_closed()
 
 
 async def test_fetch_connection_refused_raises_network():
@@ -133,3 +148,166 @@ async def test_fetch_rejects_non_http_scheme(url):
     with pytest.raises(MediaFetchError) as exc:
         await fetch_media(url)
     assert exc.value.reason == "scheme"
+
+
+async def test_fetch_stops_streaming_at_limit_without_content_length(server):
+    server.add("/chunked", b"x" * 5000, headers={"Content-Type": "application/octet-stream"})
+    server.no_length.add("/chunked")
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"{server.base}/chunked", max_bytes=1000)
+    assert exc.value.reason == "too_large"
+
+
+async def test_fetch_redirect_without_location_raises_status(server):
+    server.add("/r", status="302 Found")
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"{server.base}/r")
+    assert exc.value.reason == "status"
+
+
+async def test_fetch_three_redirects_ok_four_fail(server):
+    server.add("/a", status="302 Found", headers={"Location": "/b"})
+    server.add("/b", status="302 Found", headers={"Location": "/c"})
+    server.add("/c", status="302 Found", headers={"Location": "/d.txt"})
+    server.add("/d.txt", b"ok", headers={"Content-Type": "text/plain"})
+    assert (await fetch_media(f"{server.base}/a")).data == b"ok"
+    server.add("/c", status="302 Found", headers={"Location": "/c2"})
+    server.add("/c2", status="302 Found", headers={"Location": "/d.txt"})
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"{server.base}/a")
+    assert exc.value.reason == "network"
+
+
+async def test_fetch_filename_comes_from_final_url_after_redirect(server):
+    server.add("/short", status="302 Found", headers={"Location": "/files/report.pdf"})
+    server.add("/files/report.pdf", b"%PDF", headers={"Content-Type": "application/pdf"})
+    media = await fetch_media(f"{server.base}/short")
+    assert media.filename == "report.pdf"
+
+
+async def test_fetch_redirect_to_file_scheme_raises_scheme(server):
+    server.add("/r", status="302 Found", headers={"Location": "file:///etc/passwd"})
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"{server.base}/r")
+    assert exc.value.reason == "scheme"
+
+
+# --- SSRF guard -------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_connect(monkeypatch):
+    """Fails the test if the guard lets any request reach httpx."""
+    calls: list[str] = []
+    real = module.httpx.AsyncClient.stream
+
+    def spy(self, method, url, **kwargs):
+        calls.append(str(url))
+        return real(self, method, url, **kwargs)
+
+    monkeypatch.setattr(module.httpx.AsyncClient, "stream", spy)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://2130706433/",
+        "http://0x7f.0.0.1/",
+        "http://017700000001/",
+        "http://127.1/",
+        "http://127.0.0.1:9/",
+        "http://localhost-as-ip.invalid@10.0.0.1/",
+        "http://10.0.0.1/",
+        "http://172.16.0.1/",
+        "http://192.168.1.1/",
+        "http://100.64.0.1/",
+        "http://0.0.0.0/",
+        "http://224.0.0.1/",
+        "http://240.0.0.1/",
+        "http://[::1]/",
+        "http://[::]/",
+        "http://[::7f00:1]/",
+        "http://[64:ff9b::7f00:1]/",
+        "http://[2002:7f00:1::]/",
+        "http://[fe80::1]/",
+        "http://[fd00::1]/",
+        "http://[::ffff:169.254.169.254]/",
+    ],
+)
+async def test_fetch_blocks_non_public_literals_without_connecting(url, no_connect):
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media(url)
+    assert exc.value.reason == "blocked"
+    assert no_connect == []
+
+
+async def test_fetch_blocks_hostname_resolving_to_private_ip(no_connect):
+    async def resolver(host, port):
+        return ["10.0.0.1"]
+
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media("http://media.example.com/a.png", _resolver=resolver)
+    assert exc.value.reason == "blocked"
+    assert no_connect == []
+
+
+async def test_fetch_blocks_when_any_resolved_address_is_private(no_connect):
+    async def resolver(host, port):
+        return ["93.184.216.34", "10.0.0.1"]
+
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media("http://media.example.com/a.png", _resolver=resolver)
+    assert exc.value.reason == "blocked"
+    assert no_connect == []
+
+
+async def test_fetch_blocks_redirect_to_metadata_ip(server, no_connect):
+    server.add("/r", status="302 Found", headers={"Location": "http://169.254.169.254/latest/meta-data/"})
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"{server.base}/r")
+    assert exc.value.reason == "blocked"
+    assert len(no_connect) == 1  # only the allowed first hop was requested
+
+
+async def test_fetch_blocks_redirect_to_hostname_resolving_private(server, no_connect):
+    server.add("/r", status="302 Found", headers={"Location": "http://internal.example.com/x"})
+
+    async def resolver(host, port):
+        return ["127.0.0.1"] if host == "127.0.0.1" else ["192.168.0.5"]
+
+    with pytest.raises(MediaFetchError) as exc:
+        await fetch_media(f"{server.base}/r", _resolver=resolver)
+    assert exc.value.reason == "blocked"
+    assert len(no_connect) == 1
+
+
+async def test_fetch_connects_to_validated_ip_and_keeps_host_header(server):
+    """The fake resolver is the only source of the address: the request must go to that IP with the original Host."""
+    resolved: list[str] = []
+
+    async def resolver(host, port):
+        resolved.append(host)
+        return ["127.0.0.1"]
+
+    server.add("/p.png", b"PNG", headers={"Content-Type": "image/png"})
+    port = server.base.rsplit(":", 1)[1]
+    media = await module.fetch_media(f"http://pinned.example:{port}/p.png", _resolver=resolver, _allow_hosts={"pinned.example"})
+    assert media.data == b"PNG"
+    assert server.hosts == [f"pinned.example:{port}"]
+    assert resolved == ["pinned.example"]  # resolved once; httpx never re-resolves the name
+
+
+async def test_fetch_guard_is_closed_by_default(server):
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media(f"{server.base}/x")
+    assert exc.value.reason == "blocked"
+
+
+async def test_fetch_allows_public_literal_ip():
+    """A public address passes the guard (then fails to connect/times out quickly, never 'blocked')."""
+    with pytest.raises(MediaFetchError) as exc:
+        await module.fetch_media("http://93.184.216.34:9/x", timeout_s=0.3)
+    assert exc.value.reason in {"timeout", "network"}
