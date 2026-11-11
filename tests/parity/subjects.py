@@ -25,7 +25,8 @@ from tests.parity.model import (
     ParityResult,
 )
 from tests.parity.scenarios_incoming import HISTORY_FORMATS
-from tests.parity.scenarios_server import PNG_BYTES
+from tests.parity.scenarios_send import CHART_VARIANTS, FORM_TEXT_INPUT_TYPES
+from tests.parity.scenarios_server import PNG_BYTES, WHATSAPP_SENDS
 
 Check = Callable[[ParityResult], None]
 
@@ -137,6 +138,27 @@ def _form_elements(result: ParityResult) -> None:
         "file_input",
     ]
     assert (data["submit_label"], data["cancel_label"], data["size"]) == ("Confirmar", "Agora não", "large")
+
+
+def _single_form(*elements: dict[str, Any]) -> Check:
+    """The form event holds exactly these elements (type plus the variant field)."""
+
+    def check(result: ParityResult) -> None:
+        data = result.events[-1]["data"]
+        assert [{key: element[key] for key in expected} for element, expected in zip(data["elements"], elements, strict=True)] == list(
+            elements
+        )
+
+    return check
+
+
+_FORM_BUILDER_ELEMENTS: dict[str, tuple[dict[str, Any], ...]] = {
+    "textarea": ({"type": "textarea_input", "rows": 4},),
+    "select": ({"type": "select_input", "default": "pro"},),
+    "radio": ({"type": "radio_input", "variant": "native"}, {"type": "radio_input", "variant": "button"}),
+    "checkbox": ({"type": "checkbox_input", "variant": "native"}, {"type": "checkbox_input", "variant": "button"}),
+    "file": ({"type": "file_input", "multiple": True},),
+}
 
 
 def _revised_user_event(result: ParityResult) -> None:
@@ -255,11 +277,15 @@ def _chat_upload(result: ParityResult) -> None:
     assert result.outputs["chat_upload_errors"] == {"empty_file": "empty file", "blank_agent_id": "agent_id is required"}
 
 
-def _whatsapp_sent(result: ParityResult) -> None:
-    (request,) = result.outputs["whatsapp_requests"]
-    assert request["signed"] is True
-    delivery = result.events[-1]["data"]["delivery"]
-    assert delivery["wa_message_id"] == WHATSAPP_OUTBOUND_ID
+def _whatsapp_sent(send_type: str) -> Check:
+    def check(result: ParityResult) -> None:
+        (request,) = result.outputs["whatsapp_requests"]
+        assert request["signed"] is True
+        assert request["body"]["send_type"] == send_type
+        delivery = result.events[-1]["data"]["delivery"]
+        assert delivery["wa_message_id"] == WHATSAPP_OUTBOUND_ID
+
+    return check
 
 
 def _whatsapp_receipt(result: ParityResult) -> None:
@@ -304,13 +330,29 @@ SUBJECTS: dict[str, Subject] = {
         _form_response(cancelled=True, values={}),
     ),
     "chart": Subject(("events",), _all(_types("message", "chart"), _last_data(chart_type="bar"))),
+    **{
+        f"chart_{chart_type}": Subject(("events",), _all(_types("message", "chart"), _last_data(chart_type=chart_type)))
+        for chart_type in CHART_VARIANTS
+    },
+    **{
+        f"form_text_{input_type}": Subject(
+            ("events",), _all(_types("message", "form"), _single_form({"type": "text_input", "input_type": input_type}))
+        )
+        for input_type in FORM_TEXT_INPUT_TYPES
+    },
+    **{
+        f"form_{builder}": Subject(("events",), _all(_types("message", "form"), _single_form(*elements)))
+        for builder, elements in _FORM_BUILDER_ELEMENTS.items()
+    },
     "run_failed": Subject(("events", "outputs.runs"), _run("failed", None, "Serviço de pedidos indisponível")),
     "run_other_agent": Subject(("events", "outputs.runs"), _run("succeeded", OTHER_AGENT_ID, None)),
     "update_user_event": Subject(("events",), _revised_user_event),
     "update_thread_title": Subject(("events", "outputs.threads"), _thread(title="Pedido 42")),
     "update_thread_queue": Subject(("events", "outputs.threads"), _all(_types("message", "thread.update"), _thread(queue="suporte"))),
     "add_participant": Subject(("events", "outputs.threads"), _participant("user-2")),
-    "whatsapp_text": Subject(("events", "outputs.whatsapp_requests"), _whatsapp_sent),
+    **{
+        f"whatsapp_{send_type}": Subject(("events", "outputs.whatsapp_requests"), _whatsapp_sent(send_type)) for send_type in WHATSAPP_SENDS
+    },
     "whatsapp_receipt": Subject(("events", "outputs.receipts", "outputs.whatsapp_requests"), _whatsapp_receipt),
     "server_dispatch": Subject(("events", "outputs.dispatch"), _server_dispatch),
     "server_ingest": Subject(("events", "outputs.ingest"), _server_ingest),

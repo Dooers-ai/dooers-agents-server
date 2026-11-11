@@ -263,10 +263,12 @@ Nenhuma capability de interação é anunciada por essa construção tipada.
 
 `maestro_handler_context` faz bind e restaura RAG/WhatsApp/contexto Maestro em
 finally, inclusive erro, cancelamento e falha antes do generator. RAG/Maestro usam
-a task atual e não propagam automaticamente para child tasks. O pipeline legado
-agora guarda/restaura handle de RAG, mantendo seus cinco argumentos e binding
-legado; handlers isolados que constroem `AgentIncoming` ainda podem usar
-`reset_runtime_context()` explicitamente. Nenhum span/OTEL é iniciado aqui; quando
+a task atual e não propagam automaticamente para child tasks. O token de RAG fica
+em `maestro_handler_context` (`bind_runtime_context()` devolve o token e
+`reset_runtime_context(token)` o restaura); `AgentIncoming` nunca guarda o token. No
+modo legado, `AgentIncoming` faz o binding e descarta o token, como a produção, e
+mantém os campos, `asdict`, `deepcopy`, `pickle`, `repr` e igualdade de produção;
+`AgentContext.maestro` é uma property, não um campo. Nenhum span/OTEL é iniciado aqui; quando
 E05-08 instrumentar a execução, deve encerrar seu tracker no mesmo finally. A
 integração de export OTEL/provider permanece fora desta tarefa.
 

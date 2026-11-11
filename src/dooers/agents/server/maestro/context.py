@@ -206,8 +206,9 @@ async def _incoming(
         workspace_id=envelope["workspace_id"],
         channel="maestro",
         user=User(user_id=actor["principal_id"], user_name=actor["display_name"]) if actor["kind"] == "human" else None,
-        maestro=metadata,
     )
+    # Set before AgentIncoming is built: a Maestro context binds RAG only in maestro_handler_context.
+    context.maestro = metadata
     parts = [] if resume else origin["payload"]["content"]
     from .artifacts import MaestroArtifactsClient
     from .memory import MaestroArtifactReference
@@ -246,7 +247,6 @@ async def _incoming(
         context,
         form_data=form_data,
         form_event_id=form_event_id,
-        _bind_runtime_context=False,
     )
 
 
@@ -311,10 +311,11 @@ async def maestro_handler_context(
         previous = _active.get(task)
         tokens = None
         guard_token = None
+        rag_token = None
         active = True
         try:
             assert_options_current()
-            incoming.bind_runtime_context()
+            rag_token = incoming.bind_runtime_context()
             tokens = bind_handler_context(persistence=resources.persistence, agent_id=scope.instance_agent_id)
             guard_token = bind_handler_scope_guard(lambda: active and asyncio.current_task() is task and not cancellation.cancelled)
             _active[task] = incoming.context.maestro
@@ -323,7 +324,7 @@ async def maestro_handler_context(
         finally:
             active = False
             try:
-                incoming.reset_runtime_context()
+                incoming.reset_runtime_context(rag_token)
             finally:
                 if guard_token is not None:
                     reset_handler_scope_guard(guard_token)

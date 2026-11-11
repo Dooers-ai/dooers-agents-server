@@ -1,7 +1,11 @@
-from dataclasses import InitVar, dataclass, field
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from dooers.agents.server.handlers.context import AgentContext
 from dooers.agents.server.protocol.models import ContentPart
+
+if TYPE_CHECKING:
+    from dooers.tools.rag.runtime import RAGContextToken
 
 
 @dataclass
@@ -24,21 +28,23 @@ class AgentIncoming:
     form_cancelled: bool = field(default=False)
     form_event_id: str | None = field(default=None)
 
-    _bind_runtime_context: InitVar[bool] = True
-    _rag_token: object = field(default=None, init=False, repr=False, compare=False)
-
-    def __post_init__(self, _bind_runtime_context: bool) -> None:
-        if _bind_runtime_context and self.context.maestro is None:
+    def __post_init__(self) -> None:
+        # Legacy mode binds here and drops the token, as production does: the instance keeps
+        # only its fields, so asdict/deepcopy/pickle/repr/eq stay the production ones.
+        # Maestro mode binds in ``maestro_handler_context``, which keeps the token and resets it.
+        if self.context.maestro is None:
             self.bind_runtime_context()
 
-    def bind_runtime_context(self) -> None:
-        if self._rag_token is not None:
-            raise RuntimeError("INCOMING_CONTEXT_ALREADY_BOUND")
+    def bind_runtime_context(self) -> "RAGContextToken | None":
+        """Bind the platform RAG context to the current task and return the reset token.
+
+        The token is never stored on the instance; the caller that binds also resets.
+        """
         # Bind platform-owned context outside creator/LLM arguments. Import stays lazy so
         # handlers that never use managed RAG do not pay a module dependency at startup.
         from dooers.tools.rag.runtime import bind_execution_context
 
-        self._rag_token = bind_execution_context(
+        return bind_execution_context(
             agent_id=self.context.agent_id,
             organization_id=self.context.organization_id,
             workspace_id=self.context.workspace_id or "",
@@ -46,8 +52,9 @@ class AgentIncoming:
             channel=self.context.channel,
         )
 
-    def reset_runtime_context(self) -> None:
+    @staticmethod
+    def reset_runtime_context(token: "RAGContextToken | None") -> None:
+        """Restore the RAG context that ``bind_runtime_context`` replaced (``None``: no-op)."""
         from dooers.tools.rag.runtime import reset_execution_context
 
-        reset_execution_context(self._rag_token)
-        self._rag_token = None
+        reset_execution_context(token)

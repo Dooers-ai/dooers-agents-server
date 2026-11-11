@@ -1,4 +1,9 @@
-"""Scenarios for the ``send.*`` functions a handler yields (one function per scenario)."""
+"""Scenarios for the ``send.*`` functions a handler yields (one function per scenario).
+
+Each value of a public ``Literal`` parameter that changes what the client renders has its
+own scenario too: every ``chart_type`` (``chart`` is ``bar``), every ``form_text``
+``input_type`` and every form element builder.
+"""
 
 from __future__ import annotations
 
@@ -73,6 +78,67 @@ async def _run_other_agent(on, send, memory, analytics, settings):
     yield send.run_start(agent_id=OTHER_AGENT_ID)
     yield send.text("Aqui é o agente de cobrança.")
     yield send.run_end()
+
+
+_PLAN_OPTIONS = [{"value": "basico", "label": "Básico"}, {"value": "pro", "label": "Pro"}]
+
+#: One scenario per ``form_text`` ``input_type`` (the ``Literal`` in ``AgentSend.form_text``).
+FORM_TEXT_INPUT_TYPES = ("text", "password", "email", "number", "date")
+
+
+def _form_text_elements(input_type: str) -> Callable[[Any], list[dict[str, Any]]]:
+    return lambda send: [send.form_text("campo", label="Campo", required=True, placeholder="Digite", input_type=input_type)]
+
+
+#: One scenario per form element builder other than ``form_text`` (covered by
+#: ``FORM_TEXT_INPUT_TYPES``). Radio and checkbox send both ``variant`` values.
+FORM_ELEMENT_BUILDERS: dict[str, Callable[[Any], list[dict[str, Any]]]] = {
+    "textarea": lambda send: [send.form_textarea("obs", label="Observações", rows=4, default="Nada", placeholder="Escreva")],
+    "select": lambda send: [send.form_select("plano", label="Plano", options=_PLAN_OPTIONS, default="pro", placeholder="Escolha")],
+    "radio": lambda send: [
+        send.form_radio("contato", label="Contato", options=_PLAN_OPTIONS, default="pro", variant="native"),
+        send.form_radio("prazo", label="Prazo", options=_PLAN_OPTIONS, order=1, variant="button"),
+    ],
+    "checkbox": lambda send: [
+        send.form_checkbox("extras", label="Extras", options=_PLAN_OPTIONS, default=["pro"], variant="native"),
+        send.form_checkbox("canais", label="Canais", options=_PLAN_OPTIONS, order=1, variant="button"),
+    ],
+    "file": lambda send: [send.form_file("anexo", label="Anexo", upload_url="/uploads", accept="application/pdf", multiple=True)],
+}
+
+
+def _single_form(elements: Callable[[Any], list[dict[str, Any]]]) -> Handler:
+    return _reply(lambda on, send: [send.form("Preencha o campo", elements(send), submit_label="Enviar")])
+
+
+_MONTHLY_SALES = [{"mes": "jan", "vendas": 10, "meta": 12}, {"mes": "fev", "vendas": 14, "meta": 12}]
+
+#: ``chart_type`` -> (data, x_key, y_keys) for the chart types other than ``bar`` (scenario ``chart``).
+CHART_VARIANTS: dict[str, tuple[list[dict[str, Any]], str, list[str]]] = {
+    "bar_horizontal": (_MONTHLY_SALES, "mes", ["vendas", "meta"]),
+    "stacked_bar": (_MONTHLY_SALES, "mes", ["vendas", "meta"]),
+    "line": (_MONTHLY_SALES, "mes", ["vendas", "meta"]),
+    "area": (_MONTHLY_SALES, "mes", ["vendas", "meta"]),
+    "pie": ([{"plano": "basico", "clientes": 30}, {"plano": "pro", "clientes": 12}], "plano", ["clientes"]),
+    "donut": ([{"plano": "basico", "clientes": 30}, {"plano": "pro", "clientes": 12}], "plano", ["clientes"]),
+    "scatter": ([{"preco": 10, "vendas": 40}, {"preco": 20, "vendas": 25}], "preco", ["vendas"]),
+}
+
+
+def _chart(chart_type: str) -> Handler:
+    data, x_key, y_keys = CHART_VARIANTS[chart_type]
+    return _reply(
+        lambda on, send: [
+            send.chart(
+                chart_type=chart_type,
+                data=[dict(row) for row in data],
+                x_key=x_key,
+                y_keys=list(y_keys),
+                title=f"Gráfico {chart_type}",
+                series=[send.chart_series(key, label=key.capitalize()) for key in y_keys],
+            )
+        ]
+    )
 
 
 def _form_response_turns(data: dict[str, Any]) -> tuple[Turn, ...]:
@@ -255,4 +321,13 @@ SEND_SCENARIOS: dict[str, Scenario] = {
         ),
         incoming=ScenarioInput(observe=frozenset({"threads"})),
     ),
+    **{f"chart_{chart_type}": Scenario(handler=_chart(chart_type), incoming=ScenarioInput()) for chart_type in CHART_VARIANTS},
+    **{
+        f"form_text_{input_type}": Scenario(handler=_single_form(_form_text_elements(input_type)), incoming=ScenarioInput())
+        for input_type in FORM_TEXT_INPUT_TYPES
+    },
+    **{
+        f"form_{builder}": Scenario(handler=_single_form(elements), incoming=ScenarioInput())
+        for builder, elements in FORM_ELEMENT_BUILDERS.items()
+    },
 }

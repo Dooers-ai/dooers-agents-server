@@ -223,10 +223,57 @@ async def _chat_upload(server: Any, handler: Any) -> dict[str, Any]:
     return {"chat_upload": upload, "chat_upload_errors": errors}
 
 
-async def _whatsapp_text(on, send, memory, analytics, settings):
-    yield send.run_start()
-    yield send.whatsapp.text("Seu pedido saiu para entrega.", to_e164=WHATSAPP_CUSTOMER, instance_id=WHATSAPP_INSTANCE)
-    yield send.run_end()
+_ROUTE = {"to_e164": WHATSAPP_CUSTOMER, "instance_id": WHATSAPP_INSTANCE}
+
+#: One scenario per ``send.whatsapp.*`` function: send type -> the call a handler makes.
+WHATSAPP_SENDS: dict[str, Any] = {
+    "text": lambda send: send.whatsapp.text("Seu pedido saiu para entrega.", **_ROUTE),
+    "image": lambda send: send.whatsapp.image(
+        "https://cdn.example.com/rastreio.png", WHATSAPP_CUSTOMER, WHATSAPP_INSTANCE, mime_type="image/png", alt="Rastreio"
+    ),
+    "document": lambda send: send.whatsapp.document(
+        "https://cdn.example.com/nota.pdf", "nota.pdf", "application/pdf", WHATSAPP_CUSTOMER, WHATSAPP_INSTANCE
+    ),
+    "audio": lambda send: send.whatsapp.audio(
+        "https://cdn.example.com/aviso.ogg", WHATSAPP_CUSTOMER, WHATSAPP_INSTANCE, mime_type="audio/ogg", duration=2.5
+    ),
+    "contact": lambda send: send.whatsapp.contact(
+        WHATSAPP_CUSTOMER,
+        WHATSAPP_INSTANCE,
+        display_name="Suporte Dooers",
+        vcard="BEGIN:VCARD\nVERSION:3.0\nFN:Suporte Dooers\nEND:VCARD",
+        phones=[{"phone": "+551130000000", "type": "WORK"}],
+    ),
+    "template": lambda send: send.whatsapp.template(
+        "order_update",
+        "pt_BR",
+        template_components=[{"type": "body", "parameters": [{"type": "text", "text": "42"}]}],
+        **_ROUTE,
+    ),
+}
+
+
+def _whatsapp_reply(send_type: str) -> Any:
+    async def handler(on, send, memory, analytics, settings):
+        yield send.run_start()
+        yield WHATSAPP_SENDS[send_type](send)
+        yield send.run_end()
+
+    return handler
+
+
+def _whatsapp_scenario(send_type: str) -> Scenario:
+    return Scenario(
+        handler=_whatsapp_reply(send_type),
+        incoming=ScenarioInput(
+            turns=(Turn(message="Oi, quero saber do meu pedido"),),
+            user=WHATSAPP_USER,
+            channel="whatsapp",
+            channel_meta=WHATSAPP_CHANNEL_META,
+            config=WHATSAPP_CONFIG,
+            service_secrets=WHATSAPP_SECRETS,
+        ),
+    )
 
 
 async def _whatsapp_receipt(server: Any, handler: Any) -> dict[str, Any]:
@@ -289,17 +336,7 @@ SERVER_SCENARIOS: dict[str, Scenario] = {
     "repository_crud": Scenario(handler=_echo, incoming=ScenarioInput(flow="script", script=_repository_crud)),
     "memory_by_thread_id": Scenario(handler=_photo_reply, incoming=ScenarioInput(flow="script", script=_memory_by_thread_id)),
     "chat_upload": Scenario(handler=_upload_reader, incoming=ScenarioInput(flow="script", script=_chat_upload)),
-    "whatsapp_text": Scenario(
-        handler=_whatsapp_text,
-        incoming=ScenarioInput(
-            turns=(Turn(message="Oi, quero saber do meu pedido"),),
-            user=WHATSAPP_USER,
-            channel="whatsapp",
-            channel_meta=WHATSAPP_CHANNEL_META,
-            config=WHATSAPP_CONFIG,
-            service_secrets=WHATSAPP_SECRETS,
-        ),
-    ),
+    **{f"whatsapp_{send_type}": _whatsapp_scenario(send_type) for send_type in WHATSAPP_SENDS},
     "whatsapp_receipt": Scenario(
         handler=_echo,
         incoming=ScenarioInput(flow="script", script=_whatsapp_receipt, config=WHATSAPP_CONFIG, service_secrets=WHATSAPP_SECRETS),

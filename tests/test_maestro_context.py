@@ -5,7 +5,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import fields, replace
 from uuid import uuid4
 
 import pytest
@@ -324,6 +324,8 @@ async def test_context_private_recipient_binding_and_cleanup(private_key, contra
         try:
             try:
                 async with maestro_handler_context(memory, private) as prepared:
+                    # The RAG token lives in maestro_handler_context, never on the incoming object.
+                    assert set(vars(prepared.on)) == {f.name for f in fields(AgentIncoming)}
                     assert prepared.on.context.user is None
                     assert prepared.on.context.agent_id == memory._envelope["instance_agent_id"]
                     assert current_execution_context().agent_id == prepared.on.context.agent_id
@@ -366,11 +368,28 @@ async def test_private_scope_mismatch_before_any_binding(private_key, contracts)
         assert current_execution_context() is current_maestro_context() is None
 
 
-async def test_legacy_incoming_bind_restore_and_no_fake_workspace():
+async def test_legacy_incoming_binds_like_production_and_keeps_no_token():
+    async def turn():
+        incoming = AgentIncoming("legacy", [], AgentContext("thread", "legacy-agent", "event"))
+        return incoming, current_execution_context()
+
+    incoming, bound = await asyncio.create_task(turn())
+    assert (bound.agent_id, bound.workspace_id) == ("legacy-agent", "")
+    # Production drops the token: the legacy object holds only its dataclass fields.
+    assert set(vars(incoming)) == {f.name for f in fields(AgentIncoming)}
+    assert incoming.context.maestro is None
+
+
+async def test_explicit_bind_returns_the_token_and_reset_restores():
     token = bind_execution_context(agent_id="previous")
-    incoming = AgentIncoming("legacy", [], AgentContext("thread", "legacy-agent", "event"))
-    assert current_execution_context().agent_id == "legacy-agent"
-    incoming.reset_runtime_context()
+    context = AgentContext("thread", "maestro-agent", "event")
+    context.maestro = object()  # any Maestro metadata: construction must not bind
+    incoming = AgentIncoming("maestro", [], context)
+    assert current_execution_context().agent_id == "previous"
+    rag_token = incoming.bind_runtime_context()
+    assert current_execution_context().agent_id == "maestro-agent"
+    assert set(vars(incoming)) == {f.name for f in fields(AgentIncoming)}
+    incoming.reset_runtime_context(rag_token)
     assert current_execution_context().agent_id == "previous"
     reset_execution_context(token)
 

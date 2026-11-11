@@ -33,7 +33,16 @@ class AgentContext:
     queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
     chat_context: ChatContext | None = None
 
-    maestro: "MaestroExecutionContext | None" = None
+    # Not a dataclass field: in legacy mode AgentContext keeps production's fields,
+    # __init__, repr, asdict and equality. Maestro mode sets it after construction.
+    @property
+    def maestro(self) -> "MaestroExecutionContext | None":
+        """Maestro execution metadata; ``None`` in legacy mode."""
+        return self.__dict__.get("_maestro")
+
+    @maestro.setter
+    def maestro(self, value: "MaestroExecutionContext | None") -> None:
+        self.__dict__["_maestro"] = value
 
     def members_for_queue(self, slug: str | None = None) -> list[WorkspaceQueueMember]:
         """Members of ``slug``, or of the current thread queue when omitted."""

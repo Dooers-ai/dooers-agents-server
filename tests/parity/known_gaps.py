@@ -10,6 +10,10 @@ Measured on 2026-11-11 (task 8 of plan 1). No scenario matches yet, ``text`` inc
 every web chat scenario shares the two differences in ``_EVERY_WEB_CHAT_TURN``. Each
 reason names the first difference the scenario hits. A difference that a reason calls
 "masked" exists too, but an earlier failure hides it from the comparison.
+
+The variant scenarios (``chart_<type>``, ``form_text_<input_type>``, ``form_<builder>``,
+``whatsapp_<send type>``) were added and measured on 2026-11-11 (final review of plan 1,
+item I2). All 22 fail on the Maestro side, each as its base scenario does.
 """
 
 from __future__ import annotations
@@ -18,6 +22,8 @@ from dataclasses import dataclass
 
 from dooers.agents.server.exceptions import ThreadManagementModeError
 from tests.parity.fake_maestro import FakeMaestroRejected
+from tests.parity.scenarios_send import CHART_VARIANTS, FORM_ELEMENT_BUILDERS, FORM_TEXT_INPUT_TYPES
+from tests.parity.scenarios_server import WHATSAPP_SENDS
 
 Outcome = tuple[int, str, str | None]
 
@@ -64,6 +70,7 @@ _HISTORY = Gap(
     raises=FakeMaestroRejected,
     match="message.create",
 )
+_FORM_REFUSED = "MaestroSend.form without suspension raises UNSUPPORTED_CAPABILITY: no form event; " + _EVERY_WEB_CHAT_TURN
 _FORM_RESPONSE = "send.form is refused, so no form exists and the fake rejects the form.response turn (the contract has no legacy form); "
 
 GAPS: dict[str, Gap] = {
@@ -80,10 +87,13 @@ GAPS: dict[str, Gap] = {
     "tool_result": _sink_refuses("send.tool_result"),
     "tool_transaction": _sink_refuses("send.tool_transaction"),
     "chart": _sink_refuses("send.chart"),
-    "form": Gap(
-        "MaestroSend.form without suspension raises UNSUPPORTED_CAPABILITY: no form event; " + _EVERY_WEB_CHAT_TURN,
-        deliveries=_UNSUPPORTED,
-    ),
+    **{f"chart_{chart_type}": _sink_refuses(f"send.chart(chart_type={chart_type!r})") for chart_type in CHART_VARIANTS},
+    "form": Gap(_FORM_REFUSED, deliveries=_UNSUPPORTED),
+    **{
+        f"form_text_{input_type}": Gap(f"form_text(input_type={input_type!r}): {_FORM_REFUSED}", deliveries=_UNSUPPORTED)
+        for input_type in FORM_TEXT_INPUT_TYPES
+    },
+    **{f"form_{builder}": Gap(f"form_{builder}: {_FORM_REFUSED}", deliveries=_UNSUPPORTED) for builder in FORM_ELEMENT_BUILDERS},
     "form_response_submit": Gap(_FORM_RESPONSE + "form_data never reaches the handler", raises=FakeMaestroRejected, match="form.response"),
     "form_response_cancel": Gap(_FORM_RESPONSE + "the cancel never reaches the handler", raises=FakeMaestroRejected, match="form.response"),
     "run_failed": Gap(
@@ -121,7 +131,10 @@ GAPS: dict[str, Gap] = {
     "repository_crud": _server_blocked("repository"),
     "memory_by_thread_id": _server_blocked("dispatch", " (first call of the script; memory is never reached)"),
     "chat_upload": _server_blocked("chat_upload"),
-    "whatsapp_text": _server_blocked("dispatch", " (the WhatsApp ingress); send.whatsapp.* is never reached"),
+    **{
+        f"whatsapp_{send_type}": _server_blocked("dispatch", f" (the WhatsApp ingress); send.whatsapp.{send_type} is never reached")
+        for send_type in WHATSAPP_SENDS
+    },
     "whatsapp_receipt": _server_blocked("dispatch", " (first call of the script); no receipt is applied"),
     "public_chat_guest": _PUBLIC_CHAT,
     "public_chat_authenticated": _PUBLIC_CHAT,
