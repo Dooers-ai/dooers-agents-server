@@ -15,6 +15,7 @@ from dooers.agents.server.protocol.frames import (
     C2S_SettingsUnsubscribe,
     C2S_ThreadDelete,
     C2S_ThreadList,
+    C2S_ThreadSearch,
     C2S_ThreadParticipantsAdd,
     C2S_ThreadSubscribe,
     C2S_ThreadUpdate,
@@ -33,6 +34,7 @@ from dooers.agents.server.protocol.frames import (
     S2C_SettingsSnapshot,
     S2C_ThreadDeleted,
     S2C_ThreadListResult,
+    S2C_ThreadSearchResult,
     S2C_ThreadSnapshot,
     S2C_ThreadUpsert,
     SettingsPatchBroadcastPayload,
@@ -76,6 +78,7 @@ __all__ = [
     # Existing C2S frames
     "C2S_Connect",
     "C2S_ThreadList",
+    "C2S_ThreadSearch",
     "C2S_ThreadDelete",
     "C2S_ThreadParticipantsAdd",
     "C2S_ThreadUpdate",
@@ -93,6 +96,7 @@ __all__ = [
     # Existing S2C frames
     "S2C_Ack",
     "S2C_ThreadListResult",
+    "S2C_ThreadSearchResult",
     "S2C_ThreadSnapshot",
     "S2C_EventAppend",
     "S2C_ThreadUpsert",

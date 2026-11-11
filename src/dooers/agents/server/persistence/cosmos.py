@@ -293,6 +293,7 @@ class CosmosPersistence:
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> int:
         container = self._get_container("threads")
 
@@ -314,6 +315,9 @@ class CosmosPersistence:
         elif queue:
             conditions.append("c.queue = @queue")
             params.append({"name": "@queue", "value": queue})
+        if title_query:
+            conditions.append("CONTAINS(c.title, @title_query, true)")
+            params.append({"name": "@title_query", "value": title_query})
 
         where = " AND ".join(conditions)
         query = f"SELECT VALUE COUNT(1) FROM c WHERE {where}"
@@ -340,6 +344,7 @@ class CosmosPersistence:
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
         queue: str | None = None,
+        title_query: str | None = None,
     ) -> list[Thread]:
         container = self._get_container("threads")
 
@@ -361,6 +366,9 @@ class CosmosPersistence:
         elif queue:
             conditions.append("c.queue = @queue")
             params.append({"name": "@queue", "value": queue})
+        if title_query:
+            conditions.append("CONTAINS(c.title, @title_query, true)")
+            params.append({"name": "@title_query", "value": title_query})
 
         if cursor:
             if "|" in cursor:
@@ -597,6 +605,18 @@ class CosmosPersistence:
             return None
         return self._row_to_event(items[0])
 
+    async def find_event_by_whatsapp_message_id(self, wa_message_id: str) -> ThreadEvent | None:
+        wanted = (wa_message_id or "").strip()
+        if not wanted:
+            return None
+        container = self._get_container("events")
+        query = "SELECT * FROM c WHERE c.data.delivery.wa_message_id = @id"
+        params = [{"name": "@id", "value": wanted}]
+        items = [item async for item in container.query_items(query, parameters=params)]
+        if not items:
+            return None
+        return self._row_to_event(items[0])
+
     async def update_event(self, event: ThreadEvent) -> None:
         agent_id = await self._get_agent_id(event.thread_id)
         if not agent_id:
@@ -616,6 +636,8 @@ class CosmosPersistence:
         doc["content"] = content_json
         doc["run_id"] = event.run_id
         doc["author"] = event.author
+        if event.data is not None:
+            doc["data"] = event.data
 
         await container.upsert_item(doc)
 

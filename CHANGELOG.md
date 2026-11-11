@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.2] — 2026-11-03
+
+### Fixed
+
+- Turns are exported again when the agent runs on FastAPI 0.162 or newer. That FastAPI
+  traces every WebSocket connection by default ("WS /ws"), so the turn span became its
+  child; export only fires when a root span ends, so every turn waited for the socket to
+  close and was then dropped under a root without `agent.id` ("turn missing agent.id"),
+  silently and with the LLM spans and their key-source marks. The turn span is now always
+  the root of its own trace, whatever span is open around it.
+
+## [0.25.1] — 2026-11-01
+
+### Fixed
+
+- A WhatsApp delivery receipt no longer walks a bubble backwards. `read` stays
+  `read` when a late `delivered` arrives, and `failed` is not cleared by a later
+  progress status. `delivered` and `read` still advance an `accepted` send.
+
+## [0.25.0] — 2026-10-29
+
+### Added
+
+- `thread.search` (C2S) / `thread.search.result` (S2C): search every thread the
+  connection may see by title, not just the page already loaded. Same scope,
+  queue filter and `last_event_at|id` cursor as `thread.list`; case-insensitive
+  substring match (`ILIKE` on Postgres/AlloyDB with `%`/`_` matched literally,
+  `CONTAINS(..., true)` on Cosmos). The query is trimmed and must have 1 to 200
+  characters, otherwise the server acks `ok=false` with `INVALID_QUERY`; a search
+  that fails in the database acks `SEARCH_FAILED` instead of closing the socket. The
+  result echoes `query` so clients can drop answers to an older search.
+  Clients must check the server version first: servers before 0.25.0 close the
+  socket on an unknown frame type.
+
+## [0.24.5] — 2026-10-29
+
+### Fixed
+
+- A long turn no longer loses the attributes that say which key paid for each
+  LLM call. OTel caps a span at 128 attributes by default and evicts the oldest
+  one when it fills up, so `dooers.llm.key_source`, `dooers.llm.endpoint`,
+  `llm.system` and `input.value` were dropped from the later calls of turns with
+  many messages and tools — the usage screen then read the turn as "mixed
+  origin" and had no request/response payload to show. Spans now allow 512
+  attributes.
+
+## [0.24.4] — 2026-10-28
+
+### Added
+
+- WhatsApp outbound records `delivery.status` and `delivery.wa_message_id` on the
+  thread event. A synchronous tools error (for example Meta 131047, outside the
+  24h window) is stored before the console broadcast. An asynchronous refusal
+  posted back as a `delivery_receipt` (for example Meta 130497) updates that
+  same event and is pushed to open consoles with `event.append`.
+
 ## [Unreleased]
 
 ### Added

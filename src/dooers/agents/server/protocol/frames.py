@@ -39,6 +39,14 @@ class ThreadListPayload(BaseModel):
     queue: str | None = None
 
 
+class ThreadSearchPayload(BaseModel):
+    # Length is checked by the handler: a model-level failure would close the socket.
+    query: str
+    cursor: str | None = None
+    limit: int | None = None
+    queue: str | None = None
+
+
 class ThreadSubscribePayload(BaseModel):
     thread_id: str
     after_event_id: str | None = None
@@ -71,6 +79,12 @@ class C2S_Connect(BaseModel):
     id: str
     type: Literal["connect"]
     payload: ConnectPayload
+
+
+class C2S_ThreadSearch(BaseModel):
+    id: str
+    type: Literal["thread.search"]
+    payload: ThreadSearchPayload
 
 
 class C2S_ThreadList(BaseModel):
@@ -274,6 +288,7 @@ class C2S_Ping(BaseModel):
 ClientToServer = Annotated[
     C2S_Connect
     | C2S_ThreadList
+    | C2S_ThreadSearch
     | C2S_ThreadSubscribe
     | C2S_ThreadUnsubscribe
     | C2S_ThreadDelete
@@ -309,6 +324,13 @@ class ThreadListResultPayload(BaseModel):
     total_count: int = 0
 
 
+class ThreadSearchResultPayload(BaseModel):
+    query: str
+    threads: list[Thread]
+    cursor: str | None = None
+    total_count: int = 0
+
+
 class ThreadSnapshotPayload(BaseModel):
     thread: Thread
     events: list[ThreadEvent]
@@ -339,6 +361,12 @@ class S2C_ThreadListResult(BaseModel):
     id: str
     type: Literal["thread.list.result"] = "thread.list.result"
     payload: ThreadListResultPayload
+
+
+class S2C_ThreadSearchResult(BaseModel):
+    id: str
+    type: Literal["thread.search.result"] = "thread.search.result"
+    payload: ThreadSearchResultPayload
 
 
 class S2C_ThreadSnapshot(BaseModel):
@@ -466,6 +494,7 @@ class S2C_Pong(BaseModel):
 ServerToClient = (
     S2C_Ack
     | S2C_ThreadListResult
+    | S2C_ThreadSearchResult
     | S2C_ThreadSnapshot
     | S2C_EventAppend
     | S2C_EventListResult

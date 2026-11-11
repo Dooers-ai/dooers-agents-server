@@ -609,6 +609,23 @@ async def test_ws_thread_commands_reject_without_db_and_settings_stay_authentica
     assert not persistence.mock_calls
 
 
+async def test_maestro_mode_rejects_thread_search_frame(private_key):
+    from dooers.agents.server.handlers.router import Router
+    from dooers.agents.server.protocol import frames
+    from dooers.agents.server.registry import ConnectionRegistry
+
+    config = AgentConfig(database_type="postgres", thread_management="maestro", maestro=config_for(private_key))
+    persistence = AsyncMock()
+    router = Router(persistence=persistence, handler=None, registry=ConnectionRegistry(), subscriptions={}, agent_config=config)
+    ws = AsyncMock()
+    frame = frames.C2S_ThreadSearch.model_construct(id="synthetic-frame", payload=None)
+    await router.route(ws, frame)
+    message = json.loads(ws.send_text.call_args.args[0])
+    assert message["payload"]["ok"] is False
+    assert message["payload"]["error"]["code"] == "THREAD_MANAGEMENT_MISMATCH"
+    assert not persistence.mock_calls
+
+
 async def test_private_settings_analytics_and_database_still_available(private_key):
     from dooers.agents.server import SqlDatabase
     from dooers.agents.server.persistence.postgres import PostgresPersistence
