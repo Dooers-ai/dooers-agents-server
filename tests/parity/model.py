@@ -30,10 +30,13 @@ Flow = Literal["dispatch", "websocket", "script"]
 
 # -- Shared scenario values --
 
-AGENT_ID = "agent-1"
-OTHER_AGENT_ID = "agent-2"
-ORG_ID = "org-1"
-WORKSPACE_ID = "ws-1"
+# Maestro requires UUIDs for the organization, the workspace and each agent, so both modes
+# use the same UUIDs (the platform ids are UUIDs too). User ids and caller thread keys are
+# free strings in Maestro and stay readable.
+AGENT_ID = "33333333-3333-4333-8333-333333333333"
+OTHER_AGENT_ID = "44444444-4444-4444-8444-444444444444"
+ORG_ID = "11111111-1111-4111-8111-111111111111"
+WORKSPACE_ID = "22222222-2222-4222-8222-222222222222"
 ASSISTANT_NAME = "Assistente"
 TOOLS_BASE = "http://127.0.0.1:8810"
 CORE_BASE = "https://core.parity.test"
@@ -145,6 +148,9 @@ class ParityResult:
     histories: dict[str, list[dict]]
     #: Return values of ``AgentServer`` calls and extra observables (threads, runs, acks).
     outputs: dict[str, Any] = field(default_factory=dict)
+    #: Maestro runs only: how each delivery ended (``status``, ``state``, ``reason_code``), in
+    #: order. Not compared, because the legacy path has no delivery; the Maestro tests check it.
+    deliveries: list[dict[str, Any]] = field(default_factory=list, compare=False)
 
 
 # -- Handler capture --

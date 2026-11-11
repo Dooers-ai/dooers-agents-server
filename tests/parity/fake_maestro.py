@@ -58,15 +58,13 @@ from dooers.agents.server.maestro.context import MaestroPrivateResources, Maestr
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
 from tests.parity.memory_persistence import MemoryPersistence
-from tests.parity.model import ASSISTANT_NAME
+from tests.parity.model import AGENT_ID, ASSISTANT_NAME, ORG_ID, WORKSPACE_ID
 from tests.test_maestro_admission import BASE, json_bytes, request, sign, signed_request, timestamp
 from tests.test_maestro_context import AGENT
 
-# Maestro identities are UUIDs. The scenarios use "org-1", "ws-1" and "agent-1", which the
-# Maestro contract rejects, so the fake uses the contract fixture identities instead.
-ORGANIZATION_ID = BASE["envelope"]["organization_id"]
-WORKSPACE_ID = AGENT["workspace_id"]
-INSTANCE_AGENT_ID = BASE["authorized_instance_agent_id"]
+# The scenario identities (UUIDs, as Maestro requires), so both modes see the same ids.
+ORGANIZATION_ID = ORG_ID
+INSTANCE_AGENT_ID = AGENT_ID
 RUNTIME_ID = BASE["authorized_runtime_id"]
 CALLBACK_BASE_URL = BASE["configured_callback_base_url"]
 RUNTIME_ENDPOINT = "http://127.0.0.1:9000/api/dev/agent/maestro/deliveries"

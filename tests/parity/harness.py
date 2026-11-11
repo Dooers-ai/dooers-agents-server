@@ -24,7 +24,10 @@ public ``AgentServer`` API.
   ``THREAD_MANAGEMENT_MISMATCH`` (or the router refuses the frame), and that is the gap.
 
 Maestro is the thread authority in this mode, so events, threads and runs come from the
-fake, converted by ``legacy_view`` / ``legacy_thread_view``.
+fake, converted by ``legacy_view`` / ``legacy_thread_view``. ``ParityResult.deliveries``
+records how each delivery ended (HTTP status, state, reason code). If FakeMaestro refused
+an SDK request that ``EXPECTED_REJECTIONS`` does not list, ``run_maestro`` raises
+``ContractViolation``, also when the scenario itself fails.
 """
 
 from __future__ import annotations
@@ -75,7 +78,7 @@ from tests.parity.model import (
 )
 from tests.parity.scenarios import SCENARIOS
 
-__all__ = ["ParityResult", "run_legacy", "run_maestro"]
+__all__ = ["EXPECTED_REJECTIONS", "ContractViolation", "ParityResult", "run_legacy", "run_maestro"]
 
 
 class WebSocketDisconnect(Exception):
@@ -347,6 +350,24 @@ async def run_legacy(name: str) -> ParityResult:
 # -- Maestro mode --
 
 
+class ContractViolation(Exception):
+    """FakeMaestro refused an SDK request (contract or Maestro rule) that the scenario does not expect.
+
+    It is never a parity gap: ``KNOWN_GAPS`` never lists it as the expected failure.
+    """
+
+
+#: SDK callbacks a scenario expects FakeMaestro to refuse: scenario -> ((action, error code, why), ...).
+#: Empty today: in every scenario the SDK sends only requests that the contract accepts.
+EXPECTED_REJECTIONS: dict[str, tuple[tuple[str, str, str], ...]] = {}
+
+
+def _check_rejections(name: str, maestro: FakeMaestro) -> None:
+    expected = [(action, code) for action, code, _why in EXPECTED_REJECTIONS.get(name, ())]
+    if maestro.rejections != expected:
+        raise ContractViolation(f"{name}: FakeMaestro refused {maestro.rejections}, expected {expected}")
+
+
 def _delivered_by_maestro(spec: ScenarioInput) -> bool:
     """Web chat turns post to Maestro; channels, public chat and scripts keep the AgentServer ingress."""
     return spec.flow != "script" and spec.connect is None and spec.channel == "dooers-platform"
@@ -407,8 +428,13 @@ async def run_maestro(name: str) -> ParityResult:
                 outputs = await _run_maestro_deliveries(maestro, scenario)
             else:
                 outputs = await _run_maestro_server(maestro, scenario, fakes)
+        except Exception:
+            # A refused SDK request outranks the scenario's own failure (a gap never hides it).
+            _check_rejections(name, maestro)
+            raise
         finally:
             close_capture(token)
+    _check_rejections(name, maestro)
     outputs.update(_maestro_observed(maestro, spec.observe))
     if fakes.whatsapp_requests:
         outputs["whatsapp_requests"] = fakes.whatsapp_requests
@@ -416,4 +442,5 @@ async def run_maestro(name: str) -> ParityResult:
         # Maestro owns the threads in this mode; a local thread is a difference, never hidden.
         outputs["agent_local_events"] = await _persisted_events(persistence)
     events = [legacy_view(event) for event in maestro.all_events()]
-    return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs)
+    deliveries = [{"status": d.status_code, "state": d.state, "reason_code": d.reason_code} for d in maestro.deliveries.values()]
+    return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs, deliveries=deliveries)
