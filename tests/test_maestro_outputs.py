@@ -88,6 +88,16 @@ STORED_TYPE = {
 }
 
 
+def output_of(event: AgentEvent, ordinal: int = 0) -> MaestroOutput:
+    """Saída do evento; ``run_end`` roda dentro de um run aberto (sem run, ele não gera saída)."""
+    runs = RunTracker()
+    if event.send_type == "run_end":
+        output_for(S.run_start(), 0, runs=runs)
+    out = output_for(event, ordinal, runs=runs)
+    assert out is not None
+    return out
+
+
 @pytest.fixture(scope="module")
 def contracts():
     return MaestroContracts()
@@ -109,7 +119,7 @@ def stored_event_for(out: MaestroOutput) -> dict:
 
 @pytest.mark.parametrize("event", CONTRACT_EVENTS.values(), ids=CONTRACT_EVENTS.keys())
 def test_output_validates_against_contract(event, contracts):
-    out = output_for(event, 0)
+    out = output_of(event)
     contracts.validate(
         "Public.OutputRequest",
         {"output_id": "output:0", "type": out.type, "payload": out.payload, "lease_fence": FENCE},
@@ -156,7 +166,7 @@ def test_payload_equals_production_data_without_none():
     ],
 )
 def test_output_types(key, expected_type):
-    assert output_for(PRODUCTION_EVENTS[key], 0).type == expected_type
+    assert output_of(PRODUCTION_EVENTS[key]).type == expected_type
 
 
 @pytest.mark.parametrize("key", ["tool_call", "tool_result_full", "tool_transaction", "form", "chart_full", "participant_add_full"])
@@ -258,14 +268,36 @@ def test_run_start_creates_uuid4_and_running_status():
     assert a.payload["run_id"] != b.payload["run_id"]
 
 
-def test_run_end_uses_most_recent_open_run_of_the_same_execution():
+def test_run_end_closes_the_current_run():
+    runs = RunTracker()
+    run_id = output_for(S.run_start(), 0, runs=runs).payload["run_id"]
+    assert output_for(S.run_end(status="failed", error="x"), 1, runs=runs).payload == {
+        "run_id": run_id,
+        "status": "failed",
+        "error": "x",
+    }
+    assert runs.current is None
+
+
+def test_nested_run_start_replaces_the_current_run_like_production():
     runs = RunTracker()
     first = output_for(S.run_start(), 0, runs=runs).payload["run_id"]
     second = output_for(S.run_start(agent_id=AGENT_UUID), 1, runs=runs).payload["run_id"]
-    end_second = output_for(S.run_end(), 2, runs=runs)
-    end_first = output_for(S.run_end(status="failed", error="x"), 3, runs=runs)
-    assert end_second.payload == {"run_id": second, "status": "succeeded"}
-    assert end_first.payload == {"run_id": first, "status": "failed", "error": "x"}
+    assert first != second
+    assert output_for(S.text("x"), 2, runs=runs).payload["run_id"] == second
+    assert output_for(S.run_end(), 3, runs=runs).payload == {"run_id": second, "status": "succeeded"}
+    # O primeiro run não reabre: depois do run_end não há run atual.
+    assert runs.current is None
+    assert "run_id" not in output_for(S.text("y"), 4, runs=runs).payload
+    assert output_for(S.run_end(), 5, runs=runs) is None
+
+
+def test_run_end_after_run_end_yields_no_output():
+    runs = RunTracker()
+    output_for(S.run_start(), 0, runs=runs)
+    assert output_for(S.run_end(), 1, runs=runs) is not None
+    assert output_for(S.run_end(), 2, runs=runs) is None
+    assert output_for(S.run_end(status="failed", error="x"), 3, runs=runs) is None
 
 
 def test_runs_of_different_executions_do_not_mix():
@@ -276,9 +308,9 @@ def test_runs_of_different_executions_do_not_mix():
     assert output_for(S.run_end(), 1, runs=r2).payload["run_id"] == id2
 
 
-def test_run_end_without_open_run_still_yields_a_valid_run_id():
-    out = output_for(S.run_end(), 0)
-    assert UUID(out.payload["run_id"]).version == 4
+def test_run_end_without_current_run_yields_no_output_like_production():
+    assert output_for(S.run_end(), 0) is None
+    assert output_for(S.run_end(status="failed", error="x"), 0, runs=RunTracker()) is None
 
 
 def test_outputs_inside_a_run_carry_its_run_id(contracts):
@@ -320,7 +352,7 @@ def test_invalid_ordinal_is_rejected(ordinal):
 
 @pytest.mark.parametrize("event", PRODUCTION_EVENTS.values(), ids=PRODUCTION_EVENTS.keys())
 def test_round_trip(event):
-    assert agent_event_from(stored_event_for(output_for(event, 0))) == strip_none(event)
+    assert agent_event_from(stored_event_for(output_of(event))) == strip_none(event)
 
 
 def test_round_trip_keeps_run_id_out_of_the_event():

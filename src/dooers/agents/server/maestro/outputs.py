@@ -31,28 +31,29 @@ class MaestroOutput:
 
 
 class RunTracker:
-    """Runs abertos de uma execução, na ordem de abertura.
+    """Run atual de uma execução; espelha o ``current_run_id`` único de produção.
 
-    Uma instância por execução. ``run_start`` abre um run novo; ``run_end`` fecha o
-    mais recente. Enquanto há run aberto, as outras saídas levam o ``run_id`` dele
-    (índice 4.3.1).
+    Uma instância por execução. ``run_start`` abre um run novo e substitui o atual
+    (o anterior fica como a produção o deixa). ``run_end`` fecha só o atual; depois
+    dele não há run atual. Enquanto há run atual, as outras saídas levam o ``run_id``
+    dele (índice 4.3.1).
     """
 
     def __init__(self) -> None:
-        self._open: list[str] = []
+        self._current: str | None = None
 
     @property
     def current(self) -> str | None:
-        return self._open[-1] if self._open else None
+        return self._current
 
     def open(self) -> str:
-        run_id = str(uuid4())
-        self._open.append(run_id)
-        return run_id
+        self._current = str(uuid4())
+        return self._current
 
-    def close(self) -> str:
-        # Sem run aberto, devolve um id novo: a saída continua válida no contrato.
-        return self._open.pop() if self._open else str(uuid4())
+    def close(self) -> str | None:
+        """Fecha o run atual e o devolve; ``None`` se não há run atual."""
+        run_id, self._current = self._current, None
+        return run_id
 
 
 def _present(data: dict) -> dict:
@@ -99,8 +100,11 @@ def _run_start(event: AgentEvent, runs: RunTracker) -> tuple[str, dict]:
     return "run.update", payload
 
 
-def _run_end(event: AgentEvent, runs: RunTracker) -> tuple[str, dict]:
-    payload: dict[str, Any] = {"run_id": runs.close(), "status": event.data.get("status") or "succeeded"}
+def _run_end(event: AgentEvent, runs: RunTracker) -> tuple[str, dict] | None:
+    run_id = runs.close()
+    if run_id is None:
+        return None  # produção: run_end sem run atual não faz nada
+    payload: dict[str, Any] = {"run_id": run_id, "status": event.data.get("status") or "succeeded"}
     if event.data.get("error") is not None:
         payload["error"] = event.data["error"]
     return "run.update", payload
@@ -131,8 +135,11 @@ _BUILDERS = {
 }
 
 
-def output_for(event: AgentEvent, ordinal: int, *, runs: RunTracker | None = None) -> MaestroOutput:
+def output_for(event: AgentEvent, ordinal: int, *, runs: RunTracker | None = None) -> MaestroOutput | None:
     """Saída do Maestro para um ``AgentEvent`` de produção.
+
+    Devolve ``None`` para ``run_end`` sem run atual: a produção não faz nada nesse
+    caso. O sink pula o ``None`` e não consome ``ordinal``.
 
     ``ordinal`` é a posição da saída na execução (o sink o usa em ``output_id``).
     ``runs`` guarda os runs abertos da execução; sem ele, cada chamada é isolada.
@@ -143,7 +150,10 @@ def output_for(event: AgentEvent, ordinal: int, *, runs: RunTracker | None = Non
     if build is None:
         raise UnsupportedAgentEvent(f"send_type {event.send_type!r} has no direct Maestro output")
     tracker = runs if runs is not None else RunTracker()
-    output_type, payload = build(event, tracker)
+    built = build(event, tracker)
+    if built is None:
+        return None
+    output_type, payload = built
     if event.send_type not in ("run_start", "run_end") and tracker.current is not None:
         payload["run_id"] = tracker.current
     return MaestroOutput(output_type, payload)
