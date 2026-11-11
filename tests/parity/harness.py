@@ -10,6 +10,21 @@
 Flows: ``dispatch`` calls ``AgentServer.dispatch`` per turn; ``websocket`` sends frames
 through ``AgentServer.handle`` (Router); ``script`` runs the scenario's own calls on the
 public ``AgentServer`` API.
+
+``run_maestro`` runs the same scenario with ``thread_management="maestro"``, against
+``FakeMaestro``. Each scenario keeps the ingress its flow stands for in production:
+
+- web chat turns (``dispatch`` or ``websocket`` flow, channel ``dooers-platform``, no
+  public chat handshake): in Maestro mode the person posts to Maestro. The fake creates
+  the thread, publishes each turn and delivers it to the SDK adapter
+  (``create_text_delivery_adapter``), which runs the handler;
+- channels (``channel`` other than ``dooers-platform``), public chat (``connect``) and
+  ``script`` scenarios: their ingress is the agent's own ``AgentServer``, so they call
+  the same ``AgentServer`` method on a Maestro-mode server. Today it raises
+  ``THREAD_MANAGEMENT_MISMATCH`` (or the router refuses the frame), and that is the gap.
+
+Maestro is the thread authority in this mode, so events, threads and runs come from the
+fake, converted by ``legacy_view`` / ``legacy_thread_view``.
 """
 
 from __future__ import annotations
@@ -34,8 +49,10 @@ from dooers.agents.server.auth_validation import (
     PUBLIC_CHAT_VALIDATION_PATH,
 )
 from dooers.agents.server.config import AgentConfig
+from dooers.agents.server.maestro import create_text_delivery_adapter
 from dooers.agents.server.server import AgentServer
 from dooers.tools.whatsapp.transport import build_x_message_sig
+from tests.parity.fake_maestro import FakeMaestro, legacy_thread_view, legacy_view, private_resources
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import (
     AGENT_ID,
@@ -58,7 +75,7 @@ from tests.parity.model import (
 )
 from tests.parity.scenarios import SCENARIOS
 
-__all__ = ["ParityResult", "run_legacy"]
+__all__ = ["ParityResult", "run_legacy", "run_maestro"]
 
 
 class WebSocketDisconnect(Exception):
@@ -116,7 +133,7 @@ class _FakeServices:
 
 
 @contextmanager
-def _offline_environment(persistence: MemoryPersistence, connect: Connect) -> Iterator[_FakeServices]:
+def _offline_environment(persistence: MemoryPersistence, connect: Connect, maestro: FakeMaestro | None = None) -> Iterator[_FakeServices]:
     fakes = _FakeServices(connect)
     with ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {"DOOERS_WHATSAPP_TOOLS_BASE": TOOLS_BASE}))
@@ -128,10 +145,12 @@ def _offline_environment(persistence: MemoryPersistence, connect: Connect) -> It
         mock.post(f"{TOOLS_BASE}/api/v1/messages").mock(side_effect=fakes.whatsapp_tools)
         mock.post(f"{CORE_BASE}{DASHBOARD_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
         mock.post(f"{CORE_BASE}{PUBLIC_CHAT_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
+        if maestro is not None:
+            stack.enter_context(maestro.serving(mock))
         yield fakes
 
 
-def _config(spec: ScenarioInput) -> AgentConfig:
+def _config(spec: ScenarioInput, **mode: Any) -> AgentConfig:
     values: dict[str, Any] = {
         "database_type": "postgres",
         "database_host": "localhost",
@@ -157,6 +176,7 @@ def _config(spec: ScenarioInput) -> AgentConfig:
         "otel_service_name": "",
     }
     values.update(spec.config)
+    values.update(mode)
     return AgentConfig(**values)
 
 
@@ -321,4 +341,79 @@ async def run_legacy(name: str) -> ParityResult:
             await server.close()
     if fakes.whatsapp_requests:
         outputs["whatsapp_requests"] = fakes.whatsapp_requests
+    return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs)
+
+
+# -- Maestro mode --
+
+
+def _delivered_by_maestro(spec: ScenarioInput) -> bool:
+    """Web chat turns post to Maestro; channels, public chat and scripts keep the AgentServer ingress."""
+    return spec.flow != "script" and spec.connect is None and spec.channel == "dooers-platform"
+
+
+def _maestro_content(turn: Turn) -> list[dict[str, Any]]:
+    """What the web chat publishes: the wire parts, or the message as one text part."""
+    return _wire_content(turn) or [{"type": "text", "text": turn.message}]
+
+
+async def _run_maestro_deliveries(maestro: FakeMaestro, scenario: Scenario) -> dict[str, Any]:
+    spec = scenario.incoming
+    adapter = create_text_delivery_adapter(maestro.config, scenario.handler, private_resources)
+    thread_id: str | None = None
+    for number, turn in enumerate(spec.turns, start=1):
+        if thread_id is None:
+            thread_id = maestro.create_thread(spec.user, title=spec.thread_title)
+        if turn.event_type == "message":
+            trigger = maestro.publish(thread_id, spec.user, _maestro_content(turn), client_event_id=f"client-{number}")
+        else:
+            trigger = maestro.respond_form(thread_id, spec.user, turn.data)
+        for delivery in maestro.deliveries_for(trigger):
+            await maestro.deliver(adapter, delivery)
+    return {}
+
+
+async def _run_maestro_server(maestro: FakeMaestro, scenario: Scenario, fakes: _FakeServices) -> dict[str, Any]:
+    spec = scenario.incoming
+    server = AgentServer(_config(spec, thread_management="maestro", maestro=maestro.config))
+    try:
+        await server.ensure_initialized()
+        if spec.service_secrets:
+            await server.persistence.merge_service_secrets(spec.agent_id, dict(spec.service_secrets))
+        return await _FLOWS[spec.flow](server, scenario, fakes)
+    finally:
+        await server.close()
+
+
+def _maestro_observed(maestro: FakeMaestro, observe: frozenset[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if "threads" in observe:
+        out["threads"] = [legacy_thread_view(maestro.threads[tid], maestro.events[tid]) for tid in maestro.threads]
+    if "runs" in observe:
+        # The Maestro v1 contract has no Run (design 4.2 adds run.updated): nothing to observe.
+        out["runs"] = []
+    return out
+
+
+async def run_maestro(name: str) -> ParityResult:
+    scenario = SCENARIOS[name]
+    spec = scenario.incoming
+    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME)
+    persistence = MemoryPersistence()
+    with _offline_environment(persistence, spec.connect or DASHBOARD_CONNECT, maestro) as fakes:
+        capture, token = open_capture(scenario.history_formats)
+        try:
+            if _delivered_by_maestro(spec):
+                outputs = await _run_maestro_deliveries(maestro, scenario)
+            else:
+                outputs = await _run_maestro_server(maestro, scenario, fakes)
+        finally:
+            close_capture(token)
+    outputs.update(_maestro_observed(maestro, spec.observe))
+    if fakes.whatsapp_requests:
+        outputs["whatsapp_requests"] = fakes.whatsapp_requests
+    if persistence.thread_ids():
+        # Maestro owns the threads in this mode; a local thread is a difference, never hidden.
+        outputs["agent_local_events"] = await _persisted_events(persistence)
+    events = [legacy_view(event) for event in maestro.all_events()]
     return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs)
