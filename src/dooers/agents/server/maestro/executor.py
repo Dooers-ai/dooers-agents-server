@@ -42,10 +42,13 @@ class MaestroTextExecutor:
         checkpoints=None,
         approvals=None,
         options_resolver=None,
+        assistant_name: str = "Assistant",
     ) -> None:
         if not callable(handler) or not callable(private_resolver):
             raise ValueError("MAESTRO_HANDLER_REQUIRED")
         self.config, self.handler, self.private_resolver = config, handler, private_resolver
+        #: ``AgentConfig.assistant_name``: the author production writes for the agent's events.
+        self.assistant_name = assistant_name
         self._contracts = contracts or MaestroContracts()
         self.journal, self.retry_policy, self.checkpoints, self.approvals = journal, retry_policy, checkpoints, approvals
         if options_resolver is not None and (not callable(options_resolver) or inspect.iscoroutinefunction(options_resolver)):
@@ -122,6 +125,7 @@ class MaestroTextExecutor:
                 private_resume=private_resume,
                 checkpoint_state=checkpoint_state,
                 options_resolver=self.options_resolver,
+                assistant_name=self.assistant_name,
             ) as context:
                 outcome, reason = "failed", "handler_error"
                 try:
@@ -130,7 +134,8 @@ class MaestroTextExecutor:
                         raise TimeoutError
                     async with asyncio.timeout(budget):
                         with bind_effects(journal_execution) if journal_execution else nullcontext():
-                            result = self.handler(context.on, MaestroSend(sink), memory, context.analytics, context.settings)
+                            # The production AgentMemory over the delivery context (MaestroAgentMemory).
+                            result = self.handler(context.on, MaestroSend(sink), context.memory, context.analytics, context.settings)
                             if hasattr(result, "__aiter__"):
                                 suspension_requested = False
                                 try:
@@ -185,8 +190,11 @@ class MaestroTextExecutor:
                         "failed",
                         "unsupported_capability" if error.code == "UNSUPPORTED_CAPABILITY" else "handler_contract_error",
                     )
-                except MaestroContextError:
-                    raise MaestroCallbackError("LEASE_STALE") from None
+                except MaestroContextError as error:
+                    # A history read without the link route is a configuration error, as before the handler.
+                    raise MaestroCallbackError(
+                        "UNSUPPORTED_CAPABILITY" if error.code == "UNSUPPORTED_CAPABILITY" else "LEASE_STALE"
+                    ) from None
                 except Exception:
                     outcome, reason = "failed", "handler_error"
                 await stop_heartbeat()
@@ -226,12 +234,19 @@ class MaestroTextExecutor:
 
 
 def create_text_delivery_adapter(
-    config: MaestroConfig, handler: Callable[..., Any], private_resolver: MaestroPrivateResolver
+    config: MaestroConfig,
+    handler: Callable[..., Any],
+    private_resolver: MaestroPrivateResolver,
+    *,
+    assistant_name: str = "Assistant",
 ) -> MaestroDeliveryAdapter:
-    """Composição explícita local; capacidades globais continuam sem anúncio C2."""
+    """Composição explícita local; capacidades globais continuam sem anúncio C2.
+
+    ``assistant_name`` é ``AgentConfig.assistant_name`` (padrão de produção ``"Assistant"``).
+    """
     contracts = MaestroContracts()
     return MaestroDeliveryAdapter(
         config,
         lease_gate=MaestroHeartbeatGate(config, contracts=contracts),
-        executor=MaestroTextExecutor(config, handler, private_resolver, contracts=contracts),
+        executor=MaestroTextExecutor(config, handler, private_resolver, contracts=contracts, assistant_name=assistant_name),
     )

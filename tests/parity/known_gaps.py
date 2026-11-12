@@ -24,6 +24,11 @@ legacy view maps only ``message.created`` and the fake does not apply thread cha
 Measured again on 2026-11-12 (plan 3, task 4): the SDK builds the production ``AgentIncoming``
 (channel, user, workspace, thread fields, queues, parts, message, form.responded). No gap
 closed: ``incoming_fields`` and ``form_response_*`` still stop at the fake's client side.
+
+Measured again on 2026-11-12 (plan 3, task 6): the handler gets the production ``AgentMemory``
+over the delivery context (``MaestroAgentMemory``); the ``[maestro source ...]`` prefix is gone
+from its history. No gap closed: the ``history_<format>`` scenarios still stop at the fake's
+client side (the image URL part of turn 1).
 """
 
 from __future__ import annotations
@@ -81,7 +86,8 @@ def _server_blocked(call: str, detail: str = "") -> Gap:
 _PUBLIC_CHAT = Gap("the Maestro-mode router acks event.create with THREAD_MANAGEMENT_MISMATCH: no events and no thread")
 _HISTORY = Gap(
     "turn 1 has an image part with a URL, which the Maestro message contract does not have (only text and attachment), "
-    "so the publish is rejected; masked: the [maestro source ...] prefix on every history message (design 5.4)",
+    "so the publish is rejected (plan 3, task 7). The SDK side already gives the handler the production AgentMemory "
+    "(tests/test_maestro_memory_parity.py, every format, the image with its temporary link)",
     raises=FakeMaestroRejected,
     match="message.create",
 )

@@ -1,4 +1,9 @@
-"""Memória canônica remota; nenhum acesso à persistência legada."""
+"""Memória canônica remota; nenhum acesso à persistência legada.
+
+``MaestroMemory`` lê o contexto da entrega (snapshot, artefatos). O handler recebe
+``MaestroAgentMemory``: o ``AgentMemory`` de produção sobre esse contexto
+(``persistence.py``, carregado só no uso porque importa os handlers de produção).
+"""
 
 from __future__ import annotations
 
@@ -190,6 +195,7 @@ class MaestroMemory:
     async def get_history(
         self, limit: int = 50, format: str = "openai", order: Literal["asc", "desc"] = "desc", filters: dict[str, str] | None = None
     ) -> list[dict[str, Any]]:
+        """Projeção textual do Maestro; o handler usa ``MaestroAgentMemory.get_history`` (produção)."""
         self._selection(limit, order, filters)
         # Seleção de mensagens é feita após filtrar tipos, sem multiplicador heurístico.
         selected_filters = {**(filters or {}), "type": "message.created"}
@@ -265,3 +271,13 @@ class MaestroMemory:
                     )
         has_more = offset + limit < len(refs)
         return refs[offset : offset + limit], str(offset + limit) if has_more else None, has_more
+
+
+def __getattr__(name: str) -> Any:
+    # ``MaestroAgentMemory`` subclasses the production ``AgentMemory``; importing the handlers
+    # here would be an import cycle at startup (``AgentConfig`` imports ``maestro``).
+    if name == "MaestroAgentMemory":
+        from .persistence import MaestroAgentMemory
+
+        return MaestroAgentMemory
+    raise AttributeError(name)

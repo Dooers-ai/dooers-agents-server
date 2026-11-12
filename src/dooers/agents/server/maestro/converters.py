@@ -1,9 +1,15 @@
-"""Conversão textual explícita. Autores nunca viram instruções system."""
+"""Conversão textual explícita de ``MaestroMemory.get_history``. Autores nunca viram instruções system.
+
+O handler não usa esta conversão: ele recebe ``MaestroAgentMemory``, com os formatos de produção.
+"""
 
 from __future__ import annotations
 
 import json
 from typing import Any
+
+#: Campos do autor que só o contexto do agente tem (``Public.Event`` não os tem).
+_AGENT_ONLY_ACTOR_FIELDS = frozenset({"email", "identity_ids"})
 
 
 def history_messages(events: list[dict[str, Any]], recipient_instance_id: str, format: str = "openai") -> list[dict[str, Any]]:
@@ -23,8 +29,13 @@ def history_messages(events: list[dict[str, Any]], recipient_instance_id: str, f
             part["text"] if part["type"] == "text" else f"[attachment artifact_id={part['artifact_id']}]"
             for part in event["payload"]["content"]
         ]
+        # E-mail e identity IDs existem só no contexto do agente; os formatos de produção não os
+        # mandam ao LLM, então o prefixo também não.
+        public_actor = {key: value for key, value in actor.items() if key not in _AGENT_ONLY_ACTOR_FIELDS}
         metadata = json.dumps(
-            {"actor": actor, "event_id": event["event_id"], "sequence": event["sequence"]}, ensure_ascii=True, separators=(",", ":")
+            {"actor": public_actor, "event_id": event["event_id"], "sequence": event["sequence"]},
+            ensure_ascii=True,
+            separators=(",", ":"),
         )
         text = f"[maestro source {metadata}]\n" + "\n".join(parts)
         if format == "google":

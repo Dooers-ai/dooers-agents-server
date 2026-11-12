@@ -174,6 +174,7 @@ async def _convert(events: list[dict[str, Any]], *, multi_agent: bool = False, l
             agent_names={OTHER_AGENT_ID: OTHER_AGENT_NAME},
             multi_agent=multi_agent,
             links=links,
+            assistant_name=ASSISTANT_NAME,
         )
         for event in fold_events(events)
     ]
@@ -188,6 +189,7 @@ async def _one(event: dict[str, Any], **options: Any) -> ThreadEvent | None:
         agent_names=options.pop("agent_names", {OTHER_AGENT_ID: OTHER_AGENT_NAME}),
         multi_agent=options.pop("multi_agent", False),
         links=options.pop("links", None) or _links(),
+        assistant_name=ASSISTANT_NAME,
     )
 
 
@@ -273,6 +275,46 @@ async def test_other_agent_without_a_known_name_uses_its_display_name(contracts)
 
     assert converted.author == OTHER["display_name"]
     assert converted.content == [WireS2C_TextPart(text=f"[agente: {OTHER['display_name']}] Oi")]
+
+
+#: The executing agent as Maestro names it: not ``AgentConfig.assistant_name``.
+RENAMED_AGENT = {**AGENT, "display_name": "Nome no Maestro"}
+
+
+async def test_own_agent_events_use_the_assistant_name_not_the_maestro_name(contracts):
+    """Production writes ``AgentConfig.assistant_name`` (``pipeline.py``), whatever Maestro calls the agent."""
+    thread = MaestroThread(contracts)
+    thread.append("thread.created", PERSON, {"thread": _thread_view(thread.thread_id)})
+    plain = thread.message(RENAMED_AGENT, [{"type": "text", "text": "Oi"}])
+    thread.message(RENAMED_AGENT, [{"type": "text", "text": "Assinada"}], author="Bot X")
+    thread.append("reasoning.created", RENAMED_AGENT, {"text": "pensando"})
+    thread.append(
+        "chart.created",
+        RENAMED_AGENT,
+        {"title": "T", "message": "", "chart_type": "bar", "size": "medium", "x_key": "x", "y_keys": ["y"], "data": [], "series": []},
+    )
+    form = {"message": "Dados", "elements": [], "submit_label": "Enviar", "cancel_label": "Cancelar", "size": "small"}
+    thread.append("form.created", RENAMED_AGENT, form)
+    view = {"thread_id": thread.thread_id, "state": "active", "title": "Nova conversa"}
+    thread.append("thread.updated", RENAMED_AGENT, {**view, "version": 2, "queue": "suporte"})
+    # Another agent keeps its own name (single-agent view: an assistant message).
+    thread.message(OTHER, [{"type": "text", "text": "Fatura enviada."}])
+
+    converted = await _convert(thread.events)
+
+    assert [(event.type, event.author) for event in converted] == [
+        ("message", ASSISTANT_NAME),
+        ("message", "Bot X"),
+        ("reasoning", ASSISTANT_NAME),
+        ("chart", ASSISTANT_NAME),
+        ("form", ASSISTANT_NAME),
+        ("thread.update", ASSISTANT_NAME),
+        ("message", OTHER["display_name"]),
+    ]
+    assert converted[5].user == User(user_id=AGENT_ID, user_name=ASSISTANT_NAME)
+    # Without a name, the production default (AgentConfig.assistant_name = "Assistant").
+    default = await to_thread_event(plain, recipient_instance_id=AGENT_ID, agent_names={}, multi_agent=False, links=_links())
+    assert default.author == "Assistant"
 
 
 async def test_attachments_get_the_temporary_link_and_keep_their_metadata(contracts):
@@ -755,6 +797,19 @@ def test_to_thread_maps_the_view_to_the_production_thread(contracts):
     assert to_thread(view, last_event_at=last).last_event_at == last
 
 
+def test_to_thread_lists_the_reading_agent_with_the_assistant_name(contracts):
+    view = _thread_view(str(uuid4()))
+    view["participants"][1]["display_name"] = "Nome no Maestro"
+    contracts.validate("Public.Thread", view)
+
+    # Production lists its agent as User(agent_id, AgentConfig.assistant_name) (``thread_access.agent_participant``).
+    assert to_thread(view, recipient_instance_id=AGENT_ID, assistant_name=ASSISTANT_NAME).users[1] == User(
+        user_id=AGENT_ID, user_name=ASSISTANT_NAME
+    )
+    # Without the reading agent, every agent keeps its Maestro name.
+    assert to_thread(view).users[1] == User(user_id=AGENT_ID, user_name="Nome no Maestro")
+
+
 def test_to_thread_defaults_of_personal_untitled_and_channel_threads(contracts):
     thread_id = str(uuid4())
     personal = _thread_view(thread_id, scope_kind="personal", workspace_id=None, title="")
@@ -811,10 +866,10 @@ async def _production(build: Build) -> tuple[list[ThreadEvent], list[Run]]:
     return await persistence.get_events(result.thread.id, limit=1000), list(reversed(runs))
 
 
-async def _maestro(contracts: MaestroContracts, build: Build) -> tuple[list[ThreadEvent], list[Run]]:
+async def _maestro(contracts: MaestroContracts, build: Build, actor: dict[str, Any] = AGENT) -> tuple[list[ThreadEvent], list[Run]]:
     thread = MaestroThread(contracts)
     trigger = thread.message(PERSON, [{"type": "text", "text": "Oi"}])
-    thread.publish(build(AgentSend(), trigger["event_id"]), trigger)
+    thread.publish(build(AgentSend(), trigger["event_id"]), trigger, actor=actor)
     return await _convert(thread.events), to_runs(thread.events)
 
 
@@ -884,10 +939,12 @@ def _runs_only(send: AgentSend, trigger_id: str) -> list[AgentEvent]:
     ]
 
 
+@pytest.mark.parametrize("actor", [AGENT, RENAMED_AGENT], ids=["same_name", "maestro_name"])
 @pytest.mark.parametrize("build", [_every_send, _runs_only], ids=["every_send", "runs"])
-async def test_send_types_round_trip_to_the_production_thread_events(contracts, build):
+async def test_send_types_round_trip_to_the_production_thread_events(contracts, build, actor):
+    # ``maestro_name``: Maestro calls the agent something else; production writes ASSISTANT_NAME.
     production = await _production(build)
-    maestro = await _maestro(contracts, build)
+    maestro = await _maestro(contracts, build, actor)
 
     assert len(maestro[0]) == len(production[0])
     assert _comparable(*maestro) == _comparable(*production)

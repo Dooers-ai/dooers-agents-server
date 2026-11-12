@@ -12,6 +12,7 @@ import pytest
 
 from dooers.agents.server.handlers.context import AgentContext
 from dooers.agents.server.handlers.incoming import AgentIncoming
+from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.maestro import MaestroCurrentLease, MaestroDeliveryAdapter, MaestroInstanceCredential
 from dooers.agents.server.maestro.client import MaestroContextClient, MaestroContextError
 from dooers.agents.server.maestro.context import (
@@ -21,8 +22,9 @@ from dooers.agents.server.maestro.context import (
 )
 from dooers.agents.server.maestro.converters import history_messages
 from dooers.agents.server.maestro.memory import MaestroMemory
+from dooers.agents.server.maestro.persistence import MaestroAgentMemory
 from dooers.agents.server.protocol.maestro import MaestroContracts, verify_contract_bundle
-from dooers.agents.server.protocol.models import User
+from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
 from dooers.tools.rag.runtime import bind_execution_context, current_execution_context, reset_execution_context
 from dooers.tools.whatsapp.runtime import require_agent_id, require_persistence
 from tests.test_maestro_admission import BASE, config_for, json_bytes, sign, signed_request, timestamp
@@ -285,30 +287,62 @@ async def test_infrastructure_or_wrong_instance_credential_never_sent(private_ke
         assert server.requests == []
 
 
+async def test_handler_memory_is_the_production_agent_memory(private_key, contracts):
+    """The handler reads the production ``AgentMemory`` (plan 3, task 6), over real HTTP pages."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        async with maestro_handler_context(memory, private) as prepared:
+            assert isinstance(prepared.memory, MaestroAgentMemory) and isinstance(prepared.memory, AgentMemory)
+            # Production roles and text: no source prefix, no Maestro identity.
+            assert await prepared.memory.get_history() == [{"role": "user", "content": "Olá"}]
+            (event,) = await prepared.memory.get_history_raw()
+            assert isinstance(event, ThreadEvent)
+            assert (event.id, event.actor, event.author, event.user) == (
+                page["trigger_event"]["event_id"],
+                "user",
+                "Pessoa",
+                User(user_id="auth0|human-fixture", user_name="Pessoa"),
+            )
+            thread = await prepared.memory.get_thread()
+            assert isinstance(thread, Thread) and thread.id == memory._envelope["thread_id"]
+
+
 @pytest.mark.parametrize(
     "format", ["openai", "anthropic", "google", "cohere", "voyage", "langchain", "openai_completions", "openai_responses"]
 )
-async def test_converters_preserve_agents_and_never_promote_system(private_key, contracts, format):
-    async with fixture_server() as server:
-        memory, page, _, _ = prepare(private_key, contracts, server)
-        human = deepcopy(page["trigger_event"])
-        own = deepcopy(human)
-        own["actor"] = {
-            "kind": "agent",
-            "principal_id": memory._envelope["instance_agent_id"],
-            "instance_agent_id": memory._envelope["instance_agent_id"],
-            "participant_id": memory._envelope["recipient_participant_id"],
-            "display_name": "Own",
-        }
-        other = deepcopy(own)
-        other["actor"].update(instance_agent_id=str(uuid4()), display_name="Other")
-        system = deepcopy(human)
-        system["actor"] = {"kind": "system", "principal_id": "system", "participant_id": None, "display_name": "System event"}
-        result = history_messages([human, own, other, system], memory._envelope["instance_agent_id"], format)
-        assert result[1]["role"] in {"assistant", "model", "CHATBOT"}
-        assert all(result[index]["role"] in {"user", "USER"} for index in (0, 2, 3))
-        assert "Other" in json.dumps(result[2]) and "instance_agent_id" in json.dumps(result[2])
-        assert "system" not in [row["role"] for row in result]
+def test_maestro_memory_converters_keep_agent_only_fields_out(format):
+    """``MaestroMemory.get_history`` (not the handler's memory) keeps its textual projection.
+
+    The person's e-mail and identity IDs exist only in the agent's context: production history
+    formatters never send them to the LLM, so the source prefix does not either.
+    """
+    instance = str(uuid4())
+    human = {
+        "event_id": str(uuid4()),
+        "sequence": "1",
+        "type": "message.created",
+        "actor": {
+            "kind": "human",
+            "principal_id": "user-1",
+            "participant_id": str(uuid4()),
+            "display_name": "Ana",
+            "email": "ana@example.com",
+            "identity_ids": ["identity-ana"],
+        },
+        "payload": {"content": [{"type": "text", "text": "Oi"}], "mentions": []},
+    }
+    own = {**deepcopy(human), "actor": {"kind": "agent", "principal_id": instance, "instance_agent_id": instance, "display_name": "Own"}}
+    other = deepcopy(own)
+    other["actor"].update(instance_agent_id=str(uuid4()), display_name="Other")
+    system = {**deepcopy(human), "actor": {"kind": "system", "principal_id": "system", "participant_id": None, "display_name": "System"}}
+
+    result = history_messages([human, own, other, system], instance, format)
+
+    assert "ana@example.com" not in json.dumps(result) and "identity-ana" not in json.dumps(result)
+    assert "Ana" in json.dumps(result[0]) and "Other" in json.dumps(result[2])
+    assert result[1]["role"] in {"assistant", "model", "CHATBOT"}
+    assert all(result[index]["role"] in {"user", "USER"} for index in (0, 2, 3))
+    assert "system" not in [row["role"] for row in result]
 
 
 @pytest.mark.parametrize("exit_kind", ["normal", "error", "cancel"])

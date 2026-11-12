@@ -47,6 +47,9 @@ PREVIOUS_QUEUE = "previous_queue"
 #: Text before another agent's message in a thread with several agents (design 7.5).
 AGENT_PREFIX = "[agente: {name}]"
 
+#: ``AgentConfig.assistant_name`` default: the author production writes for its agent.
+DEFAULT_ASSISTANT_NAME = "Assistant"
+
 _MEDIA_PARTS = {"image": WireS2C_ImagePart, "audio": WireS2C_AudioPart, "document": WireS2C_DocumentPart}
 #: Metadata each production part keeps from a Maestro ``attachment``.
 _ATTACHMENT_FIELDS = {
@@ -203,19 +206,33 @@ def _base(event: dict[str, Any], **fields: Any) -> ThreadEvent:
     )
 
 
+def _own(actor: dict[str, Any], recipient_instance_id: str | None) -> bool:
+    """The agent that reads the thread (an actor or a participant)."""
+    return actor["kind"] == "agent" and actor["instance_agent_id"] == recipient_instance_id
+
+
 async def _message(
-    event: dict[str, Any], *, recipient_instance_id: str, agent_names: Mapping[str, str], multi_agent: bool, links: LinkResolver
+    event: dict[str, Any],
+    *,
+    recipient_instance_id: str,
+    agent_names: Mapping[str, str],
+    multi_agent: bool,
+    links: LinkResolver,
+    assistant_name: str,
 ) -> ThreadEvent:
     payload, actor = event["payload"], event["actor"]
     content = [await _part(part, links) for part in payload["content"]]
     user = User(user_id="")
-    if actor["kind"] == "agent" and multi_agent and actor["instance_agent_id"] != recipient_instance_id:
+    if _own(actor, recipient_instance_id):
+        # pipeline.py: ``author=event.data.get("author") or self._assistant_name``.
+        legacy_actor, author = "assistant", payload.get("author") or assistant_name
+    elif actor["kind"] == "agent" and multi_agent:
         # Several agents: the other agent speaks as a user named after it (design 7.5).
         legacy_actor = "user"
         author = agent_names.get(actor["instance_agent_id"]) or actor["display_name"]
         content = _with_agent_prefix(content, author)
     elif actor["kind"] == "agent":
-        # pipeline.py: ``author=event.data.get("author") or self._assistant_name``.
+        # Another agent, now alone in the thread: an assistant message under its own name.
         legacy_actor, author = "assistant", payload.get("author") or actor["display_name"] or None
     elif actor["kind"] == "system":
         legacy_actor, author = "system", actor["display_name"] or None
@@ -241,10 +258,13 @@ def _form_element(element: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(element) if model is None else model(**element).model_dump(exclude_unset=True)
 
 
-def _agent_event(event: dict[str, Any]) -> ThreadEvent | None:
-    """Events of ``send.reasoning``, ``tool_*``, ``chart`` and ``form``, as ``HandlerPipeline.execute`` writes them."""
+def _agent_event(event: dict[str, Any], *, recipient_instance_id: str, assistant_name: str) -> ThreadEvent | None:
+    """Events of ``send.reasoning``, ``tool_*``, ``chart`` and ``form``, as ``HandlerPipeline.execute`` writes them.
+
+    The author of the own agent's events is ``assistant_name``; another agent's is its Maestro name.
+    """
     kind, payload = event["type"], event["payload"]
-    name = event["actor"].get("display_name") or None
+    name = assistant_name if _own(event["actor"], recipient_instance_id) else event["actor"].get("display_name") or None
     if kind == "reasoning.created":
         return _base(event, type="reasoning", actor="assistant", author=payload.get("author") or name, data={"text": payload["text"]})
     if kind == "tool_call.created":
@@ -289,12 +309,14 @@ def _form_response(event: dict[str, Any]) -> ThreadEvent:
     return _base(event, type="form.response", actor="user", author=_author_display(person), user=_stored(person), data=data)
 
 
-def _queue_update(event: dict[str, Any]) -> ThreadEvent | None:
+def _queue_update(event: dict[str, Any], *, recipient_instance_id: str, assistant_name: str) -> ThreadEvent | None:
     """A queue change: production's ``thread.update`` event (a title change writes none)."""
     payload, actor = event["payload"], event["actor"]
     if PREVIOUS_QUEUE not in payload:
         return None
     user = production_user(actor)
+    if _own(actor, recipient_instance_id):
+        user = User(user_id=user.user_id, user_name=assistant_name)
     if actor["kind"] == "agent":
         author = user.user_name  # pipeline.py (send.update_thread): the assistant name
     else:
@@ -310,12 +332,16 @@ async def to_thread_event(
     agent_names: Mapping[str, str],
     multi_agent: bool,
     links: LinkResolver,
+    assistant_name: str = DEFAULT_ASSISTANT_NAME,
 ) -> ThreadEvent | None:
     """The production ``ThreadEvent`` of one folded Maestro event, or ``None`` without an equivalent.
 
     ``recipient_instance_id`` is the agent that runs the handler; ``agent_names`` gives the
     name of each agent by instance id; ``multi_agent`` is true when the thread has several
     active agents. An ``attachment`` gets its temporary link from ``links``.
+    ``assistant_name`` is ``AgentConfig.assistant_name``: production writes it as the author of
+    its agent's events (and as the agent's ``user_name`` of a queue change), whatever name the
+    agent has in Maestro.
 
     Actors: the own agent is ``assistant``; a person or channel contact is ``user``;
     ``tool_result.created`` is ``tool``; a queue change is ``system``. Another agent's
@@ -327,23 +353,36 @@ async def to_thread_event(
     kind = event["type"]
     if kind == "message.created":
         return await _message(
-            event, recipient_instance_id=recipient_instance_id, agent_names=agent_names, multi_agent=multi_agent, links=links
+            event,
+            recipient_instance_id=recipient_instance_id,
+            agent_names=agent_names,
+            multi_agent=multi_agent,
+            links=links,
+            assistant_name=assistant_name,
         )
     if kind == "form.responded":
         return _form_response(event)
     if kind == "thread.updated":
-        return _queue_update(event)
-    return _agent_event(event)
+        return _queue_update(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name)
+    return _agent_event(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name)
 
 
-def to_thread(view: dict, *, last_event_at: datetime | None = None) -> Thread:
+def to_thread(
+    view: dict,
+    *,
+    last_event_at: datetime | None = None,
+    recipient_instance_id: str | None = None,
+    assistant_name: str = DEFAULT_ASSISTANT_NAME,
+) -> Thread:
     """The production ``Thread`` of a Maestro thread view (``Public.Thread``).
 
     ``agent_id`` is the agent that created the thread, else the first agent participant.
     ``owner`` is the person with the ``owner`` role, else the first channel contact (a
     production channel thread belongs to the contact). ``users`` are the active participants,
-    the agent included, as production lists them. The view has no time of the last event:
-    ``last_event_at`` is the caller's, else ``updated_at``.
+    the agent included, as production lists them: the reading agent
+    (``recipient_instance_id``) under ``assistant_name``, as ``thread_access.agent_participant``
+    lists it; without one, every agent under its Maestro name. The view has no time of the
+    last event: ``last_event_at`` is the caller's, else ``updated_at``.
     """
     participants = view["participants"]
     active = [participant for participant in participants if participant["state"] == "active"]
@@ -358,7 +397,12 @@ def to_thread(view: dict, *, last_event_at: datetime | None = None) -> Thread:
         organization_id=view["organization_id"],
         workspace_id=view["workspace_id"] or "",
         owner=production_user(owner) if owner is not None else User(user_id=""),
-        users=[production_user(participant) for participant in active],
+        users=[
+            User(user_id=participant["instance_agent_id"], user_name=assistant_name)
+            if _own(participant, recipient_instance_id)
+            else production_user(participant)
+            for participant in active
+        ],
         title=view["title"] or None,
         queue=view.get("queue"),
         created_at=_time(view["created_at"]),

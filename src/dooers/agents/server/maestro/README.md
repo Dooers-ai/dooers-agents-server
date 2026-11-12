@@ -161,6 +161,34 @@ A versão executada está fixa em 48.0.0 no extra; não depende da versão lates
 histórico na persistência legada. Estes componentes não executam handler,
 heartbeat, callback, provider ou hidratação; capabilities continuam vazias.
 
+### Memória do handler (`MaestroAgentMemory`)
+
+O handler recebe `MaestroAgentMemory`, não `MaestroMemory`. É o `AgentMemory` de produção
+sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
+`get_history` dá o mesmo resultado de produção nos 8 formatos, e `get_history_raw`,
+`get_thread` e `list_artifacts` devolvem `ThreadEvent`, `Thread` e `ThreadArtifact`.
+
+- Cada leitura faz um snapshot novo do contexto (`MaestroMemory.snapshot()`), sem cache.
+- O snapshot inteiro passa por `fold_events` e pela conversão de `legacy_model.py`.
+  Depois `limit`, `order`, `filters`, `after_event_id` e `before_event_id` escolhem os
+  eventos, como a consulta de produção. Uma edição ou remoção vale em qualquer página.
+- Só os eventos escolhidos recebem link temporário. Uma imagem do histórico vai ao LLM com
+  o link (`langchain`, `openai_completions`, `openai_responses`). Sem a rota de link, a
+  entrega falha com `UNSUPPORTED_CAPABILITY` e o log de erro dá as configurações.
+- O autor dos eventos do próprio agente é `AgentConfig.assistant_name`
+  (`create_text_delivery_adapter(..., assistant_name=...)`, padrão `"Assistant"`), não o
+  nome do agente no Maestro.
+- Na thread com vários agentes ativos, a mensagem de outro agente é de `user`, com o
+  prefixo `[agente: <nome>] `. As mensagens da pessoa e do próprio agente ficam iguais às
+  de produção.
+- A escrita e as outras leituras de `Persistence` levantam `ThreadManagementModeError`:
+  na execução, o agente escreve por `send`.
+- Extras do Maestro: `hydrate_artifact(reference)` e `list_maestro_artifacts(...)` (o
+  `list_artifacts` de `MaestroMemory`).
+- O snapshot para no corte do contexto. Uma saída que o handler já publicou nesta
+  execução não aparece numa leitura seguinte, nem o `run_id` que `run_start` dá ao
+  gatilho. Em produção, os dois aparecem.
+
 O cliente usa somente a URL de callback confiável do `MaestroConfig`, fixa
 `127.0.0.1`, porta e prefixo, e faz `GET /deliveries/:id/context`. Envia
 `Authorization: Bearer <token da instância core>` separado de
@@ -206,9 +234,11 @@ participantes e corte), **não** `Thread` legado: o contrato ContextResponse nã
 fornece título, permissões ou timestamps da thread. Campos ausentes não são
 inventados. Participantes representam a resposta autorizada mais recente.
 
-Conversores `openai`, `anthropic`, `google`, `cohere`, `voyage`, `langchain`,
+Os conversores de `MaestroMemory.get_history` (o handler não os usa) para `openai`,
+`anthropic`, `google`, `cohere`, `voyage`, `langchain`,
 `openai_completions` e `openai_responses` são projeções **textuais**. Incluem prefixo
-JSON com autoria canônica/ID/sequence; somente respostas da própria instância usam
+JSON com autoria canônica/ID/sequence, sem e-mail nem identity IDs (dados só do
+contexto do agente, que os formatos de produção não mandam ao LLM); somente respostas da própria instância usam
 assistant/model/CHATBOT. Humanos e outros agentes usam papel de entrada user/USER
 com identidade explícita; esse papel do provedor não declara que o autor é humano.
 Nenhum participante/system event vira instrução system. Sem fusão de autores.

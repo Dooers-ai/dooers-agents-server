@@ -72,6 +72,8 @@ __all__ += [
     "MaestroHeartbeatGate",
     "MaestroTextExecutor",
     "create_text_delivery_adapter",
+    "MaestroAgentMemory",
+    "MaestroExecutionPersistence",
     "MaestroEventSink",
     "MaestroOutputIntent",
     "MaestroSend",
@@ -98,6 +100,8 @@ def __getattr__(name: str):
     modules = {
         "MaestroTextExecutor": ".executor",
         "create_text_delivery_adapter": ".executor",
+        "MaestroAgentMemory": ".persistence",
+        "MaestroExecutionPersistence": ".persistence",
         "MaestroEventSink": ".sink",
         "MaestroOutputIntent": ".sink",
         "MaestroSend": ".sink",

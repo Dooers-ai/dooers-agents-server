@@ -279,7 +279,7 @@ async def test_context_pages_cover_the_whole_history():
 
     async def handler(on, send, memory, analytics, settings):
         seen["raw"] = len(await memory.get_history_raw(limit=1000))
-        seen["thread"] = (await memory.get_thread()).thread_id
+        seen["thread"] = (await memory.get_thread()).id
         yield send.text("Li tudo.")
 
     thread_id = fake.create_thread(ANA, title=None)

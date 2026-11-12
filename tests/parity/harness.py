@@ -388,7 +388,8 @@ def _maestro_content(turn: Turn) -> list[dict[str, Any]]:
 
 async def _run_maestro_deliveries(maestro: FakeMaestro, scenario: Scenario) -> dict[str, Any]:
     spec = scenario.incoming
-    adapter = create_text_delivery_adapter(maestro.config, scenario.handler, private_resources)
+    # Configured as the legacy side (``_config``): the same AgentConfig.assistant_name.
+    adapter = create_text_delivery_adapter(maestro.config, scenario.handler, private_resources, assistant_name=ASSISTANT_NAME)
     thread_id: str | None = None
     for number, turn in enumerate(spec.turns, start=1):
         if thread_id is None:

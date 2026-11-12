@@ -34,6 +34,8 @@ from .memory import MaestroMemory
 if TYPE_CHECKING:
     from dooers.agents.server.handlers.incoming import AgentIncoming
 
+    from .persistence import MaestroAgentMemory
+
 
 @dataclass(frozen=True)
 class MaestroPrivateScope:
@@ -120,7 +122,8 @@ class MaestroExecutionContext:
 @dataclass(frozen=True)
 class MaestroHandlerInput:
     on: AgentIncoming = field(repr=False)
-    memory: MaestroMemory
+    #: The production ``AgentMemory`` over the delivery context (``MaestroMemory`` stays internal).
+    memory: MaestroAgentMemory
     analytics: Any = field(repr=False)
     settings: Any = field(repr=False)
 
@@ -391,10 +394,13 @@ async def maestro_handler_context(
     private_resume=None,
     checkpoint_state=None,
     options_resolver=None,
+    assistant_name: str = "Assistant",
 ) -> AsyncIterator[MaestroHandlerInput]:
     """Prepara on/memory/analytics/settings; E05-08 fornece send e roda handler.
 
     A assinatura handler(on, send, memory, analytics, settings) continua intacta.
+    ``memory`` é ``MaestroAgentMemory`` (o ``AgentMemory`` de produção); ``assistant_name`` é
+    ``AgentConfig.assistant_name``, o autor que produção grava para o agente.
     Use async with dentro da task que efetivamente consome o generator. Nenhum
     contexto RAG/Maestro é herdado automaticamente por tasks filhas.
     """
@@ -444,6 +450,9 @@ async def maestro_handler_context(
                 raise MaestroContextError("ACCESS_REVOKED")
         memory._client._check_current()
         assert_options_current()
+        from .persistence import MaestroAgentMemory
+
+        agent_memory = MaestroAgentMemory(memory, assistant_name=assistant_name)
         previous = _active.get(task)
         tokens = None
         guard_token = None
@@ -456,7 +465,7 @@ async def maestro_handler_context(
             guard_token = bind_handler_scope_guard(lambda: active and asyncio.current_task() is task and not cancellation.cancelled)
             _active[task] = incoming.context.maestro
             settings = TurnSettings(resources.settings, selected_options) if selected_options else resources.settings
-            yield MaestroHandlerInput(incoming, memory, resources.analytics, settings)
+            yield MaestroHandlerInput(incoming, agent_memory, resources.analytics, settings)
         finally:
             active = False
             try:

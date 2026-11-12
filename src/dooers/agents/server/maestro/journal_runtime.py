@@ -205,6 +205,7 @@ def create_durable_text_delivery_adapter(
     options_resolver=None,
     retry_policy: Literal["unsafe", "journal_only"] = "unsafe",
     terminal_replay: bool = False,
+    assistant_name: str = "Assistant",
 ):
     from dooers.agents.server.protocol.maestro import MaestroContracts
 
@@ -256,5 +257,6 @@ def create_durable_text_delivery_adapter(
             checkpoints=checkpoints,
             approvals=approvals,
             options_resolver=options_resolver,
+            assistant_name=assistant_name,
         ),
     )

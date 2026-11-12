@@ -314,7 +314,7 @@ async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, 
             assert on.context.maestro.execution_id == fixture.envelope["execution_id"]
             assert settings["settings"] == on.context.agent_id
             assert analytics["analytics"] == on.context.agent_id
-            assert (await memory.get_thread()).thread_id == on.context.thread_id
+            assert (await memory.get_thread()).id == on.context.thread_id
             if kind in {"text", "partial_error", "silent_after_text"}:
                 yield send.text("Olá mundo")
             if kind == "text":
