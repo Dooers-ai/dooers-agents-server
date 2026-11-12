@@ -1719,6 +1719,161 @@
         "output_id": "output:9007199254740991",
         "phase_id": "initial"
       }
+    },
+    {
+      "id": "server.output.run_update_agent_id",
+      "schema": "Public.OutputRequest",
+      "valid": true,
+      "data": {
+        "output_id": "initial:output:1",
+        "type": "run.update",
+        "payload": {
+          "run_id": "00000000-0000-4000-8000-000000000030",
+          "status": "running",
+          "agent_id": "00000000-0000-4000-8000-000000000031"
+        },
+        "lease_fence": "1"
+      }
+    },
+    {
+      "id": "server.output.run_update_agent_id_not_uuid",
+      "schema": "Public.OutputRequest",
+      "valid": false,
+      "data": {
+        "output_id": "initial:output:1",
+        "type": "run.update",
+        "payload": {
+          "run_id": "00000000-0000-4000-8000-000000000030",
+          "status": "running",
+          "agent_id": "not-a-uuid"
+        },
+        "lease_fence": "1"
+      }
+    },
+    {
+      "id": "server.output.message_empty_agent_text",
+      "schema": "Public.OutputRequest",
+      "valid": true,
+      "data": {
+        "output_id": "initial:output:2",
+        "type": "message.create",
+        "payload": {
+          "content": [
+            {
+              "type": "text",
+              "text": ""
+            }
+          ],
+          "mentions": []
+        },
+        "lease_fence": "1"
+      }
+    },
+    {
+      "id": "server.output.message_empty_content_array",
+      "schema": "Public.OutputRequest",
+      "valid": false,
+      "data": {
+        "output_id": "initial:output:2",
+        "type": "message.create",
+        "payload": {
+          "content": [],
+          "mentions": []
+        },
+        "lease_fence": "1"
+      }
+    },
+    {
+      "id": "server.capability.artifact_link_issue",
+      "schema": "Delivery.ExecutionCapabilityClaims",
+      "valid": true,
+      "data": {
+        "protocol_version": 1,
+        "iss": "dooers-service-maestro",
+        "iat": 1791892800,
+        "exp": 1791892920,
+        "jti": "0000000d-0000-4000-8000-000000000000",
+        "organization_id": "00000001-0000-4000-8000-000000000000",
+        "workspace_id": null,
+        "thread_id": "00000002-0000-4000-8000-000000000000",
+        "delivery_id": "00000003-0000-4000-8000-000000000000",
+        "execution_id": "00000004-0000-4000-8000-000000000000",
+        "phase_id": "initial",
+        "recipient_participant_id": "00000005-0000-4000-8000-000000000000",
+        "instance_agent_id": "00000006-0000-4000-8000-000000000000",
+        "runtime_id": "00000007-0000-4000-8000-000000000000",
+        "lease_fence": "1",
+        "deadline_at": "2026-10-13T12:02:00Z",
+        "token_use": "maestro_execution_capability",
+        "sub": "00000006-0000-4000-8000-000000000000",
+        "aud": "dooers-service-maestro",
+        "operations": [
+          "delivery.context",
+          "delivery.heartbeat",
+          "delivery.respond",
+          "delivery.complete",
+          "delivery.suspend",
+          "artifact.upload",
+          "artifact.complete",
+          "artifact.download",
+          "artifact.link.issue"
+        ]
+      }
+    },
+    {
+      "id": "server.capability.artifact_link_unknown_operation",
+      "schema": "Delivery.ExecutionCapabilityClaims",
+      "valid": false,
+      "data": {
+        "protocol_version": 1,
+        "iss": "dooers-service-maestro",
+        "iat": 1791892800,
+        "exp": 1791892920,
+        "jti": "0000000d-0000-4000-8000-000000000000",
+        "organization_id": "00000001-0000-4000-8000-000000000000",
+        "workspace_id": null,
+        "thread_id": "00000002-0000-4000-8000-000000000000",
+        "delivery_id": "00000003-0000-4000-8000-000000000000",
+        "execution_id": "00000004-0000-4000-8000-000000000000",
+        "phase_id": "initial",
+        "recipient_participant_id": "00000005-0000-4000-8000-000000000000",
+        "instance_agent_id": "00000006-0000-4000-8000-000000000000",
+        "runtime_id": "00000007-0000-4000-8000-000000000000",
+        "lease_fence": "1",
+        "deadline_at": "2026-10-13T12:02:00Z",
+        "token_use": "maestro_execution_capability",
+        "sub": "00000006-0000-4000-8000-000000000000",
+        "aud": "dooers-service-maestro",
+        "operations": [
+          "delivery.context",
+          "delivery.heartbeat",
+          "delivery.respond",
+          "delivery.complete",
+          "delivery.suspend",
+          "artifact.upload",
+          "artifact.complete",
+          "artifact.download",
+          "artifact.link.revoke"
+        ]
+      }
+    },
+    {
+      "id": "server.artifact_link.response",
+      "schema": "Public.ArtifactLinkResponse",
+      "valid": true,
+      "data": {
+        "url": "https://maestro.exemplo.com/api/v1/artifact-links/e30.AAAA",
+        "expires_at": "2026-10-13T13:00:00.000Z"
+      }
+    },
+    {
+      "id": "server.artifact_link.response_bad_expiry",
+      "schema": "Public.ArtifactLinkResponse",
+      "valid": false,
+      "data": {
+        "url": "https://maestro.exemplo.com/api/v1/artifact-links/e30.AAAA",
+        "expires_at": "tomorrow"
+      }
     }
   ]
 }

@@ -43,11 +43,11 @@ def test_same_corpus_as_typescript(contracts, case):
 
 def test_consumer_classification_and_manifest(contracts):
     results = [(case["id"], case["schema"], contracts.is_valid(case["schema"], case["data"])) for case in CASES]
-    assert len(contracts.schema_names) == 156
-    assert len(results) == len({case["id"] for case in CASES}) == 750
-    assert sum(result[2] for result in results) == 320
+    assert len(contracts.schema_names) == 161
+    assert len(results) == len({case["id"] for case in CASES}) == 778
+    assert sum(result[2] for result in results) == 335
     checksum = hashlib.sha256(json.dumps(results, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
-    assert checksum == "99593b07e9af52eee080f57dc9e84ee9907a8df5091c29e334e28bb92d584b6b"
+    assert checksum == "c71b4e7ad853eed8d0d8397a00e75f0152e22f35f1314632c04754ead5576308"
     pin = json.loads((ROOT / "consumer-manifest.json").read_bytes())
     assert pin["classification"]["sha256"] == checksum
     assert hashlib.sha256(EXTRA_BYTES).hexdigest() == pin["consumer_fixture_sha256"]
@@ -55,7 +55,7 @@ def test_consumer_classification_and_manifest(contracts):
     assert pin["source_manifest_sha256"] == contract_module.SOURCE_MANIFEST_SHA256
     assert pin["source_revision"] == contract_module.SOURCE_REVISION
     assert pin["bundle_manifest_sha256"] == contract_module.BUNDLE_MANIFEST_SHA256
-    assert len(contracts.fixture_results()) == 726
+    assert len(contracts.fixture_results()) == 746
 
 
 def test_isolated_loader_does_not_change_process_or_write_bytecode(contracts):

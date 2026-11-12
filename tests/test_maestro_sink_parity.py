@@ -565,7 +565,6 @@ def test_thread_calls_are_inherited_from_production():
         assert getattr(MaestroSend, name) is getattr(AgentSend, name)
 
 
-@pytest.mark.xfail(strict=True, reason="plano 2, tarefa 5")
 async def test_empty_text_is_published(private_key, contracts):
     async with setup(private_key, contracts) as fixture:
 
@@ -578,7 +577,6 @@ async def test_empty_text_is_published(private_key, contracts):
         assert output["payload"]["content"] == [{"type": "text", "text": ""}]
 
 
-@pytest.mark.xfail(strict=True, reason="plano 2, tarefa 5")
 async def test_run_start_other_agent_records_agent_id(private_key, contracts):
     async with setup(private_key, contracts) as fixture:
 

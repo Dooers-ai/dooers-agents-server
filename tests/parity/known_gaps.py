@@ -119,9 +119,9 @@ GAPS: dict[str, Gap] = {
         deliveries=_RESPONDED,
     ),
     "run_other_agent": Gap(
-        "the vendored contract has no agent_id in run.update (plan 2, task 5): the run_start(agent_id=<another agent>) "
-        "output is refused (INVALID_REQUEST, handler_contract_error), so no agent event and no Run; " + _EVERY_WEB_CHAT_TURN,
-        deliveries=((200, "failed", "handler_contract_error"),),
+        "the run.updated events (running, succeeded) of run_start(agent_id=<another agent>) are recorded, with that "
+        "agent_id, but not mapped: Maestro outputs.runs is empty (plan 3, tasks 5 and 7); " + _EVERY_WEB_CHAT_TURN,
+        deliveries=_RESPONDED,
     ),
     "update_user_event": Gap(
         "message.updated is recorded but not applied: the person's message keeps its text in the legacy view "

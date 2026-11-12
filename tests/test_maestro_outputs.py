@@ -126,7 +126,6 @@ def test_output_validates_against_contract(event, contracts):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="plano 2, tarefa 5")
 def test_run_start_other_agent_validates_against_contract(contracts):
     out = output_for(PRODUCTION_EVENTS["run_start_other_agent"], 0)
     contracts.validate(
