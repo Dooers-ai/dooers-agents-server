@@ -3,7 +3,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from dooers.agents.server.maestro.context import MaestroExecutionContext
 
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 
 from dooers.agents.server.protocol.models import (
@@ -22,10 +23,10 @@ class AgentContext:
     agent_id: str
     event_id: str
     organization_id: str = ""
-    workspace_id: str | None = ""
+    workspace_id: str = ""
     channel: str = "dooers-platform"
     channel_meta: dict | None = None
-    user: User | None = field(default_factory=lambda: User(user_id=""))
+    user: User = field(default_factory=lambda: User(user_id=""))
     thread_title: str | None = field(default=None)
     thread_created_at: datetime | None = field(default=None)
     queue: str | None = None
@@ -33,16 +34,18 @@ class AgentContext:
     queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
     chat_context: ChatContext | None = None
 
-    # Not a dataclass field: in legacy mode AgentContext keeps production's fields,
-    # __init__, repr, asdict and equality. Maestro mode sets it after construction.
+    # Not a dataclass field: in legacy mode AgentContext keeps production's fields, __init__,
+    # repr, asdict, equality, copy and pickle. Maestro mode moves the instance to a subclass
+    # with the same fields that carries the metadata (``_maestro_context_class``).
     @property
     def maestro(self) -> "MaestroExecutionContext | None":
         """Maestro execution metadata; ``None`` in legacy mode."""
-        return self.__dict__.get("_maestro")
+        return getattr(type(self), "_maestro_metadata", None)
 
     @maestro.setter
     def maestro(self, value: "MaestroExecutionContext | None") -> None:
-        self.__dict__["_maestro"] = value
+        base = _production_class(type(self))
+        self.__class__ = base if value is None else _maestro_context_class(base, value)
 
     def members_for_queue(self, slug: str | None = None) -> list[WorkspaceQueueMember]:
         """Members of ``slug``, or of the current thread queue when omitted."""
@@ -53,3 +56,64 @@ class AgentContext:
             if queue.slug == target:
                 return list(queue.members)
         return []
+
+
+def _production_class(cls: type) -> type:
+    """The class before Maestro metadata was attached (``AgentContext`` or a subclass of it)."""
+    while "_maestro_metadata" in vars(cls):
+        cls = cls.__base__
+    return cls
+
+
+def _production_instance(cls: type, state: dict) -> "AgentContext":
+    """Unpickle a Maestro context as the production class, with the same field values."""
+    instance = cls.__new__(cls)
+    instance.__dict__.update(state)
+    return instance
+
+
+def _maestro_context_class(base: type, metadata: "MaestroExecutionContext") -> type:
+    """A subclass of ``base`` for one execution, with the metadata on the class, not on the instance.
+
+    The instance keeps only the production fields (``vars``, ``asdict``, ``repr`` and the
+    name ``AgentContext`` stay). ``dataclasses.replace``, ``copy`` and ``deepcopy`` build the
+    same subclass, so they keep the metadata (shared, not copied: it holds the live
+    cancellation signal). Equality compares the fields, as production does. Pickle stores
+    the production object without the metadata, which only exists during the execution.
+    """
+
+    def __copy__(self):
+        clone = object.__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        return clone
+
+    def __deepcopy__(self, memo):
+        clone = object.__new__(type(self))
+        memo[id(self)] = clone
+        clone.__dict__.update(copy.deepcopy(self.__dict__, memo))
+        return clone
+
+    def __reduce_ex__(self, protocol):
+        return _production_instance, (base, dict(self.__dict__))
+
+    def __eq__(self, other):
+        if not isinstance(other, AgentContext) or _production_class(type(other)) is not base:
+            return NotImplemented
+        names = [f.name for f in fields(base)]
+        return tuple(getattr(self, name) for name in names) == tuple(getattr(other, name) for name in names)
+
+    return type(
+        base.__name__,
+        (base,),
+        {
+            "__module__": base.__module__,
+            "__qualname__": base.__qualname__,
+            "__doc__": base.__doc__,
+            "_maestro_metadata": metadata,
+            "__copy__": __copy__,
+            "__deepcopy__": __deepcopy__,
+            "__reduce_ex__": __reduce_ex__,
+            "__eq__": __eq__,
+            "__hash__": None,
+        },
+    )

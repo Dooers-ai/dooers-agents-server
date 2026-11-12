@@ -47,8 +47,8 @@ class AgentIncoming:
         return bind_execution_context(
             agent_id=self.context.agent_id,
             organization_id=self.context.organization_id,
-            workspace_id=self.context.workspace_id or "",
-            user_id=self.context.user.user_id if self.context.user is not None else "",
+            workspace_id=self.context.workspace_id,
+            user_id=self.context.user.user_id,
             channel=self.context.channel,
         )
 

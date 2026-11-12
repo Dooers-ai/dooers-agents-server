@@ -252,7 +252,7 @@ async def main():
         nonlocal handler_calls
         handler_calls += 1
         assert await run_maestro_effect(tool, ordinal=0, arguments={"units": 1}) == {"applied": True}
-        assert on.message == "Olá" and on.context.workspace_id is None
+        assert on.message == "Olá" and on.context.workspace_id == ""
         assert current_execution_context().agent_id == envelope["instance_agent_id"]
         assert settings["private"] == envelope["instance_agent_id"]
         assert (await memory.get_history())[0]["role"] == "user"

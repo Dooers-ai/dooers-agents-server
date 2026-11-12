@@ -20,6 +20,10 @@ Measured again on 2026-11-11 (plan 3, task 3): the sink publishes every producti
 index 4.4. No gap closed. The send gaps now complete ``responded`` and differ because the
 legacy view maps only ``message.created`` and the fake does not apply thread changes
 (plan 3, tasks 5 and 7).
+
+Measured again on 2026-11-12 (plan 3, task 4): the SDK builds the production ``AgentIncoming``
+(channel, user, workspace, thread fields, queues, parts, message, form.responded). No gap
+closed: ``incoming_fields`` and ``form_response_*`` still stop at the fake's client side.
 """
 
 from __future__ import annotations
@@ -158,9 +162,10 @@ GAPS: dict[str, Gap] = {
     "public_chat_authenticated": _PUBLIC_CHAT,
     # AgentIncoming and AgentMemory
     "incoming_fields": Gap(
-        "turn 2 has image, document, audio and contact parts, which the Maestro message contract does not have, so the "
-        "publish is rejected; masked: channel 'maestro', no "
-        "thread_title/queue/queues, rag on_behalf False (design 5.3)",
+        "turn 2 has image, document and audio URL parts, which a person's message.create does not have (a person sends "
+        "uploads), so the publish is rejected (plan 3, task 7). The SDK side already reads what production reads "
+        "(tests/test_maestro_incoming_parity.py) when the context carries them as media_link, except the document "
+        "size_bytes (media_link has none); the fake has no thread.created, agent-only e-mail or queue catalog yet",
         raises=FakeMaestroRejected,
         match="message.create",
     ),

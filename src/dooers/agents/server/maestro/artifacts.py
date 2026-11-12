@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import time
@@ -17,7 +18,18 @@ import httpx
 from .client import MaestroContextClient, MaestroContextError
 from .security import strict_json
 
+logger = logging.getLogger(__name__)
+
 _UPLOAD_BYTES_PER_SECOND = 1048576
+
+
+def _error_code(raw: bytes) -> str | None:
+    """``error.code`` of a ``Public.Error`` body, or ``None``; the rest of the body is never read."""
+    try:
+        code = strict_json(raw)["error"]["code"]
+    except Exception:
+        return None
+    return code if isinstance(code, str) else None
 
 
 def artifact_type_allowed(config: Any, mime_type: str, filename: str) -> bool:
@@ -39,6 +51,22 @@ def artifact_type_allowed(config: Any, mime_type: str, filename: str) -> bool:
     return not config.artifact_mime_types or mime_type in config.artifact_mime_types
 
 
+#: Why an execution cannot hand media to the handler (logged and raised; never a URL or a token).
+ARTIFACT_LINKS_UNAVAILABLE = (
+    "UNSUPPORTED_CAPABILITY: Maestro did not issue a temporary artifact link for this execution. "
+    "Enable ARTIFACT_LINKS_ENABLED and set MAESTRO_ARTIFACT_LINK_KEY on the Maestro service. "
+    "The SDK never gives the handler a media part without its link."
+)
+
+
+class MaestroArtifactLinkUnavailable(MaestroContextError):
+    """Maestro has no artifact link route for this execution: a configuration error."""
+
+    def __init__(self) -> None:
+        super().__init__("UNSUPPORTED_CAPABILITY")
+        self.args = (ARTIFACT_LINKS_UNAVAILABLE,)
+
+
 @dataclass(frozen=True)
 class MaestroHydratedArtifact:
     artifact_id: str
@@ -46,14 +74,19 @@ class MaestroHydratedArtifact:
     mime_type: str
     data: bytes = field(repr=False)
 
-    def content_part(self):
+    def content_part(self, url: str, *, duration: float | None = None):
+        """The production part of an uploaded file: the bytes and the temporary link (``url``).
+
+        Same fields as the production upload path (``ref_id`` parts of ``HandlerPipeline``):
+        an audio keeps the ``duration`` of the message part; an image has no size.
+        """
         from dooers.agents.server.protocol.models import AudioPart, DocumentPart, ImagePart
 
         if self.mime_type.startswith("audio/"):
-            return AudioPart(data=self.data, mime_type=self.mime_type, filename=self.filename)
+            return AudioPart(data=self.data, mime_type=self.mime_type, duration=duration, filename=self.filename, url=url)
         if self.mime_type.startswith("image/"):
-            return ImagePart(data=self.data, mime_type=self.mime_type, filename=self.filename)
-        return DocumentPart(data=self.data, mime_type=self.mime_type, filename=self.filename, size_bytes=len(self.data))
+            return ImagePart(data=self.data, mime_type=self.mime_type, filename=self.filename, url=url)
+        return DocumentPart(data=self.data, mime_type=self.mime_type, filename=self.filename, size_bytes=len(self.data), url=url)
 
 
 class MaestroArtifactsClient:
@@ -139,6 +172,60 @@ class MaestroArtifactsClient:
             # Drop/overwrite partial buffers on failure, timeout and cancellation.
             raw[:] = b"\0" * len(raw)
             raw.clear()
+
+    async def issue_link(self, artifact_id: str) -> dict[str, Any]:
+        """``POST /executions/{id}/artifacts/{artifact_id}/links``: a temporary link, ``{url, expires_at}``.
+
+        Maestro issues it only for a file of this thread linked up to the context cutoff (the
+        attachments of the delivery qualify). A capability without ``artifact.link.issue`` or a
+        403/404/``UNSUPPORTED_CAPABILITY`` answer means the route is off: that raises
+        ``MaestroArtifactLinkUnavailable`` and logs which settings to change. The URL is a
+        bearer link and is never logged.
+        """
+        client = self._client
+        try:
+            if str(UUID(artifact_id)) != artifact_id:
+                raise ValueError
+            if "artifact.link.issue" not in client._claims["operations"]:
+                raise MaestroArtifactLinkUnavailable()
+            budget = self._operation("artifact.link.issue")
+            envelope = client._envelope
+            async with asyncio.timeout(budget):
+                headers, expires_at = await self._headers()
+                headers.update({"Content-Type": "application/json", "Accept": "application/json"})
+                headers.update(await client.config.transport_headers(client.config.callback_base_url))
+                transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+                async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as http:
+                    url = f"{client.config.callback_base_url}/executions/{envelope['execution_id']}/artifacts/{artifact_id}/links"
+                    async with http.stream("POST", url, headers=headers, content=b"{}") as response:
+                        raw = bytearray()
+                        async for chunk in response.aiter_raw():
+                            if len(raw) + len(chunk) > 65536:
+                                raise MaestroContextError("CONTEXT_LIMIT")
+                            raw.extend(chunk)
+                        if response.status_code != 200:
+                            if response.status_code in {403, 404} or _error_code(bytes(raw)) == "UNSUPPORTED_CAPABILITY":
+                                raise MaestroArtifactLinkUnavailable()
+                            self._status(response.status_code, 200)
+                        if (
+                            response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"
+                            or response.headers.get("content-encoding", "identity") != "identity"
+                        ):
+                            raise MaestroContextError("CONTEXT_INVALID")
+                        result = client._contracts.validate("Public.ArtifactLinkResponse", strict_json(bytes(raw)))
+                        client._check_current()
+                        if time.time() >= expires_at:
+                            raise MaestroContextError("ACCESS_REVOKED")
+                        return result
+        except MaestroArtifactLinkUnavailable:
+            logger.error(ARTIFACT_LINKS_UNAVAILABLE)
+            raise
+        except MaestroContextError:
+            raise
+        except (ValueError, TypeError, AttributeError):
+            raise MaestroContextError("CONTEXT_INVALID") from None
+        except Exception:
+            raise MaestroContextError() from None
 
     def _status(self, status: int, expected: int) -> None:
         if status in {401, 403, 404, 409, 410}:

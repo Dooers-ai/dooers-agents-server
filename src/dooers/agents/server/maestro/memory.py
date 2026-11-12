@@ -7,8 +7,10 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from .artifacts import MaestroArtifactsClient
 from .client import MaestroContextClient, MaestroContextError
 from .converters import history_messages
+from .links import LinkResolver
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,10 @@ class MaestroArtifactReference:
     size_bytes: int | None = None
 
 
+#: Events that start a delivery: a message, or the response to a production form (``send.form``).
+TRIGGER_TYPES = frozenset({"message.created", "form.responded"})
+
+
 class MaestroMemory:
     def __init__(self, client: MaestroContextClient, *, max_pages: int = 20, max_total_bytes: int = 8388608) -> None:
         if (
@@ -48,6 +54,8 @@ class MaestroMemory:
         self._client = client
         self._envelope = client.admission.envelope
         self._max_pages, self._max_total_bytes = max_pages, max_total_bytes
+        # One link per artifact for the whole execution (incoming parts and, later, history).
+        self._links = LinkResolver(MaestroArtifactsClient(client).issue_link)
 
     def _validate_page(self, page: dict[str, Any]) -> None:
         envelope = self._envelope
@@ -60,7 +68,7 @@ class MaestroMemory:
             or trigger["event_id"] != envelope["trigger_event_id"]
             or trigger["sequence"] != envelope["trigger_sequence"]
             or trigger["root_event_id"] != envelope["root_event_id"]
-            or trigger["type"] != "message.created"
+            or trigger["type"] not in TRIGGER_TYPES
             or len(recipients) != 1
             or recipients[0]["kind"] != "agent"
             or recipients[0]["state"] != "active"
@@ -70,7 +78,11 @@ class MaestroMemory:
         ):
             raise MaestroContextError("CONTEXT_INVALID")
         invocation = page.get("invocation_event")
-        if invocation is not None:
+        if invocation is not None and "form.responded" in (invocation["type"], trigger["type"]):
+            # A form response is its own root and goes only to the form's author: no routing decision.
+            if invocation != trigger:
+                raise MaestroContextError("CONTEXT_INVALID")
+        elif invocation is not None:
             decision = invocation["payload"].get("routing_decision", {})
             if (
                 invocation["type"] != "message.created"

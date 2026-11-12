@@ -43,7 +43,8 @@ async def test_proxy_download_typed_bytes_and_repeated_authorization(private_key
         server.extra_headers = {"Content-Type": "text/plain"}
         for _ in range(2):
             result = await client.hydrate(ref)
-            assert result.data == b"hello" and result.content_part().url is None
+            part = result.content_part("https://maestro.example/v1/artifact-links/a.b")
+            assert part.data == b"hello" and part.url == "https://maestro.example/v1/artifact-links/a.b"
         assert len(requests) == 2 and all("artifact" not in req.scopes for req in requests)
         for first, headers in server.requests:
             assert first == f"GET /api/v1/artifacts/{ref.artifact_id}/download HTTP/1.1"
@@ -105,9 +106,16 @@ async def test_timeout_cancel_and_finished_client_never_expose_bytes(private_key
         assert len(server.requests) == count
 
 
+LINK = {"url": "https://maestro.example/v1/artifact-links/token.signature", "expires_at": "2099-01-01T00:00:00Z"}
+
+
+def with_links(data):
+    data["capability_claims"]["operations"].append("artifact.link.issue")
+
+
 async def test_handler_hydrates_attachment_without_rewriting_snapshot(private_key, contracts):
     async with fixture_server() as server:
-        memory, page, *_ = prepare_media(private_key, contracts, server)
+        memory, page, *_ = prepare(private_key, contracts, server, change=with_links)
         media(memory)
         ref = reference(memory, size_bytes=5)
         part = {"type": "attachment", "artifact_id": ref.artifact_id, "filename": ref.filename, "mime_type": ref.mime_type, "size_bytes": 5}
@@ -126,11 +134,13 @@ async def test_handler_hydrates_attachment_without_rewriting_snapshot(private_ke
             return MaestroHydratedArtifact(reference.artifact_id, "fixture.txt", "text/plain", b"hello")
 
         server.responses = []
+        server.response = lambda first: LINK if "/links " in first else page
         with patch.object(MaestroArtifactsClient, "hydrate", hydrate):
             async with maestro_handler_context(memory, private) as context:
                 assert context.on.message == "Original"
                 assert context.on.content[1].data == b"hello"
-                assert context.on.content[1].url is None
+                # The part carries the temporary Maestro link, as production carries its signed URL.
+                assert context.on.content[1].url == LINK["url"]
                 assert page["trigger_event"]["payload"]["content"] == [{"type": "text", "text": "Original"}, part]
 
 

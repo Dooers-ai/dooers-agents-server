@@ -168,7 +168,7 @@ async def main():
 
     try:
         async with maestro_handler_context(memory, private) as prepared:
-            assert prepared.on.message == "Olá" and prepared.on.context.workspace_id is None
+            assert prepared.on.message == "Olá" and prepared.on.context.workspace_id == ""
             assert current_execution_context().agent_id == envelope["instance_agent_id"]
             history = await memory.get_history()
             assert history[0]["role"] == "user" and "auth0|human-fixture" in history[0]["content"]

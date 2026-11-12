@@ -22,6 +22,7 @@ from dooers.agents.server.maestro.context import (
 from dooers.agents.server.maestro.converters import history_messages
 from dooers.agents.server.maestro.memory import MaestroMemory
 from dooers.agents.server.protocol.maestro import MaestroContracts, verify_contract_bundle
+from dooers.agents.server.protocol.models import User
 from dooers.tools.rag.runtime import bind_execution_context, current_execution_context, reset_execution_context
 from dooers.tools.whatsapp.runtime import require_agent_id, require_persistence
 from tests.test_maestro_admission import BASE, config_for, json_bytes, sign, signed_request, timestamp
@@ -68,8 +69,11 @@ class HTTPFixture:
             if callable(value):
                 value = value(first)
             body = value if isinstance(value, bytes) else json_bytes(value)
-            headers = {"Content-Type": "application/json", "Content-Length": str(len(body)), "Connection": "close", **self.extra_headers}
-            writer.write(f"HTTP/1.1 {self.status} Fixture\r\n".encode())
+            # ``status`` and ``extra_headers`` may depend on the request line, like a callable ``response``.
+            extra = self.extra_headers(first) if callable(self.extra_headers) else self.extra_headers
+            status = self.status(first) if callable(self.status) else self.status
+            headers = {"Content-Type": "application/json", "Content-Length": str(len(body)), "Connection": "close", **extra}
+            writer.write(f"HTTP/1.1 {status} Fixture\r\n".encode())
             writer.write("".join(f"{key}: {value}\r\n" for key, value in headers.items()).encode() + b"\r\n" + body)
             await writer.drain()
         finally:
@@ -326,7 +330,8 @@ async def test_context_private_recipient_binding_and_cleanup(private_key, contra
                 async with maestro_handler_context(memory, private) as prepared:
                     # The RAG token lives in maestro_handler_context, never on the incoming object.
                     assert set(vars(prepared.on)) == {f.name for f in fields(AgentIncoming)}
-                    assert prepared.on.context.user is None
+                    # Another agent as author: the production User(user_id=""); the author stays in context.maestro.
+                    assert prepared.on.context.user == User(user_id="")
                     assert prepared.on.context.agent_id == memory._envelope["instance_agent_id"]
                     assert current_execution_context().agent_id == prepared.on.context.agent_id
                     assert current_execution_context().on_behalf is False
@@ -608,7 +613,8 @@ async def test_resume_context_preserves_trigger_and_uses_response_cutoff(private
             assert prepared.on.form_data == {"answer": "approved input"}
             assert prepared.on.form_cancelled is False and prepared.on.form_event_id is None
             assert prepared.on.context.user.user_id == response["actor"]["principal_id"]
-            assert current_execution_context().on_behalf is False
+            # A person on the web chat (channel "dooers-platform"): RAG acts on their behalf, as in production.
+            assert current_execution_context().on_behalf is True
             assert context.cancellation.cancelled is False
         assert context.cancellation.cancelled is True
 

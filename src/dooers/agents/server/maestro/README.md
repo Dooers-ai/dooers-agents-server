@@ -219,8 +219,8 @@ Ordem mais recente primeiro; `direction='out'` significa a própria instância e
 `in` todos os demais. Cursor numérico local é apenas offset sobre a mesma leitura
 fixa, não credencial nem cursor de download. Cada chamada revalida o snapshot.
 Não retorna URLs/bytes/status inventados, não acessa UploadStore nem segue URLs de
-conteúdo. Hidratação durável autorizada é E08; input com attachment falha fechado
-antes de invocar handler nesta fase.
+conteúdo. Os anexos da mensagem de entrada chegam ao handler com bytes e link
+temporário (seção "Arquivos da entrada e link temporário").
 
 ### Uso pelo executor E05-08
 
@@ -250,15 +250,52 @@ Maestro depois do I/O de resources, antes de expor input.
 delivery/phase/execution/attempt/fence, destinatário/runtime, gatilho original,
 origem da invocação, corte, actor completo, causa/raiz/depth, prazos, resume e sinal
 cooperativo de cancelamento. Orçamento causal restante é `None`, pois não está no
-wire; não se inventa número. `workspace_id` pessoal permanece `None`; somente a
-fronteira interna do RAG legado normaliza para string vazia. `user=None` para autor
-agente; humano conserva ID/nome reais como dados, sem criar delegação RAG on_behalf.
+wire; não se inventa número.
 
-Resume conserva `trigger_event_id`, muda origem/corte para interaction.responded
-aceito e entrega `on.form_data`; não reabre generator. Exige IDs de interaction,
-phase/delivery/resposta e action compatíveis; cancel/reject não invocam handler.
-`form_cancelled=False`; `form_event_id=None`, pois o wire não fornece o ID legado
-do evento form original. A referência correta é `on.context.maestro.resume`.
+`AgentIncoming` e `AgentContext` têm os valores de produção (`HandlerPipeline.execute`):
+
+- `user`: humano vira `User(user_id=principal_id, user_name=display_name,
+  user_email=email, identity_ids=identity_ids)`. E-mail e `identity_ids` vêm do
+  contexto da entrega (actor; senão, o participante). Esses campos existem só no
+  contexto do agente, nunca no que vai ao navegador. Contato externo vira
+  `User(user_id=external_id, user_name=display_name)`, como o contato do WhatsApp em
+  produção. Outro agente (ou sistema) vira `User(user_id="")`; o autor real fica em
+  `on.context.maestro.actor`.
+- `workspace_id`: `""` no escopo pessoal. `channel`: canal da thread, padrão
+  `"dooers-platform"`. Um contato externo nunca fica com `"dooers-platform"`: sem
+  canal na thread, vale o canal do contato (`"whatsapp"` ou `"public_chat"`; o plano 6
+  completa o chat público), e o RAG não age em nome dele.
+- `thread_title`, `thread_created_at`, `queue` e `channel_meta`: do `thread.created`
+  e dos `thread.updated` até o corte. Título vazio vira `None`. Thread sem
+  `thread.created` (criada por agente, sem dono) fica com os padrões de produção.
+- `queues`: catálogo de filas do workspace vindo de `MaestroPrivateResources.queues`
+  (itens `WorkspaceQueueCatalog`, cópia por execução). O Core não tem rota que o agente
+  possa chamar para esse catálogo; o operador o fornece. Padrão vazio.
+- `message`: a regra de `_extract_message` de produção (textos e cartões de contato
+  unidos por espaço; sem texto, `[image]`, `[audio]`, `[document: nome]`).
+- Partes: `text` → `TextPart`; `attachment` → `ImagePart`, `AudioPart` ou
+  `DocumentPart` com bytes e link temporário; `media_link` → a parte de produção do
+  mesmo tipo só com `url` (`data=b""`); `contact` → `ContactPart`.
+
+`AgentContext.maestro` é uma property, não um campo. No modo Maestro, a instância passa
+para uma subclasse da execução, com os mesmos campos e o nome `AgentContext`, que guarda
+os metadados na classe. Assim `vars`, `asdict`, `repr` e igualdade ficam iguais aos de
+produção. `dataclasses.replace`, `copy` e `deepcopy` mantêm `context.maestro` (o mesmo
+objeto, com o sinal de cancelamento vivo). `pickle` grava o `AgentContext` de produção
+sem os metadados, que só existem durante a execução.
+
+Form de produção (`send.form` sem `suspension`): a resposta é o evento `form.responded`,
+que o Maestro entrega ao agente autor do form numa entrega nova. O handler recebe
+`form_data=values`, `form_cancelled=cancelled` e `form_event_id` do `form.created`;
+o cancelamento também invoca o handler, como em produção. `message` é `""` e `content`
+é `[TextPart(text="")]`, como em produção. O SDK confere que o `form.created` citado é
+deste agente; senão, `CONTEXT_INVALID`.
+
+Resume (form por `suspension`, extra do Maestro) conserva `trigger_event_id`, muda
+origem/corte para interaction.responded aceito e entrega `on.form_data`; não reabre
+generator. Exige IDs de interaction, phase/delivery/resposta e action compatíveis;
+cancel/reject não invocam handler. `form_cancelled=False`; `form_event_id` vem do
+contexto privado da interação. A referência correta é `on.context.maestro.resume`.
 Nenhuma capability de interação é anunciada por essa construção tipada.
 
 `maestro_handler_context` faz bind e restaura RAG/WhatsApp/contexto Maestro em
@@ -267,8 +304,8 @@ a task atual e não propagam automaticamente para child tasks. O token de RAG fi
 em `maestro_handler_context` (`bind_runtime_context()` devolve o token e
 `reset_runtime_context(token)` o restaura); `AgentIncoming` nunca guarda o token. No
 modo legado, `AgentIncoming` faz o binding e descarta o token, como a produção, e
-mantém os campos, `asdict`, `deepcopy`, `pickle`, `repr` e igualdade de produção;
-`AgentContext.maestro` é uma property, não um campo. Nenhum span/OTEL é iniciado aqui; quando
+mantém os campos, `asdict`, `deepcopy`, `pickle`, `repr` e igualdade de produção.
+Nenhum span/OTEL é iniciado aqui; quando
 E05-08 instrumentar a execução, deve encerrar seu tracker no mesmo finally. A
 integração de export OTEL/provider permanece fora desta tarefa.
 
@@ -295,6 +332,26 @@ herde os ContextVars, não pode obter esses recursos fora da task autorizada ou
 depois da saída. A guarda é desativada/restaurada no finally. Binding legado sem
 guarda mantém assinatura, tupla de dois tokens e comportamento anterior. Essa
 guarda não encerra tasks externas nem desfaz referências/efeitos já obtidos.
+
+### Arquivos da entrada e link temporário
+
+Cada anexo da mensagem de entrada é baixado (bytes) e recebe um link temporário do
+Maestro (`url`), como a URL assinada de produção. O link vale sem login, para um só
+arquivo, e serve ao handler e ao provedor de LLM. O SDK pede o link em
+`POST /executions/{execution_id}/artifacts/{artifact_id}/links` (resposta
+`{url, expires_at}`), com a credencial da instância e a capability da execução.
+`LinkResolver` (`links.py`) guarda um link por arquivo durante a execução e pede outro
+quando faltam menos de 60 s para expirar. O link é um bearer: nunca entra em log nem em
+`repr`.
+
+Requisito de configuração do Maestro: `ARTIFACT_LINKS_ENABLED=true` e
+`MAESTRO_ARTIFACT_LINK_KEY` (base64, no mínimo 32 bytes). Sem isso, a capability não traz
+`artifact.link.issue` ou a rota responde 404/403/`UNSUPPORTED_CAPABILITY`. Nesse caso,
+o SDK levanta `MaestroArtifactLinkUnavailable` (código `UNSUPPORTED_CAPABILITY`), grava
+um log `error` com o nome das duas configurações e não invoca o handler: a entrega
+falha (HTTP 422). O SDK nunca entrega ao handler uma parte de mídia sem link ou com
+link falso. O Maestro só emite link para arquivo ligado à thread até o corte do
+contexto; os anexos da entrega se qualificam.
 
 ## Executor textual E05-08
 

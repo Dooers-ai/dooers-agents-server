@@ -203,7 +203,7 @@ async def main():
         return MaestroPrivateResources(scope, object(), {"private": scope.instance_agent_id}, object())
 
     async def creator(on, send, memory, analytics, settings):
-        assert on.message == "Olá" and on.context.workspace_id is None
+        assert on.message == "Olá" and on.context.workspace_id == ""
         assert current_execution_context().agent_id == envelope["instance_agent_id"]
         assert settings["private"] == envelope["instance_agent_id"]
         assert (await memory.get_history())[0]["role"] == "user"

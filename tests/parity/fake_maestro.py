@@ -19,8 +19,9 @@ kept in ``rejections``). Every response and every stored event goes through
 Each accepted output becomes the event of its type (index 4.4: ``message.create`` ->
 ``message.created``, ``run.update`` -> ``run.updated``, ...), with the payload as sent
 plus the fields the contract says Maestro adds. The fake does not apply ``thread.update``
-or ``participant.add`` to the thread state, and it emits no artifact link and no
-``form.responded`` delivery (plan 3, task 7). Scope: one person and one agent per thread,
+or ``participant.add`` to the thread state, and it creates no ``form.responded`` delivery
+(plan 3, task 7). It issues temporary artifact links (``ARTIFACT_LINKS_ENABLED``) for the
+files of the delivery's thread, without serving their bytes. Scope: one person and one agent per thread,
 no retries or lease renewal, no suspension/interactions, no archive or delete. A real
 Maestro also writes execution events, and none of them has a legacy ``ThreadEvent``.
 
@@ -389,6 +390,8 @@ class FakeMaestro:
                 causal_depth=0,
             )
             data["capability_claims"].update(sub=INSTANCE_AGENT_ID, jti=str(uuid4()))
+            # ARTIFACT_LINKS_ENABLED: the capability carries artifact.link.issue, as Maestro signs it.
+            data["capability_claims"]["operations"] = [*data["capability_claims"]["operations"], "artifact.link.issue"]
             data["dispatch_claims"]["jti"] = str(uuid4())
 
         envelope, headers = signed_request(self._key, self.config, change=bind)
@@ -435,6 +438,13 @@ class FakeMaestro:
             if request.method == "GET" and len(segments) == 3 and segments[0] == "artifacts" and segments[2] == "download":
                 action = "artifact.download"
                 return self._artifact_download(request, segments[1])
+            if (
+                request.method == "POST"
+                and len(segments) == 5
+                and (segments[0], segments[2], segments[4]) == ("executions", "artifacts", "links")
+            ):
+                action = "artifact.link.issue"
+                return self._artifact_link(request, segments[1], segments[3])
             raise _CallbackError(404, "NOT_FOUND")
         except _CallbackError as error:
             self.rejections.append((action, error.code))
@@ -712,6 +722,26 @@ class FakeMaestro:
         if delivery.state != "running":
             raise _CallbackError(409, "EXECUTION_TERMINAL")
         return httpx.Response(200, content=artifact["data"], headers={"Content-Type": artifact["mime_type"]})
+
+    def _artifact_link(self, request: httpx.Request, execution_id: str, artifact_id: str) -> httpx.Response:
+        """A temporary link to one file of the thread, linked up to the context cutoff (``{url, expires_at}``)."""
+        delivery = self._authorized_delivery(request)
+        if delivery.execution_id != execution_id:
+            raise _CallbackError(404, "NOT_FOUND")
+        try:
+            body = json.loads(request.content)
+        except ValueError:
+            raise _CallbackError(400, "INVALID_REQUEST") from None
+        if not self.contracts.is_valid("Public.Empty", body):
+            raise _CallbackError(400, "INVALID_REQUEST")
+        artifact = self.artifacts.get(artifact_id)
+        if artifact is None or artifact["state"] != "linked" or artifact["thread_id"] != delivery.thread_id:
+            raise _CallbackError(404, "NOT_FOUND")
+        if delivery.state != "running":
+            raise _CallbackError(409, "EXECUTION_TERMINAL")
+        token = f"{artifact_id.replace('-', '')}.{uuid4().hex}"
+        link = {"url": f"{CALLBACK_BASE_URL}/artifact-links/{token}", "expires_at": timestamp(time.time() + 3600)}
+        return self._reply("Public.ArtifactLinkResponse", link)
 
     # -- state --
 
