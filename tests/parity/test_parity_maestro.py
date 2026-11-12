@@ -10,6 +10,8 @@ starts to fail for another reason, fails here until a plan updates the list.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from dooers.agents.server.exceptions import ThreadManagementModeError
@@ -106,8 +108,13 @@ async def test_dashboard_turn_runs_the_handler_through_a_maestro_delivery():
     assert result.deliveries == [{"status": 200, "state": "responded", "reason_code": "responded"}]
 
 
-async def test_send_function_refused_by_the_sink_leaves_only_the_user_message():
-    result = await run_maestro("image")
+async def test_send_function_refused_by_the_sink_leaves_only_the_user_message(monkeypatch):
+    # send.whatsapp.* is the send function the sink still refuses (plan 5).
+    async def handler(on, send, memory, analytics, settings):
+        yield send.whatsapp.text("Oi", to_e164="+5511999990000", instance_id="instancia-1")
+
+    monkeypatch.setitem(SCENARIOS, "text", replace(SCENARIOS["text"], handler=handler))
+    result = await run_maestro("text")
     assert [event["actor"] for event in result.events] == ["user"]
     assert result.deliveries == [{"status": 200, "state": "failed", "reason_code": "unsupported_capability"}]
 

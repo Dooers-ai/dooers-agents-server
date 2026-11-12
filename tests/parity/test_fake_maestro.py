@@ -44,7 +44,11 @@ async def test_text_reply_becomes_an_agent_message_event():
 
     assert response.status_code == 200 and response.json()["state"] == "responded"
     assert seen == {"message": "Olá", "user": User(user_id="user-1", user_name="Ana Souza")}
-    human, reply = fake.events[thread_id]
+    assert [event["type"] for event in fake.events[thread_id]] == ["message.created", "run.updated", "message.created", "run.updated"]
+    human, start, reply, end = fake.events[thread_id]
+    assert (start["payload"]["status"], end["payload"]["status"]) == ("running", "succeeded")
+    assert start["payload"]["run_id"] == reply["payload"]["run_id"] == end["payload"]["run_id"]
+    assert start["payload"]["trigger_event_id"] == human["event_id"]
     assert human["actor"]["kind"] == "human" and human["actor"]["principal_id"] == "user-1"
     assert reply["actor"] == {
         "kind": "agent",
@@ -59,7 +63,7 @@ async def test_text_reply_becomes_an_agent_message_event():
     assert delivery.progress == ["admitted", "run_started", "run_finished"]
     assert (delivery.state, delivery.reason_code) == ("responded", "responded")
     for event in fake.events[thread_id]:
-        assert shared_contracts().is_valid("Public.Event.message.created", event)
+        assert shared_contracts().is_valid(f"Public.Event.{event['type']}", event)
     assert fake.rejections == []
 
 
@@ -67,9 +71,8 @@ async def test_send_refused_by_the_sink_completes_failed_without_an_event():
     fake = FakeMaestro()
 
     async def handler(on, send, memory, analytics, settings):
-        yield send.run_start()
-        yield send.image("https://cdn.example.com/grafico.png", mime_type="image/png")
-        yield send.run_end()
+        # send.whatsapp.* is the send function the sink still refuses (plan 5).
+        yield send.whatsapp.text("Oi", to_e164="+5511999990000", instance_id="instancia-1")
 
     with fake.serving():
         thread_id, delivery, response = await _deliver(fake, handler)

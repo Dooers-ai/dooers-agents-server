@@ -16,11 +16,13 @@ raises ``FakeMaestroRejected``, and a callback gets the contract's ``Public.Erro
 kept in ``rejections``). Every response and every stored event goes through
 ``MaestroContracts.validate`` too, so a bug in the fake fails loudly.
 
-Each accepted output becomes a ``message.created`` event, like the Maestro service.
-Scope: one person and one agent per thread, no retries or lease renewal, no
-suspension/interactions, no archive or delete. The event log holds the events the
-fake creates (``message.created``). A real Maestro also writes thread, participant and
-execution events, and none of them has a legacy ``ThreadEvent``.
+Each accepted output becomes the event of its type (index 4.4: ``message.create`` ->
+``message.created``, ``run.update`` -> ``run.updated``, ...), with the payload as sent
+plus the fields the contract says Maestro adds. The fake does not apply ``thread.update``
+or ``participant.add`` to the thread state, and it emits no artifact link and no
+``form.responded`` delivery (plan 3, task 7). Scope: one person and one agent per thread,
+no retries or lease renewal, no suspension/interactions, no archive or delete. A real
+Maestro also writes execution events, and none of them has a legacy ``ThreadEvent``.
 
 ``legacy_view`` and ``legacy_thread_view`` (test only) map Maestro data to the
 production shapes that ``normalize`` compares. They only rename and reshape what
@@ -73,6 +75,20 @@ CORE_BASE_URL = "http://127.0.0.1:8788/api/v1"
 MAESTRO_MIME_TYPES = frozenset({"text/plain", "application/pdf", "image/png", "image/jpeg", "audio/wav"})
 MAX_ARTIFACT_BYTES = 8388608
 _ACTORS = {"human": "user", "agent": "assistant", "system": "system"}
+#: Event Maestro records for each agent output type (index 4.4).
+STORED_EVENT_TYPES = {
+    "message.create": "message.created",
+    "reasoning.create": "reasoning.created",
+    "tool_call.create": "tool_call.created",
+    "tool_result.create": "tool_result.created",
+    "tool_transaction.create": "tool_transaction.created",
+    "chart.create": "chart.created",
+    "form.create": "form.created",
+    "message.update": "message.updated",
+    "run.update": "run.updated",
+    "thread.update": "thread.updated",
+    "participant.add": "participant.added",
+}
 
 
 @functools.cache
@@ -567,7 +583,8 @@ class FakeMaestro:
         if previous is not None:
             return self._reply("Public.PersistedResponse", {**previous, "duplicate": True})
         self._running(delivery, body)
-        for part in body["payload"]["content"]:
+        kind = body["type"]
+        for part in body["payload"]["content"] if kind == "message.create" else ():
             if part["type"] == "attachment":
                 artifact = self.artifacts.get(part["artifact_id"])
                 if artifact is None or artifact["state"] != "ready_unbound" or artifact["execution_id"] != delivery.execution_id:
@@ -580,36 +597,61 @@ class FakeMaestro:
             "participant_id": agent["participant_id"],
             "display_name": agent["display_name"],
         }
-        payload = {
-            "content": deepcopy(body["payload"]["content"]),
-            "mentions": deepcopy(body["payload"]["mentions"]),
-            "execution_id": delivery.execution_id,
-            "output_id": body["output_id"],
-        }
-        handoff = body["payload"].get("handoff")
-        if handoff is not None:
-            payload["routing_decision"] = {
-                "version": 1,
-                "mode": "direct",
-                "recipients": list(handoff["recipients"]),
-                "execution": "sequential",
-            }
+        payload = self._stored_payload(delivery, body)
         trigger = delivery.trigger_event
         event = self._append(
             delivery.thread_id,
             actor,
             payload,
+            event_type=STORED_EVENT_TYPES[kind],
             causation_event_id=trigger["event_id"],
             root_event_id=trigger["root_event_id"],
             delivery_id=delivery.delivery_id,
             execution_id=delivery.execution_id,
             output_id=body["output_id"],
         )
-        self._link_attachments(event)
+        if kind == "message.create":
+            self._link_attachments(event)
         delivery.output_event_ids.append(event["event_id"])
         result = {"status": "persisted", "duplicate": False, "event": event, "cursor": f"thread.{delivery.thread_id}.{event['sequence']}"}
         self._remember(request, delivery, body, result)
         return self._reply("Public.PersistedResponse", result)
+
+    def _stored_payload(self, delivery: Delivery, body: dict[str, Any]) -> dict[str, Any]:
+        """The output payload as sent, plus the fields the contract says Maestro adds."""
+        kind, payload = body["type"], deepcopy(body["payload"])
+        thread = self.threads[delivery.thread_id]
+        if kind == "message.create":
+            handoff = payload.pop("handoff", None)
+            if handoff is not None:
+                payload["routing_decision"] = {
+                    "version": 1,
+                    "mode": "direct",
+                    "recipients": list(handoff["recipients"]),
+                    "execution": "sequential",
+                }
+            return {**payload, "execution_id": delivery.execution_id, "output_id": body["output_id"]}
+        if kind == "run.update":
+            return {"agent_id": INSTANCE_AGENT_ID, **payload, "trigger_event_id": delivery.trigger_event["event_id"]}
+        if kind == "thread.update":
+            # Recorded only: the thread state keeps its title (plan 3, task 7).
+            current = {"thread_id": thread["thread_id"], "state": thread["state"], "version": thread["version"]}
+            return {"title": thread["title"], **payload, **current}
+        if kind == "participant.add":
+            # Recorded only: the person does not join the thread (plan 3, task 7).
+            user = payload.pop("user")
+            participant = {
+                "participant_id": str(uuid4()),
+                "display_name": user.get("user_name") or user["user_id"],
+                "state": "active",
+                "joined_sequence": str(int(thread["last_sequence"]) + 1),
+                "left_sequence": None,
+                "kind": "human",
+                "principal_id": user["user_id"],
+                "role": "member",
+            }
+            return {**payload, "participant": participant, "history_policy": "full"}
+        return payload
 
     def _complete(self, request: httpx.Request, delivery: Delivery) -> httpx.Response:
         body = self._json(request, "Public.CompleteRequest")
@@ -695,7 +737,9 @@ class FakeMaestro:
             raise FakeMaestroRejected("thread.access", f"{kind} {principal_id} is not an active participant of the thread")
         return matches[0]
 
-    def _append(self, thread_id: str, actor: dict[str, Any], payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    def _append(
+        self, thread_id: str, actor: dict[str, Any], payload: dict[str, Any], *, event_type: str = "message.created", **extra: Any
+    ) -> dict[str, Any]:
         thread = self.threads[thread_id]
         sequence = str(int(thread["last_sequence"]) + 1)
         event_id = str(uuid4())
@@ -708,11 +752,11 @@ class FakeMaestro:
             "created_at": _now(),
             "causation_event_id": extra.pop("causation_event_id", None),
             "root_event_id": extra.pop("root_event_id", event_id),
-            "type": "message.created",
+            "type": event_type,
             "payload": payload,
             **extra,
         }
-        event = self.contracts.validate("Public.Event.message.created", event)
+        event = self.contracts.validate(f"Public.Event.{event_type}", event)
         thread.update(last_sequence=sequence, cursor=f"thread.{thread_id}.{sequence}", updated_at=event["created_at"])
         self.events[thread_id].append(event)
         return deepcopy(event)
@@ -746,6 +790,12 @@ class FakeMaestro:
 def _legacy_part(part: dict[str, Any]) -> dict[str, Any]:
     if part["type"] == "text":
         return {"type": "text", "text": part["text"]}
+    if part["type"] == "contact":
+        return {"type": "contact", **{key: deepcopy(part[key]) for key in ("display_name", "vcard", "phones") if key in part}}
+    if part["type"] == "media_link":
+        # A URL the SDK could not upload: the production part keeps the agent's URL (index 4.3).
+        view = {"type": part["kind"], "url": part["url"]}
+        return view | {key: part[key] for key in ("mime_type", "filename", "alt", "duration") if key in part}
     mime_type = part.get("mime_type")
     kind = "image" if (mime_type or "").startswith("image/") else "audio" if (mime_type or "").startswith("audio/") else "document"
     view = {"type": kind, "ref_id": part["artifact_id"], "filename": part.get("filename"), "mime_type": mime_type}

@@ -44,6 +44,7 @@ from unittest.mock import patch
 import httpx
 import respx
 
+import dooers.agents.server.maestro.media_fetch as media_fetch_module
 import dooers.agents.server.observability.otel as otel
 import dooers.agents.server.server as server_module
 from dooers.agents.server.auth_validation import (
@@ -135,6 +136,10 @@ class _FakeServices:
         )
 
 
+async def _offline_resolver(host: str, port: int) -> list[str]:
+    raise OSError(f"offline parity run: no DNS for {host}")
+
+
 @contextmanager
 def _offline_environment(persistence: MemoryPersistence, connect: Connect, maestro: FakeMaestro | None = None) -> Iterator[_FakeServices]:
     fakes = _FakeServices(connect)
@@ -144,6 +149,9 @@ def _offline_environment(persistence: MemoryPersistence, connect: Connect, maest
         stack.enter_context(patch.object(server_module, "_build_persistence", lambda _config: persistence))
         stack.enter_context(patch.object(otel, "init_otel", lambda **_kwargs: None))
         stack.enter_context(patch.object(otel, "_otel_enabled", False))
+        # Offline: no DNS for the agents' media URLs. send.image/audio/document in Maestro mode
+        # then publish a media_link with the agent's URL (index 4.3), as an unreachable URL does.
+        stack.enter_context(patch.object(media_fetch_module, "_system_resolver", _offline_resolver))
         mock = stack.enter_context(respx.mock(assert_all_called=False))
         mock.post(f"{TOOLS_BASE}/api/v1/messages").mock(side_effect=fakes.whatsapp_tools)
         mock.post(f"{CORE_BASE}{DASHBOARD_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
@@ -441,6 +449,8 @@ async def run_maestro(name: str) -> ParityResult:
     if persistence.thread_ids():
         # Maestro owns the threads in this mode; a local thread is a difference, never hidden.
         outputs["agent_local_events"] = await _persisted_events(persistence)
-    events = [legacy_view(event) for event in maestro.all_events()]
+    # Only messages have a legacy view here; the other Maestro events (run.updated, reasoning.created, ...)
+    # are not compared yet, so a scenario that needs them still differs (plan 3, tasks 5 and 7).
+    events = [legacy_view(event) for event in maestro.all_events() if event["type"] == "message.created"]
     deliveries = [{"status": d.status_code, "state": d.state, "reason_code": d.reason_code} for d in maestro.deliveries.values()]
     return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs, deliveries=deliveries)
