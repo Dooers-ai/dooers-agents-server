@@ -394,11 +394,13 @@ cópia (`too_large`), inclusive percent-encoding perto do limite.
 Só `send.whatsapp.*` continua recusado (`UNSUPPORTED_CAPABILITY`, plano 5).
 
 Como em produção, `send.update_thread` e `send.add_participant` não falham o handler. Se o
-Maestro recusa a saída `thread.update` ou `participant.add` por regra (403 `FORBIDDEN` com
-`details.reason_code` `agent_not_participant` ou `multi_agent_thread`, ou 422
-`VALIDATION_FAILED` com `already_participant`), o sink grava um log `warning`, não consome
-o ordinal e o handler continua; o cliente fica aberto. O mesmo vale para a saída `run.update` (`run_start`/`run_end`)
-recusada com 403 `multi_agent_thread`. `send.add_participant` sem `user_id` (só e-mail ou
+Maestro recusa a saída `thread.update` ou `participant.add` com 403, 404, 422, 409 de regra
+(por exemplo `THREAD_ARCHIVED`, `THREAD_DELETING`) ou 429 `QUOTA_EXCEEDED` (limite de
+membros), o sink grava um log `warning`, não consome o ordinal e o handler continua; o
+cliente fica aberto. Os conflitos da execução (409 `LEASE_STALE`, `EXECUTION_TERMINAL`,
+`IDEMPOTENCY_CONFLICT`), 401, 429 `RATE_LIMITED`, 5xx e falha de transporte continuam a
+parar a execução. O mesmo vale para a saída `run.update` (`run_start`/`run_end`)
+recusada com 403 `FORBIDDEN` `multi_agent_thread` (só esse caso). `send.add_participant` sem `user_id` (só e-mail ou
 vazio) não gera saída e grava um log `warning`. `update_thread(queue="")` envia `queue: null`
 (o Maestro grava `queue || null`; a produção tira a fila).
 

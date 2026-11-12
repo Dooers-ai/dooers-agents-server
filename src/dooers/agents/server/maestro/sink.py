@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 
-from .callbacks import OUTPUT_RULE_REFUSALS, MaestroCallbackClient, MaestroCallbackError
+from .callbacks import THREAD_OPERATION_OUTPUTS, MaestroCallbackClient, MaestroCallbackError
 from .client import MaestroContextError
 from .media_fetch import MediaFetchError, decode_data_url, fetch_media, is_data_url
 from .outputs import MAX_PHASE_OUTPUTS, MaestroOutput, RunTracker, UnsupportedAgentEvent, media_output, output_for
@@ -43,16 +43,17 @@ _MEDIA_SENDS = frozenset({"image", "audio", "document"})
 #: Os mesmos ``send_type`` aparecem em ``send.whatsapp.*`` com ``data["whatsapp"]`` (plano 5).
 _MESSAGE_SENDS = frozenset({"text", "contact", "template"}) | _MEDIA_SENDS
 _MEDIA_TIMEOUT_SECONDS = 30.0
-#: Rule refusals (``details.reason_code``) that do not stop the handler, by output type.
-#: Production ``send.update_thread``/``send.add_participant`` never fail the handler
-#: (``pipeline.py`` participant_add: denied -> warning, existing participant -> upsert), and a
-#: ``run_start``/``run_end`` for another agent in a thread with several agents is not an error.
-_RULE_REASONS = frozenset(reason for _status, _code, reason in OUTPUT_RULE_REFUSALS)
-_TOLERATED_REFUSALS = {
-    "thread.update": _RULE_REASONS,
-    "participant.add": _RULE_REASONS,
-    "run.update": frozenset({"multi_agent_thread"}),
-}
+#: Refusals that do not stop the handler. Production ``send.update_thread``/``send.add_participant``
+#: never fail the handler (``pipeline.py``), so any refusal ``callbacks`` marks for them is tolerated
+#: (``THREAD_OPERATION_OUTPUTS``). A ``run_start``/``run_end`` for another agent in a thread with
+#: several agents is not an error either: ``run.update`` tolerates only 403 ``multi_agent_thread``.
+_TOLERATED_RUN_REFUSALS = frozenset({"multi_agent_thread"})
+
+
+def _tolerated(output_type: str, refusal: str | None) -> bool:
+    if refusal is None:
+        return False
+    return output_type in THREAD_OPERATION_OUTPUTS or (output_type == "run.update" and refusal in _TOLERATED_RUN_REFUSALS)
 
 
 def _artifact_filename(name: str) -> str:
@@ -428,7 +429,7 @@ class MaestroEventSink:
         try:
             await self.persist_with_retry(intent)
         except MaestroCallbackError as error:
-            if error.unknown or error.rule_refusal not in _TOLERATED_REFUSALS.get(output.type, ()):
+            if error.unknown or not _tolerated(output.type, error.rule_refusal):
                 raise
             # Maestro refused it as a rule (nothing recorded): the handler continues, as in
             # production, and the ordinal is free for the next output.

@@ -386,22 +386,24 @@ async def test_thread_rule_refusal_keeps_the_handler_running(private_key, contra
 @pytest.mark.parametrize(
     "send_type,refusal,expected",
     [
-        ("participant_add", (403, "FORBIDDEN", None), 403),  # no rule reason: lost authority
         ("text", (403, "FORBIDDEN", "multi_agent_thread"), 403),  # message.create tolerates no refusal
-        # run.update tolerates only multi_agent_thread; a 422 completes the phase as failed.
+        # run.update tolerates only 403 multi_agent_thread; a 422 completes the phase as failed.
         ("run_start", (422, "VALIDATION_FAILED", "already_participant"), "failed"),
-        # A rule reason counts only with its own status and code.
-        ("thread_update", (404, "NOT_FOUND", "multi_agent_thread"), 403),
-        ("participant_add", (422, "VALIDATION_FAILED", "multi_agent_thread"), "failed"),
-        ("participant_add", (403, "FORBIDDEN", "already_participant"), 403),
+        ("run_start", (404, "NOT_FOUND", "multi_agent_thread"), 403),  # the reason counts only with 403 FORBIDDEN
+        # Thread changes: execution-level conflicts, rate limits and 5xx keep stopping the run.
+        ("participant_add", (409, "LEASE_STALE", None), "stopped"),
+        ("thread_update", (409, "EXECUTION_TERMINAL", None), "stopped"),
+        ("thread_update", (429, "RATE_LIMITED", None), "stopped"),
+        ("participant_add", (503, "DEPENDENCY_UNAVAILABLE", None), "stopped"),
     ],
     ids=[
-        "participant_add-no_reason",
         "text-multi_agent_thread",
-        "run_start-already_participant",
-        "thread_update-404",
-        "participant_add-422-multi_agent_thread",
-        "participant_add-403-already_participant",
+        "run_start-422-already_participant",
+        "run_start-404-multi_agent_thread",
+        "participant_add-409-lease_stale",
+        "thread_update-409-execution_terminal",
+        "thread_update-429-rate_limited",
+        "participant_add-503",
     ],
 )
 async def test_other_refusals_still_stop_the_run(private_key, contracts, send_type, refusal, expected):
@@ -421,8 +423,45 @@ async def test_other_refusals_still_stop_the_run(private_key, contracts, send_ty
         assert not fixture.outputs
         if expected == 403:
             assert response.status_code == 403 and not fixture.completions
+        elif expected == "stopped":
+            assert response.status_code != 200 and not fixture.completions
         else:
             assert response.status_code == 200 and response.json()["state"] == "failed"
+
+
+THREAD_OPERATION_REFUSALS = {
+    "participant_add-archived": ("participant_add", (409, "THREAD_ARCHIVED", None)),
+    "participant_add-member_limit": ("participant_add", (429, "QUOTA_EXCEEDED", None)),
+    "participant_add-invalid_principal": ("participant_add", (422, "VALIDATION_FAILED", None)),
+    "participant_add-forbidden": ("participant_add", (403, "FORBIDDEN", None)),
+    "participant_add-422-multi_agent_thread": ("participant_add", (422, "VALIDATION_FAILED", "multi_agent_thread")),
+    "thread_update-deleting": ("thread_update", (409, "THREAD_DELETING", None)),
+    "thread_update-not_found": ("thread_update", (404, "NOT_FOUND", None)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(THREAD_OPERATION_REFUSALS))
+async def test_thread_operation_refusal_keeps_the_handler_running(private_key, contracts, caplog, case):
+    """Production add_participant/update_thread never fail the handler: any Maestro 4xx refusal is a warning."""
+    send_type, refusal = THREAD_OPERATION_REFUSALS[case]
+    async with setup(private_key, contracts) as fixture:
+        fixture.refuse_output[EXPECTED_OUTPUT[send_type]] = refusal
+
+        async def handler(_on, send, *_args):
+            if send_type == "participant_add":
+                yield send.add_participant("user-2", user_name="Bia")
+            else:
+                yield send.update_thread(title="Atendimento")
+            yield send.text("depois")
+
+        with caplog.at_level(logging.WARNING, logger=sink_module.__name__):
+            response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "responded"
+        # Nothing recorded for the refused output; the client stays open and the ordinal is free.
+        (output,) = published(fixture)
+        assert (output["output_id"], output["type"]) == ("output:0", "message.create")
+        assert any(EXPECTED_OUTPUT[send_type] in r.getMessage() for r in caplog.records if r.name == sink_module.__name__)
 
 
 @pytest.mark.parametrize("user", [{"user_email": "bia@example.com"}, {}], ids=["email_only", "empty"])

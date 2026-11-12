@@ -77,13 +77,33 @@ OUTPUT_RULE_REFUSALS = frozenset(
         (422, "VALIDATION_FAILED", "already_participant"),
     }
 )
+#: Saídas que a produção nunca deixa falhar (``send.update_thread``/``send.add_participant``):
+#: qualquer recusa 4xx da operação (thread arquivada, limite de membros, principal inválido...)
+#: é tolerada. Conflitos da execução (lease, término, idempotência), 401, limite de taxa e 5xx não.
+THREAD_OPERATION_OUTPUTS = frozenset({"thread.update", "participant.add"})
+_EXECUTION_CONFLICTS = frozenset({"LEASE_STALE", "EXECUTION_TERMINAL", "IDEMPOTENCY_CONFLICT"})
+
+
+def _output_refusal(output_type: object, status: int, code: str | None, reason: str | None) -> str | None:
+    """Motivo de uma recusa de saída que não é perda de autoridade; ``None`` para as outras falhas."""
+    if (status, code, reason) in OUTPUT_RULE_REFUSALS:
+        return reason
+    if output_type in THREAD_OPERATION_OUTPUTS and (
+        status in {403, 404, 422}
+        or (status == 409 and code is not None and code not in _EXECUTION_CONFLICTS)
+        or (status == 429 and code == "QUOTA_EXCEEDED")
+    ):
+        return reason or (code or f"http_{status}").lower()
+    return None
 
 
 class MaestroCallbackError(MaestroAdmissionError):
     """Falha sanitizada; unknown preserva incerteza de commit, não permite sucesso.
 
     ``reason_code`` é o ``details.reason_code`` do ``Public.Error`` do Maestro, quando há.
-    ``rule_refusal`` é esse motivo só quando a recusa de saída é um par de ``OUTPUT_RULE_REFUSALS``.
+    ``rule_refusal`` é o motivo de uma recusa de saída que não é perda de autoridade: um par de
+    ``OUTPUT_RULE_REFUSALS``, ou uma recusa 4xx de ``THREAD_OPERATION_OUTPUTS`` (o ``reason_code``
+    ou o código do erro em minúsculas). O sink decide quais tolera.
     """
 
     def __init__(
@@ -97,7 +117,7 @@ class MaestroCallbackError(MaestroAdmissionError):
         super().__init__(code)
         self.unknown = unknown
         self.reason_code = reason_code if isinstance(reason_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason_code) else None
-        self.rule_refusal = rule_refusal if rule_refusal == self.reason_code else None
+        self.rule_refusal = rule_refusal if isinstance(rule_refusal, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", rule_refusal) else None
 
 
 class MaestroCallbackClient(MaestroContextClient):
@@ -213,8 +233,11 @@ class MaestroCallbackClient(MaestroContextClient):
                                             error_code = error
                                     except Exception:
                                         pass
-                                    refusal = (response.status_code, error, reason_code)
-                                    rule_refusal = reason_code if action == "outputs" and refusal in OUTPUT_RULE_REFUSALS else None
+                                    rule_refusal = (
+                                        _output_refusal(value.get("type"), response.status_code, error, reason_code)
+                                        if action == "outputs"
+                                        else None
+                                    )
                                     if response.status_code in {401, 403, 404, 409, 410} and rule_refusal is None:
                                         self._closed = True
                                     raise MaestroCallbackError(
