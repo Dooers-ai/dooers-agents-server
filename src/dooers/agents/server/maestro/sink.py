@@ -260,14 +260,19 @@ class MaestroEventSink:
         self._streams.append(stream)
         return stream
 
+    def _check_message_size(self, payload: dict[str, Any]) -> None:
+        """The one local size check of a message (and of a message edit), counted like Maestro counts it."""
+        try:
+            too_large = message_content_bytes(payload) > self._client.config.max_output_bytes
+        except (ValueError, TypeError, AttributeError, KeyError):  # not a string, not UTF-8 (lone surrogate), not an object
+            raise MaestroCallbackError("INVALID_REQUEST") from None
+        if too_large:
+            raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
+
     def prepare_text(self, text: str, ordinal: int, handoff: str | None = None) -> MaestroOutputIntent:
         if not isinstance(text, str) or not text.strip():
             raise MaestroCallbackError("INVALID_REQUEST")
-        try:
-            if len(text.encode("utf-8")) > self._client.config.max_output_bytes:
-                raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
-        except UnicodeError:
-            raise MaestroCallbackError("INVALID_REQUEST") from None
+        self._check_message_size({"content": [{"type": "text", "text": text}]})
         output = {
             "output_id": f"output:{ordinal}",
             "type": "message.create",
@@ -397,7 +402,8 @@ class MaestroEventSink:
             elif event.send_type == "silence":
                 # Valid until a visible reply is recorded: Maestro refuses silent with one. Run, reasoning and
                 # tool outputs recorded before it stay, and the phase completes silent with this reason.
-                if self._visible_reply() or set(event.data) != {"reason_code"}:
+                # An open stream (a ``None`` placeholder) will publish a message: no silence with it.
+                if self._visible_reply() or None in self._intents or set(event.data) != {"reason_code"}:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 reason = event.data["reason_code"]
                 if not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason):
@@ -421,8 +427,8 @@ class MaestroEventSink:
 
     def _output_intent(self, output: MaestroOutput, ordinal: int) -> MaestroOutputIntent:
         value = {"output_id": f"output:{ordinal}", "type": output.type, "payload": output.payload}
-        if output.type == "message.create" and message_content_bytes(output.payload) > self._client.config.max_output_bytes:
-            raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
+        if output.type in {"message.create", "message.update"}:
+            self._check_message_size(output.payload)
         try:
             self._client._contracts.validate("Public.OutputRequest", {**value, "lease_fence": self._client._envelope["lease_fence"]})
             raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -458,12 +464,6 @@ class MaestroEventSink:
                 # Production: no user_id (e-mail only or empty) adds nobody and never fails.
                 logger.warning("maestro send.add_participant without user_id: skipped")
                 return
-        text = event.data.get("text") if event.send_type == "text" else None
-        try:
-            if isinstance(text, str) and len(text.encode("utf-8")) > self._client.config.max_output_bytes:
-                raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
-        except UnicodeError:
-            raise MaestroCallbackError("INVALID_REQUEST") from None
         if event.send_type == "run_start" and event.data.get("agent_id") == self._client.config.instance_agent_id:
             # Production passes its own id (pipeline.py); Maestro records the executing agent anyway.
             event = AgentEvent("run_start", {**event.data, "agent_id": None})

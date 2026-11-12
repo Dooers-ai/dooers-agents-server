@@ -163,6 +163,44 @@ async def test_cancel_pending_flush_closes_all_resources(private_key, contracts)
         assert not [t for t in asyncio.all_tasks() if t.get_name() == "maestro-heartbeat"]
 
 
+async def test_streamed_answer_reaches_the_full_agent_message_limit(private_key, contracts, monkeypatch):
+    from dooers.agents.server.protocol.maestro import MaestroContracts
+
+    # The pinned contract still caps agent text at 64 Ki characters: relax only the schemas of the size-bound messages.
+    validate = MaestroContracts.validate
+    relaxed = {"Public.OutputRequest", "Public.PersistedResponse"}
+    monkeypatch.setattr(
+        MaestroContracts, "validate", lambda self, schema, data: data if schema in relaxed else validate(self, schema, data)
+    )
+    async with setup(private_key, contracts, config_change=ENABLED) as f:
+        text = "".join(f"{number:04d}" + "x" * 1019 + "\n" for number in range(600))  # 600 KiB in 1 KiB deltas
+
+        async def handler(on, send, *_):
+            stream = send.open_text()
+            for number in range(600):
+                await stream.delta(text[number * 1024 : (number + 1) * 1024])
+            await stream.finish()
+
+        response = await execute_fixture(f, handler)
+        assert response.status_code == 200 and response.json()["state"] == "responded", response.text
+        ((output, _),) = f.outputs.values()
+        assert output["payload"]["content"] == [{"type": "text", "text": text}]
+
+
+async def test_stream_handles_together_are_bounded_by_the_message_limit(private_key, contracts):
+    async with setup(private_key, contracts, config_change=ENABLED) as f:
+        client = MaestroCallbackClient(f.config, f.admission, f.lease, contracts=contracts)
+        sink = MaestroEventSink(client)
+        first, second = sink.open_text(), sink.open_text()
+        first._preview = second._preview = False
+        await first.delta("a" * f.config.max_output_bytes)
+        with pytest.raises(MaestroCallbackError) as error:
+            await second.delta("b")
+        assert error.value.code == "QUOTA_EXCEEDED"
+        sink.close()
+        client.close()
+
+
 async def test_bounds_and_unfinished_output_fail_closed(private_key, contracts):
     async with setup(private_key, contracts, config_change=ENABLED) as f:
         client = MaestroCallbackClient(f.config, f.admission, f.lease, contracts=contracts)
@@ -197,7 +235,7 @@ async def test_chunk_budget_and_aggregate_memory_are_bounded(private_key, contra
 
     from dooers.agents.server.maestro import streaming
 
-    async with setup(private_key, contracts, config_change=ENABLED) as f:
+    async with setup(private_key, contracts, config_change={**ENABLED, "max_output_bytes": 65536}) as f:
         client = MaestroCallbackClient(f.config, f.admission, f.lease, contracts=contracts)
         sink = MaestroEventSink(client)
         indices = []

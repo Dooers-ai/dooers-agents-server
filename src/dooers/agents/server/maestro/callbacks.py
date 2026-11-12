@@ -186,7 +186,8 @@ class MaestroCallbackClient(MaestroContextClient):
                         if key is not None:
                             headers["Idempotency-Key"] = key
                         raw_request = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-                        if len(raw_request) > (MAX_OUTPUT_REQUEST_BYTES if action == "outputs" else self.config.max_output_bytes + 4096):
+                        request_cap = MAX_OUTPUT_REQUEST_BYTES if action == "outputs" else min(self.config.max_output_bytes, 65536) + 4096
+                        if len(raw_request) > request_cap:
                             raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
                         with diagnostic_stage("auth.workload_identity", self._envelope):
                             headers.update(await self.config.transport_headers(self.config.callback_base_url))

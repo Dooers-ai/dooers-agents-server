@@ -43,7 +43,7 @@ TRIGGER_TYPES = frozenset({"message.created", "form.responded"})
 
 
 class MaestroMemory:
-    def __init__(self, client: MaestroContextClient, *, max_pages: int = 20, max_total_bytes: int = 8388608) -> None:
+    def __init__(self, client: MaestroContextClient, *, max_pages: int = 20, max_total_bytes: int = 16777216) -> None:
         if (
             type(max_pages) is not int
             or not 1 <= max_pages <= 100
@@ -124,7 +124,8 @@ class MaestroMemory:
             seen_cursors.add(cursor)
             page = await self._client.page(cursor)
             self._validate_page(page)
-            total_bytes += len(json.dumps(page, ensure_ascii=True, separators=(",", ":")).encode())
+            # UTF-8 bytes, as the page came over the wire (not ASCII escapes, which are 3 to 6 times larger).
+            total_bytes += len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode("utf-8", "surrogatepass"))
             if total_bytes > self._max_total_bytes:
                 raise MaestroContextError("CONTEXT_LIMIT")
             if first is None:

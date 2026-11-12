@@ -73,9 +73,9 @@ RUNTIME_ID = BASE["authorized_runtime_id"]
 CALLBACK_BASE_URL = BASE["configured_callback_base_url"]
 RUNTIME_ENDPOINT = "http://127.0.0.1:9000/api/dev/agent/maestro/deliveries"
 CORE_BASE_URL = "http://127.0.0.1:8788/api/v1"
-#: Maestro accepts only these file types today (``LOCAL_SYNTHETIC_MIME_TYPES``, design 5.5).
 #: Outputs that make a phase `responded` in Maestro (spec M07-005/006); the SDK has its own copy.
 VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.create"})
+#: Maestro accepts only these file types today (``LOCAL_SYNTHETIC_MIME_TYPES``, design 5.5).
 MAESTRO_MIME_TYPES = frozenset({"text/plain", "application/pdf", "image/png", "image/jpeg", "audio/wav"})
 MAX_ARTIFACT_BYTES = 8388608
 _ACTORS = {"human": "user", "agent": "assistant", "system": "system"}

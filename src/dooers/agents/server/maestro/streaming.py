@@ -53,7 +53,8 @@ class MaestroTextStream:
             raise MaestroCallbackError("INVALID_REQUEST") from None
         if self._bytes + size > self._sink._client.config.max_output_bytes:
             raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
-        if sum(stream._bytes for stream in self._sink._streams) + size > 262144:
+        # Open handles together hold at most one full message (never less than 256 KiB).
+        if sum(stream._bytes for stream in self._sink._streams) + size > max(262144, self._sink._client.config.max_output_bytes):
             raise MaestroCallbackError("QUOTA_EXCEEDED")
         self._text += text
         self._bytes += size

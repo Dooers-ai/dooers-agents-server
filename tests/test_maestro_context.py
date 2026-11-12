@@ -446,6 +446,27 @@ async def test_context_page_with_one_large_event(private_key, contracts, size, e
             assert len(raw[0]["payload"]["content"][0]["text"]) == size
 
 
+@pytest.mark.parametrize("character,count,error", [("é", 1_500_000, None), ("🌍", 700_000, None), ("é", 2_300_000, "CONTEXT_LIMIT")])
+async def test_non_ascii_context_page_is_measured_in_utf8_bytes(private_key, contracts, monkeypatch, character, count, error):
+    validate = MaestroContracts.validate
+    monkeypatch.setattr(
+        MaestroContracts,
+        "validate",
+        lambda self, schema, data: deepcopy(data) if schema == "Public.ContextResponse" else validate(self, schema, data),
+    )
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        # The page carries the large event twice (trigger and history): 6 MB of UTF-8, 18 MB if measured as ASCII escapes.
+        page["trigger_event"]["payload"]["content"][0]["text"] = character * count
+        page["history"]["items"] = [deepcopy(page["trigger_event"])]
+        server.response = page
+        if error:
+            with pytest.raises(MaestroContextError, match=error):
+                await memory.get_history_raw()
+        else:
+            assert len((await memory.get_history_raw())[0]["payload"]["content"][0]["text"]) == count
+
+
 async def test_artifact_references_are_authorized_not_downloaded(private_key, contracts):
     async with fixture_server() as server:
         memory, page, _, _ = prepare(private_key, contracts, server)

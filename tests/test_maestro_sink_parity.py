@@ -157,7 +157,7 @@ async def test_production_send_is_published(private_key, contracts, loopback_med
         assert response.status_code == 200, response.text
         outputs = published(fixture)
         # Only a visible reply (message, form, chart) makes the phase responded (Maestro M07-005/006).
-        visible = any(o["type"] in {"message.create", "form.create", "chart.create"} for o in outputs)
+        visible = EXPECTED_OUTPUT[send_type] in {"message.create", "form.create", "chart.create"}
         assert response.json()["state"] == ("responded" if visible else "silent")
         assert outputs and outputs[-1]["type"] == EXPECTED_OUTPUT[send_type]
         assert [output["output_id"] for output in outputs] == [f"output:{n}" for n in range(len(outputs))]

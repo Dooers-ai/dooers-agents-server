@@ -9,7 +9,7 @@ import pytest
 from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.maestro import MaestroConfigurationError
 from dooers.agents.server.maestro.callbacks import MaestroCallbackClient, MaestroCallbackError
-from dooers.agents.server.maestro.sink import MaestroEventSink
+from dooers.agents.server.maestro.sink import MaestroEventSink, MaestroSend
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from tests.test_maestro_executor import execute_fixture, setup
 
@@ -140,3 +140,60 @@ async def test_text_just_over_the_limit_with_json_escapes_is_counted_in_bytes_no
         # 900 KiB of quotes is 1.8 MiB of JSON, but only 900 KiB of text for Maestro: it is published.
         await _accept(fixture, contracts, AgentSend().text('"' * (900 * KIB)))
         assert len(fixture.outputs) == 1
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        AgentSend().text(5),  # not a string
+        AgentSend().contact(display_name="Ana", vcard="\ud800"),  # lone surrogate: not UTF-8
+        AgentSend().template("t", "pt_BR", template_components=[{"type": "body", "text": "\ud800"}]),
+    ],
+    ids=["text_not_str", "contact_surrogate", "template_surrogate"],
+)
+async def test_malformed_message_is_a_contract_error_not_a_handler_error(private_key, contracts, event):
+    async with setup(private_key, contracts) as fixture:
+        with pytest.raises(MaestroCallbackError) as error:
+            await _accept(fixture, contracts, event)
+        assert error.value.code == "INVALID_REQUEST"
+        assert not fixture.outputs
+
+        async def handler(_on, _send, *_args):
+            yield event
+
+        response = await execute_fixture(fixture, handler)
+        assert response.json()["state"] == "failed"
+        assert fixture.completions[-1]["reason_code"] == "handler_contract_error"
+
+
+async def test_message_update_is_checked_locally_like_a_message(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+        content = [{"type": "text", "text": "a" * int(1.1 * 1024 * KIB)}]
+        with pytest.raises(MaestroCallbackError, match="PAYLOAD_TOO_LARGE"):
+            await _accept(fixture, contracts, AgentSend().update_user_event(fixture.envelope["trigger_event_id"], content))
+        assert not fixture.outputs
+
+
+async def test_silence_while_a_stream_is_open_is_refused(private_key, contracts):
+    async with setup(private_key, contracts, config_change={"product_capabilities": ("stream.delta",)}) as fixture:
+        client = MaestroCallbackClient(fixture.config, fixture.admission, fixture.lease, contracts=contracts)
+        sink = MaestroEventSink(client)
+        stream = sink.open_text()  # an open stream will publish a message
+        with pytest.raises(MaestroCallbackError) as error:
+            await sink.accept(MaestroSend().silence("not_relevant"))
+        assert error.value.code == "INVALID_REQUEST"
+        stream.close()
+        client.close()
+
+
+async def test_a_new_sink_starts_without_outputs_of_other_phases(private_key, contracts):
+    """A resumed phase gets a new sink (``executor.execute``) and Maestro counts outputs per delivery and phase."""
+    async with setup(private_key, contracts) as fixture:
+        client = MaestroCallbackClient(fixture.config, fixture.admission, fixture.lease, contracts=contracts)
+        earlier = MaestroEventSink(client)
+        await earlier.accept(AgentSend().text("resposta da fase anterior"))
+        assert earlier.normal_outcome() == ("responded", "responded")
+        resumed = MaestroEventSink(client)
+        assert resumed.intents == () and resumed.event_ids == ()
+        assert resumed.normal_outcome() == ("silent", "implicit_empty")
+        client.close()

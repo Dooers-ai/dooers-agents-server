@@ -191,7 +191,7 @@ IDs de delivery/thread/gatilho, raiz e associação ativa da instância destinat
 são conferidos. Qualquer evento além do corte, loop de cursor, mudança do gatilho,
 escopo divergente ou erro numa página descarta a leitura inteira. Comparação de
 sequências decimais usa comprimento/ordem lexical, sem perder precisão em float.
-O default aceita até 20 páginas e 8 MiB por leitura; limites maiores requerem
+O default aceita até 20 páginas e 16 MiB (bytes UTF-8 da resposta) por leitura; limites maiores requerem
 configuração explícita (máximos 100 páginas/32 MiB). Excesso falha, não trunca
 histórico silenciosamente. Cada chamada futura repete autorização remota. Dados
 já entregues ao handler não podem ser apagados retroativamente.
@@ -405,8 +405,9 @@ O contrato é compilado no startup e reutilizado nas invocações.
 1 MiB) limita uma mensagem do agente, contada como o Maestro conta: bytes UTF-8 das partes
 `text`, mais o JSON compacto de cada parte `contact`, de `template` e de `whatsapp`. Acima
 disso o SDK falha com `PAYLOAD_TOO_LARGE` antes de enviar. O corpo de um `outputs` aceita até
-2 MiB (limite do Maestro, com escapes JSON); as outras chamadas mantêm `max_output_bytes` +
-4 KiB. Os previews de stream seguem com 256 KiB agregados nos handles. O contrato vendorizado
+2 MiB (limite do Maestro, com escapes JSON); as outras chamadas mantêm o teto de antes
+(`min(max_output_bytes, 64 KiB)` + 4 KiB). Os handles de stream abertos juntos guardam no máximo
+`max(256 KiB, max_output_bytes)`: uma resposta em stream chega ao limite de 1 MiB. O contrato vendorizado
 precisa permitir o texto grande do agente (o Maestro sobe o teto de `text` de 64 Ki
 caracteres para 2 MiB); enquanto o bundle não for revendorizado, texto acima de 64 Ki
 caracteres falha na validação local do contrato.
@@ -560,7 +561,7 @@ finish, o conteúdo fica congelado mesmo se o resultado for desconhecido.
 A conclusão da fase e o journal E05-09 continuam com suas autoridades existentes.
 
 Adota limites E09-01: 16 KiB UTF-8 pendentes por output (também satisfaz UTF-16),
-256 chunks, 16 handles abertos e 256 KiB de texto integral agregado nos handles.
+256 chunks, 16 handles abertos e `max(256 KiB, max_output_bytes)` de texto integral agregado nos handles.
 Final integral tem `max_output_bytes` (até 1 MiB); estes limites não expandem o
 contrato durável. A produção contínua coalesce e faz flush quando transcorreram
 50 ms ou a fila enche; `flush()` força a entrega respeitando o intervalo.
