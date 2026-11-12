@@ -53,9 +53,12 @@ class Gap:
 
 _EVERY_WEB_CHAT_TURN = (
     "the legacy view of Maestro events has no run_id (run.updated is recorded but not mapped yet, plan 3 tasks 5 and 7) "
-    "and the person's event has no user_email (the Maestro actor has no e-mail)"
+    "and the person's event has no user_email (the Maestro actor has no e-mail) and the default roles "
+    "(Core's roles reach Maestro in plan 5)"
 )
-_THREAD_PEOPLE = "the thread owner and users have no user_email or identity_ids (Maestro participants have neither)"
+_THREAD_PEOPLE = (
+    "the thread owner and users have no user_email or identity_ids (Maestro participants have neither) and the default roles (plan 5)"
+)
 _RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
 
 
@@ -165,7 +168,9 @@ GAPS: dict[str, Gap] = {
         "turn 2 has image, document and audio URL parts, which a person's message.create does not have (a person sends "
         "uploads), so the publish is rejected (plan 3, task 7). The SDK side already reads what production reads "
         "(tests/test_maestro_incoming_parity.py) when the context carries them as media_link, except the document "
-        "size_bytes (media_link has none); the fake has no thread.created, agent-only e-mail or queue catalog yet",
+        "size_bytes (media_link has none) and the user's roles, which stay at the User defaults until plan 5 brings "
+        "Core's connection context to Maestro deliveries; the fake has no thread.created, agent-only e-mail or "
+        "queue catalog yet",
         raises=FakeMaestroRejected,
         match="message.create",
     ),

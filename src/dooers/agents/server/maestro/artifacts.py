@@ -179,8 +179,9 @@ class MaestroArtifactsClient:
         Maestro issues it only for a file of this thread linked up to the context cutoff (the
         attachments of the delivery qualify). A capability without ``artifact.link.issue`` or a
         403/404/``UNSUPPORTED_CAPABILITY`` answer means the route is off: that raises
-        ``MaestroArtifactLinkUnavailable`` and logs which settings to change. The URL is a
-        bearer link and is never logged.
+        ``MaestroArtifactLinkUnavailable`` and logs which settings to change. A 403/404 also
+        closes the client, as every 403/404 of the execution does. The URL is a bearer link
+        and is never logged.
         """
         client = self._client
         try:
@@ -204,7 +205,11 @@ class MaestroArtifactsClient:
                                 raise MaestroContextError("CONTEXT_LIMIT")
                             raw.extend(chunk)
                         if response.status_code != 200:
-                            if response.status_code in {403, 404} or _error_code(bytes(raw)) == "UNSUPPORTED_CAPABILITY":
+                            if response.status_code in {403, 404}:
+                                # Same cleanup as any 403/404 of the execution (``_status``): no more reads.
+                                client._closed = True
+                                raise MaestroArtifactLinkUnavailable()
+                            if _error_code(bytes(raw)) == "UNSUPPORTED_CAPABILITY":
                                 raise MaestroArtifactLinkUnavailable()
                             self._status(response.status_code, 200)
                         if (

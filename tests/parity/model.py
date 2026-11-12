@@ -46,11 +46,15 @@ WHATSAPP_AGENT_PHONE = "+5511888880000"
 WHATSAPP_HMAC_SECRET = "parity-hmac-secret"
 WHATSAPP_OUTBOUND_ID = "wamid.out.1"
 
+# Non-default roles, so a mode that loses Core's roles (Maestro until plan 5) shows the difference.
 USER = User(
     user_id="user-1",
     user_name="Ana Souza",
     user_email="ana@example.com",
     identity_ids=["idp-ana"],
+    system_role="admin",
+    organization_role="owner",
+    workspace_role="manager",
 )
 WHATSAPP_USER = User(user_id=WHATSAPP_CUSTOMER, user_name="Cliente WhatsApp")
 QUEUES = (

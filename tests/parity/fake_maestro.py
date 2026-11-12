@@ -21,7 +21,7 @@ Each accepted output becomes the event of its type (index 4.4: ``message.create`
 plus the fields the contract says Maestro adds. The fake does not apply ``thread.update``
 or ``participant.add`` to the thread state, and it creates no ``form.responded`` delivery
 (plan 3, task 7). It issues temporary artifact links (``ARTIFACT_LINKS_ENABLED``) for the
-files of the delivery's thread, without serving their bytes. Scope: one person and one agent per thread,
+files linked to the delivery's thread up to its context cutoff, without serving their bytes. Scope: one person and one agent per thread,
 no retries or lease renewal, no suspension/interactions, no archive or delete. A real
 Maestro also writes execution events, and none of them has a legacy ``ThreadEvent``.
 
@@ -735,7 +735,13 @@ class FakeMaestro:
         if not self.contracts.is_valid("Public.Empty", body):
             raise _CallbackError(400, "INVALID_REQUEST")
         artifact = self.artifacts.get(artifact_id)
-        if artifact is None or artifact["state"] != "linked" or artifact["thread_id"] != delivery.thread_id:
+        cutoff = _sequence_key(delivery.envelope["context_cutoff_sequence"])
+        if (
+            artifact is None
+            or artifact["state"] != "linked"
+            or artifact["thread_id"] != delivery.thread_id
+            or _sequence_key(artifact["linked_sequence"]) > cutoff
+        ):
             raise _CallbackError(404, "NOT_FOUND")
         if delivery.state != "running":
             raise _CallbackError(409, "EXECUTION_TERMINAL")
@@ -793,6 +799,7 @@ class FakeMaestro:
             "uploaded_by": uploaded_by,
             "execution_id": execution_id,
             "thread_id": None,
+            "linked_sequence": None,
         }
         self.artifacts[artifact["artifact_id"]] = artifact
         return artifact
@@ -800,7 +807,9 @@ class FakeMaestro:
     def _link_attachments(self, event: dict[str, Any]) -> None:
         for part in event["payload"]["content"]:
             if part["type"] == "attachment":
-                self.artifacts[part["artifact_id"]].update(state="linked", thread_id=event["thread_id"])
+                artifact = self.artifacts[part["artifact_id"]]
+                if artifact["state"] != "linked":
+                    artifact.update(state="linked", thread_id=event["thread_id"], linked_sequence=event["sequence"])
 
 
 # -- Production views (test only) --

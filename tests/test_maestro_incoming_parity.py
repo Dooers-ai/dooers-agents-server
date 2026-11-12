@@ -141,10 +141,17 @@ async def test_incoming_fields_match_production(agent_only_fields):
     finally:
         close_capture(token)
     expected = deepcopy(legacy)
-    # The only value the contract cannot carry: a media_link has no size_bytes, and production
-    # gives a URL document without size_bytes the size 0.
+    # Declared difference 1: a media_link has no size_bytes, and production gives a URL
+    # document without size_bytes the size 0.
     assert expected["content"][2]["type"] == "document" and expected["content"][2]["size_bytes"] == 2048
     expected["content"][2]["size_bytes"] = 0
+    # Declared difference 2 (plan 5): production takes the user's roles from Core's
+    # ConnectionContext; a Maestro delivery has no Core connection context yet, so the roles
+    # keep the User defaults.
+    roles = ("system_role", "organization_role", "workspace_role")
+    assert [expected["context"]["user"][role] for role in roles] == ["admin", "owner", "manager"]
+    assert [capture.incoming["context"]["user"][role] for role in roles] == ["user", "member", "member"]
+    expected["context"]["user"].update({role: capture.incoming["context"]["user"][role] for role in roles})
     assert normalize(ParityResult([], capture.incoming, {})).incoming == normalize(ParityResult([], expected, {})).incoming
     assert capture.incoming["context"]["queue"] == "suporte" and capture.incoming["rag_context"]["on_behalf"] is True
 
@@ -288,6 +295,8 @@ async def test_link_issue_unavailable_raises_configuration_error(key, bundle, ro
     assert all(setting in str(raised.value) for setting in SETTINGS)
     assert any(all(setting in record.getMessage() for setting in SETTINGS) for record in caplog.records)
     assert any("/links " in first for first, _ in server.requests) is (route != "operation_missing")
+    # 403/404 end the reads of the execution, as every other 403/404 of the client does.
+    assert memory._client._closed is (route in {"not_found", "forbidden"})
 
 
 async def test_link_issue_posts_empty_body_with_execution_capability(key, bundle):
@@ -313,6 +322,7 @@ async def test_link_resolver_refreshes_before_expiry(caplog):
 
     async def issue(artifact_id):
         issued.append(artifact_id)
+        await asyncio.sleep(0)  # yield, so a second concurrent call would ask again without the lock
         expires_at = (clock[0] + timedelta(seconds=3600)).isoformat().replace("+00:00", "Z")
         return {"url": f"https://maestro.example/v1/artifact-links/{len(issued)}.secret", "expires_at": expires_at}
 
@@ -380,6 +390,16 @@ async def test_person_email_comes_from_the_participant_when_the_actor_has_none(k
             user = prepared.on.context.user
             assert (user.user_id, user.user_name) == (page["trigger_event"]["actor"]["principal_id"], "Pessoa")
             assert (user.user_email, user.identity_ids) == ("pessoa@example.com", ["idp-pessoa"])
+
+
+async def test_person_without_email_has_none_like_production(key, bundle):
+    """Production: ``user_email=ctx.user.email or None``; an empty e-mail is ``None``."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        page["trigger_event"]["actor"]["email"] = ""
+        page["participants"][0]["email"] = "outro@example.com"
+        async with maestro_handler_context(memory, private) as prepared:
+            assert prepared.on.context.user.user_email is None
 
 
 def _form_response_page(page: dict[str, Any], envelope: dict[str, Any], *, author: str) -> str:
@@ -503,3 +523,19 @@ async def test_replace_deepcopy_and_pickle_keep_working(key, bundle):
 )
 def test_message_is_the_production_extraction(content):
     assert _production_message(content) == HandlerPipeline._extract_message(None, content)
+
+
+async def test_message_uses_the_production_function(key, bundle, monkeypatch):
+    """No copy of the rule: ``on.message`` is what production's ``_extract_message`` returns."""
+    seen = []
+
+    def production(self, content):
+        seen.append(list(content))
+        return "production rule"
+
+    monkeypatch.setattr(HandlerPipeline, "_extract_message", production)
+    async with fixture_server() as server:
+        memory, _, _, _ = prepare(key, bundle, server)
+        async with maestro_handler_context(memory, private) as prepared:
+            assert prepared.on.message == "production rule"
+            assert seen == [prepared.on.content]

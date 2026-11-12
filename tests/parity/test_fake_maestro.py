@@ -8,6 +8,7 @@ import pytest
 from dooers.agents.server.maestro import create_text_delivery_adapter
 from dooers.agents.server.protocol.models import User
 from tests.parity.fake_maestro import (
+    CALLBACK_BASE_URL,
     FakeMaestro,
     FakeMaestroRejected,
     legacy_thread_view,
@@ -196,6 +197,27 @@ async def test_artifacts_upload_hydrate_and_link():
             "ref_id": attachment["artifact_id"],
         }
     ]
+
+
+def test_artifact_link_only_for_files_linked_up_to_the_cutoff():
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(ANA, title=None)
+    first = fake.publish(thread_id, ANA, [{"type": "text", "text": "Olá"}], client_event_id="client-1")
+    (early,) = fake.deliveries_for(first)
+    note = fake.upload(ANA, b"nota fiscal", filename="nota.txt", mime_type="text/plain")
+    second = fake.publish(thread_id, ANA, [note], client_event_id="client-2")
+    (late,) = fake.deliveries_for(second)
+
+    def issue(delivery):
+        url = f"{CALLBACK_BASE_URL}/executions/{delivery.execution_id}/artifacts/{note['artifact_id']}/links"
+        headers = {"Authorization": f"Bearer {fake.core_token}", "Maestro-Execution-Capability": delivery.capability}
+        return fake.handle(httpx.Request("POST", url, headers=headers, content=b"{}"))
+
+    # Linked after the first delivery's cutoff: Maestro answers 404, as for a file of another thread.
+    assert issue(early).status_code == 404
+    response = issue(late)
+    assert response.status_code == 200 and response.json()["url"].startswith(f"{CALLBACK_BASE_URL}/artifact-links/")
+    assert fake.rejections == [("artifact.link.issue", "NOT_FOUND")]
 
 
 async def test_stream_deltas_are_ephemeral_and_the_final_text_is_one_event():

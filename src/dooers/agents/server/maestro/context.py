@@ -138,26 +138,10 @@ DEFAULT_CHANNEL = "dooers-platform"
 
 
 def _production_message(content: list[Any]) -> str:
-    """``HandlerPipeline._extract_message`` of production: texts and contact cards, else media markers."""
-    texts = []
-    for part in content:
-        if isinstance(part, TextPart):
-            texts.append(part.text)
-        elif isinstance(part, ContactPart):
-            line = part.display_name.strip() or "Contact"
-            texts.append(f"{line} [contact card]")
-    joined = " ".join(t for t in texts if t and str(t).strip()).strip()
-    if joined:
-        return joined
-    fallback: list[str] = []
-    for part in content:
-        if isinstance(part, ImagePart):
-            fallback.append("[image]")
-        elif isinstance(part, AudioPart):
-            fallback.append("[audio]")
-        elif isinstance(part, DocumentPart):
-            fallback.append(f"[document: {part.filename or 'file'}]")
-    return " ".join(fallback)
+    """``on.message`` by production's own rule, ``HandlerPipeline._extract_message`` (it does not use ``self``)."""
+    from dooers.agents.server.handlers.pipeline import HandlerPipeline
+
+    return HandlerPipeline._extract_message(None, content)
 
 
 def _thread_at_cutoff(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -193,15 +177,18 @@ def _user(actor: dict[str, Any], participants: list[dict[str, Any]]) -> User:
     """
     if actor["kind"] == "human":
         participant = next((p for p in participants if p["participant_id"] == actor["participant_id"]), {})
+        # As production builds it from Core (``auth_validation``): an empty name or e-mail is None.
+        # The roles keep the User defaults: production takes them from Core's ConnectionContext,
+        # which a Maestro delivery does not carry yet (plan 5).
         return User(
             user_id=actor["principal_id"],
-            user_name=actor["display_name"],
-            user_email=actor["email"] if "email" in actor else participant.get("email"),
+            user_name=actor["display_name"] or None,
+            user_email=(actor["email"] if "email" in actor else participant.get("email")) or None,
             identity_ids=list(actor["identity_ids"] if "identity_ids" in actor else participant.get("identity_ids", [])),
         )
     if actor["kind"] == "external":
         # As production does with a WhatsApp contact: the user id is the contact (e.g. +55...).
-        return User(user_id=actor["external_id"], user_name=actor.get("display_name"))
+        return User(user_id=actor["external_id"], user_name=actor.get("display_name") or None)
     return User(user_id="")
 
 

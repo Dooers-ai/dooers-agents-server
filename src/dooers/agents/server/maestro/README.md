@@ -252,12 +252,18 @@ origem da invocação, corte, actor completo, causa/raiz/depth, prazos, resume e
 cooperativo de cancelamento. Orçamento causal restante é `None`, pois não está no
 wire; não se inventa número.
 
-`AgentIncoming` e `AgentContext` têm os valores de produção (`HandlerPipeline.execute`):
+`AgentIncoming` e `AgentContext` têm os valores de produção (`HandlerPipeline.execute`),
+exceto os papéis do usuário (primeiro item):
 
 - `user`: humano vira `User(user_id=principal_id, user_name=display_name,
-  user_email=email, identity_ids=identity_ids)`. E-mail e `identity_ids` vêm do
-  contexto da entrega (actor; senão, o participante). Esses campos existem só no
-  contexto do agente, nunca no que vai ao navegador. Contato externo vira
+  user_email=email, identity_ids=identity_ids)`. Nome ou e-mail vazio vira `None`, como
+  em produção. E-mail e `identity_ids` vêm do contexto da entrega (actor; senão, o
+  participante). Esses campos existem só no contexto do agente, nunca no que vai ao
+  navegador. **Diferença até o plano 5:** `system_role`, `organization_role` e
+  `workspace_role` ficam nos padrões do `User` (`"user"`, `"member"`, `"member"`) e
+  `connection_type` fica `"dashboard"`. Em produção, eles vêm do `ConnectionContext` do
+  Core; o contexto da entrega do Maestro ainda não os traz. Um handler que confere o papel
+  (por exemplo `organization_role == "owner"`) vê o padrão no Maestro. Contato externo vira
   `User(user_id=external_id, user_name=display_name)`, como o contato do WhatsApp em
   produção. Outro agente (ou sistema) vira `User(user_id="")`; o autor real fica em
   `on.context.maestro.actor`.
