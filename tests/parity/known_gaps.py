@@ -2,45 +2,116 @@
 
 ``test_parity_maestro`` runs these as ``xfail(strict=True, raises=Gap.raises)``: only the
 failure the gap states counts as the gap, and any other error fails the test. It also
-checks that each gap still fails as stated (``Gap.raises`` and ``Gap.deliveries``). Each
-plan removes the scenarios it fixes, or updates a gap whose failure changed. At the end
-of plan 6 the set is empty.
+checks that each gap still fails as stated (``Gap.raises`` and ``Gap.deliveries``) and, for
+a gap with ``Gap.masked``, that the results are equal once those declared differences are
+masked on both sides: the gap is exactly what it states. Each plan removes the scenarios it
+fixes, or updates a gap whose failure changed. At the end of plan 6 the set is empty.
 
-Measured on 2026-11-11 (task 8 of plan 1). No scenario matches yet, ``text`` included:
-every web chat scenario shares the two differences in ``_EVERY_WEB_CHAT_TURN``. Each
-reason names the first difference the scenario hits. A difference that a reason calls
-"masked" exists too, but an earlier failure hides it from the comparison.
+History: measured on 2026-11-11 (task 8 of plan 1: no scenario matched); the variant
+scenarios (``chart_<type>``, ``form_text_<input_type>``, ``form_<builder>``,
+``whatsapp_<send type>``) were added on 2026-11-11 (final review of plan 1); plan 3 tasks 3
+to 6 restated the gaps without closing one.
 
-The variant scenarios (``chart_<type>``, ``form_text_<input_type>``, ``form_<builder>``,
-``whatsapp_<send type>``) were added and measured on 2026-11-11 (final review of plan 1,
-item I2). All 22 fail on the Maestro side, each as its base scenario does.
-
-Measured again on 2026-11-11 (plan 3, task 3): the sink publishes every production
-``send.*`` except ``send.whatsapp.*``, and ``FakeMaestro`` records every output type of
-index 4.4. No gap closed. The send gaps now complete ``responded`` and differ because the
-legacy view maps only ``message.created`` and the fake does not apply thread changes
-(plan 3, tasks 5 and 7).
-
-Measured again on 2026-11-12 (plan 3, task 4): the SDK builds the production ``AgentIncoming``
-(channel, user, workspace, thread fields, queues, parts, message, form.responded). No gap
-closed: ``incoming_fields`` and ``form_response_*`` still stop at the fake's client side.
-
-Measured again on 2026-11-12 (plan 3, task 6): the handler gets the production ``AgentMemory``
-over the delivery context (``MaestroAgentMemory``); the ``[maestro source ...]`` prefix is gone
-from its history. No gap closed: the ``history_<format>`` scenarios still stop at the fake's
-client side (the image URL part of turn 1).
+Measured again on 2026-11-12 (plan 3, task 7). The harness reads the Maestro thread back
+through the SDK's own conversion (``MaestroExecutionPersistence``, the persistence of
+``MaestroAgentMemory``), and FakeMaestro applies thread changes, issues links and delivers
+``form.responded``. A ``dispatch`` turn is the agent's own publication of the person's
+message (the declared name, e-mail and identity IDs; URL parts as ``media_link``). Every
+execution scenario matches, except the ones below that need Core's connection context
+(plan 5). The other gaps are the ``AgentServer`` ingress (plan 5: WhatsApp, ``Repository``,
+``dispatch`` outside a delivery) and the public chat (plan 6).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import dataclass, replace
 
 from dooers.agents.server.exceptions import ThreadManagementModeError
-from tests.parity.fake_maestro import FakeMaestroRejected
-from tests.parity.scenarios_send import CHART_VARIANTS, FORM_ELEMENT_BUILDERS, FORM_TEXT_INPUT_TYPES
+from tests.parity.model import AGENT_ID, ParityResult
 from tests.parity.scenarios_server import WHATSAPP_SENDS
 
 Outcome = tuple[int, str, str | None]
+
+#: The value a declared difference gets on both sides before the comparison.
+MASK = "<declared>"
+_ROLES = ("system_role", "organization_role", "workspace_role")
+
+
+def _thread_people(result: ParityResult) -> None:
+    for thread in result.outputs.get("threads", []):
+        for user in [thread["owner"], *thread["users"]]:
+            if user["user_id"] != AGENT_ID:
+                user.update(dict.fromkeys(("user_name", "user_email", "identity_ids", *_ROLES), MASK))
+
+
+def _web_chat_person(result: ParityResult) -> None:
+    for event in result.events:
+        if event["actor"] == "user":
+            event["author"] = MASK
+            event["user"].update(user_name=MASK, user_email=MASK)
+
+
+def _core_roles(result: ParityResult) -> None:
+    user = result.incoming.get("context", {}).get("user")
+    if user is not None:
+        user.update(dict.fromkeys(_ROLES, MASK))
+
+
+def _media_link_size(result: ParityResult) -> None:
+    for parts in [result.incoming.get("content", []), *(event["content"] or [] for event in result.events)]:
+        for part in parts:
+            if part.get("type") == "document" and part.get("ref_id") is None:
+                part["size_bytes"] = MASK
+
+
+def _agent_websocket(result: ParityResult) -> None:
+    result.outputs.pop("acks", None)
+    result.outputs.pop("core_validations", None)
+
+
+#: Declared differences a gap may mask (name -> what differs, and the mask applied to both sides).
+DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
+    "thread_people": (
+        "plan 5: the people of Thread.owner/users. A Maestro participant has no name (Maestro shows 'Humano'), e-mail, "
+        "identity IDs or roles; production has the ones Core (or send.add_participant) gave",
+        _thread_people,
+    ),
+    "web_chat_person": (
+        "plan 5: a web chat person's event. The agent's context has no name ('Humano') or e-mail of a web chat person; "
+        "production has the ones of Core's connection context",
+        _web_chat_person,
+    ),
+    "core_roles": (
+        "plan 5: on.context.user has the User default roles; production takes them from Core's connection context",
+        _core_roles,
+    ),
+    "media_link_size": (
+        "declared, permanent: a URL document reaches Maestro as a media_link, which has no size "
+        "(stored size_bytes None, handler size_bytes 0)",
+        _media_link_size,
+    ),
+    "agent_websocket": (
+        "declared, permanent: the legacy WebSocket acks and Core validation count; in Maestro mode the browser talks to "
+        "Maestro (plan 4), not to the agent",
+        _agent_websocket,
+    ),
+}
+
+
+def masked(result: ParityResult, names: tuple[str, ...]) -> ParityResult:
+    """A copy of a normalized result with the declared differences ``names`` masked."""
+    copy = replace(
+        result,
+        events=deepcopy(result.events),
+        incoming=deepcopy(result.incoming),
+        histories=deepcopy(result.histories),
+        outputs=deepcopy(result.outputs),
+    )
+    for name in names:
+        DECLARED_DIFFERENCES[name][1](copy)
+    return copy
 
 
 @dataclass(frozen=True)
@@ -54,111 +125,34 @@ class Gap:
     match: str | None = None
     #: (HTTP status, state, reason code) of each Maestro delivery, in order (``AssertionError`` gaps).
     deliveries: tuple[Outcome, ...] = ()
+    #: ``DECLARED_DIFFERENCES`` that are the whole difference (``AssertionError`` gaps).
+    masked: tuple[str, ...] = ()
 
 
-_EVERY_WEB_CHAT_TURN = (
-    "the legacy view of Maestro events has no run_id (run.updated is recorded but not mapped yet, plan 3 tasks 5 and 7) "
-    "and the person's event has no user_email (the Maestro actor has no e-mail) and the default roles "
-    "(Core's roles reach Maestro in plan 5)"
-)
-_THREAD_PEOPLE = (
-    "the thread owner and users have no user_email or identity_ids (Maestro participants have neither) and the default roles (plan 5)"
-)
-_RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
-#: A phase without a visible reply (message, form or chart) completes silent: Maestro refuses responded for it.
-_SILENT: tuple[Outcome, ...] = ((200, "silent", "implicit_empty"),)
-
-
-def _not_mapped(event: str, deliveries: tuple[Outcome, ...] = _RESPONDED) -> Gap:
-    """The sink publishes the output (plan 3, task 3), but the legacy view maps only ``message.created``."""
-    return Gap(
-        f"{event} is recorded, but the legacy view maps only message.created, so the agent event is missing "
-        f"(plan 3, tasks 5 and 7); {_EVERY_WEB_CHAT_TURN}",
-        deliveries=deliveries,
-    )
+def _declared(*names: str, deliveries: tuple[Outcome, ...]) -> Gap:
+    reason = "; ".join(DECLARED_DIFFERENCES[name][0] for name in names)
+    return Gap(reason, deliveries=deliveries, masked=names)
 
 
 def _server_blocked(call: str, detail: str = "") -> Gap:
-    reason = f"AgentServer.{call} raises THREAD_MANAGEMENT_MISMATCH in Maestro mode{detail}"
+    reason = f"plan 5: AgentServer.{call} raises THREAD_MANAGEMENT_MISMATCH in Maestro mode{detail}"
     return Gap(reason, raises=ThreadManagementModeError, match="THREAD_MANAGEMENT_MISMATCH")
 
 
-_PUBLIC_CHAT = Gap("the Maestro-mode router acks event.create with THREAD_MANAGEMENT_MISMATCH: no events and no thread")
-_HISTORY = Gap(
-    "turn 1 has an image part with a URL, which the Maestro message contract does not have (only text and attachment), "
-    "so the publish is rejected (plan 3, task 7). The SDK side already gives the handler the production AgentMemory "
-    "(tests/test_maestro_memory_parity.py, every format, the image with its temporary link)",
-    raises=FakeMaestroRejected,
-    match="message.create",
-)
-_FORM_RESPONSE = "the fake has no form.responded delivery yet (plan 3, task 7), so it rejects the form.response turn; "
-_OFFLINE_MEDIA = (
-    "the media URL is offline, so the SDK publishes a media_link with the agent's URL (the production part keeps it too); "
-    "only the shared differences remain: "
-)
+_RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
+#: A phase without a visible reply (message, form or chart) completes silent: Maestro refuses responded for it.
+_SILENT: tuple[Outcome, ...] = ((200, "silent", "implicit_empty"),)
+_PUBLIC_CHAT = Gap("plan 6: the Maestro-mode router acks event.create with THREAD_MANAGEMENT_MISMATCH: no events and no thread")
 
 GAPS: dict[str, Gap] = {
-    # send.* through a Maestro delivery
-    "text": Gap("only the shared differences: " + _EVERY_WEB_CHAT_TURN, deliveries=_RESPONDED),
-    "text_author": Gap(
-        "the agent message author is the participant name ('Assistente'), not send.text(author=...): the legacy view "
-        "does not read payload.author yet (plan 3, task 7); " + _EVERY_WEB_CHAT_TURN,
-        deliveries=_RESPONDED,
-    ),
-    "image": Gap(_OFFLINE_MEDIA + _EVERY_WEB_CHAT_TURN, deliveries=_RESPONDED),
-    "document": Gap(_OFFLINE_MEDIA + _EVERY_WEB_CHAT_TURN, deliveries=_RESPONDED),
-    "audio": Gap(_OFFLINE_MEDIA + _EVERY_WEB_CHAT_TURN, deliveries=_RESPONDED),
-    "contact": Gap("only the shared differences: " + _EVERY_WEB_CHAT_TURN, deliveries=_RESPONDED),
-    "template": Gap(
-        "the agent message has no data.template: the legacy view does not map payload.template yet (plan 3, task 7); "
-        + _EVERY_WEB_CHAT_TURN,
-        deliveries=_RESPONDED,
-    ),
-    "reasoning": _not_mapped("reasoning.created", _SILENT),
-    "tool_call": _not_mapped("tool_call.created", _SILENT),
-    "tool_result": _not_mapped("tool_result.created", _SILENT),
-    "tool_transaction": _not_mapped("tool_transaction.created", _SILENT),
-    "chart": _not_mapped("chart.created"),
-    **{f"chart_{chart_type}": _not_mapped(f"chart.created (chart_type={chart_type!r})") for chart_type in CHART_VARIANTS},
-    "form": _not_mapped("form.created"),
-    **{
-        f"form_text_{input_type}": _not_mapped(f"form.created (form_text input_type={input_type!r})")
-        for input_type in FORM_TEXT_INPUT_TYPES
-    },
-    **{f"form_{builder}": _not_mapped(f"form.created (form_{builder})") for builder in FORM_ELEMENT_BUILDERS},
-    "form_response_submit": Gap(_FORM_RESPONSE + "form_data never reaches the handler", raises=FakeMaestroRejected, match="form.response"),
-    "form_response_cancel": Gap(_FORM_RESPONSE + "the cancel never reaches the handler", raises=FakeMaestroRejected, match="form.response"),
-    "run_failed": Gap(
-        "the run.updated events (running, failed) are recorded but not mapped: Maestro outputs.runs is empty "
-        "(plan 3, tasks 5 and 7); " + _EVERY_WEB_CHAT_TURN,
-        deliveries=_RESPONDED,
-    ),
-    "run_other_agent": Gap(
-        "the run.updated events (running, succeeded) of run_start(agent_id=<another agent>) are recorded, with that "
-        "agent_id, but not mapped: Maestro outputs.runs is empty (plan 3, tasks 5 and 7); " + _EVERY_WEB_CHAT_TURN,
-        deliveries=_RESPONDED,
-    ),
-    "update_user_event": Gap(
-        "message.updated is recorded but not applied: the person's message keeps its text in the legacy view "
-        "(plan 3, tasks 5 and 7); " + _EVERY_WEB_CHAT_TURN,
-        deliveries=_SILENT,
-    ),
-    "update_thread_title": Gap(
-        "thread.updated is recorded, but the fake does not apply it: the title stays 'Nova conversa' (plan 3, task 7); "
-        f"{_THREAD_PEOPLE}; {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_SILENT,
-    ),
-    "update_thread_queue": Gap(
-        "thread.updated (queue) is recorded, but the fake does not apply it and the legacy view has no thread.update event "
-        f"(plan 3, task 7); {_THREAD_PEOPLE}; {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_SILENT,
-    ),
-    "add_participant": Gap(
-        "participant.added is recorded, but the fake does not add Bia to the thread (plan 3, task 7); "
-        f"{_THREAD_PEOPLE}; {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_SILENT,
-    ),
-    # AgentServer, channels and public chat
+    # send.* through a Maestro delivery: equal except Core's identity of the people (plan 5)
+    "update_thread_title": _declared("thread_people", deliveries=_SILENT),
+    "update_thread_queue": _declared("thread_people", deliveries=_SILENT),
+    "add_participant": _declared("thread_people", deliveries=_SILENT),
+    "form_response_submit": _declared("web_chat_person", "agent_websocket", deliveries=_RESPONDED * 2),
+    "form_response_cancel": _declared("web_chat_person", "agent_websocket", deliveries=_RESPONDED * 2),
+    "incoming_fields": _declared("core_roles", "media_link_size", deliveries=_RESPONDED * 2),
+    # AgentServer ingress (plan 5) and public chat (plan 6)
     "server_dispatch": _server_blocked("dispatch"),
     "server_ingest": _server_blocked("ingest"),
     "repository_crud": _server_blocked("repository"),
@@ -171,21 +165,6 @@ GAPS: dict[str, Gap] = {
     "whatsapp_receipt": _server_blocked("dispatch", " (first call of the script); no receipt is applied"),
     "public_chat_guest": _PUBLIC_CHAT,
     "public_chat_authenticated": _PUBLIC_CHAT,
-    # AgentIncoming and AgentMemory
-    "incoming_fields": Gap(
-        "turn 2 has image, document and audio URL parts, which a person's message.create does not have (a person sends "
-        "uploads), so the publish is rejected (plan 3, task 7). The SDK side already reads what production reads "
-        "(tests/test_maestro_incoming_parity.py) when the context carries them as media_link, except the document "
-        "size_bytes (media_link has none) and the user's roles, which stay at the User defaults until plan 5 brings "
-        "Core's connection context to Maestro deliveries; the fake has no thread.created, agent-only e-mail or "
-        "queue catalog yet",
-        raises=FakeMaestroRejected,
-        match="message.create",
-    ),
-    **{
-        f"history_{fmt}": _HISTORY
-        for fmt in ("openai", "anthropic", "google", "cohere", "voyage", "langchain", "openai_completions", "openai_responses")
-    },
 }
 
 GAP_REASONS: dict[str, str] = {name: gap.reason for name, gap in GAPS.items()}

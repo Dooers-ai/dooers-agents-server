@@ -1,12 +1,21 @@
 """In-memory Maestro for the parity suite: the SDK's Maestro mode runs against it.
 
-``FakeMaestro`` plays the two sides the SDK does not own:
+``FakeMaestro`` plays the sides the SDK does not own:
 
-- the client (a person in the web chat): ``create_thread``, ``publish``, ``upload``
-  and ``respond_form``;
+- the web chat (a person): ``create_thread``, ``publish``, ``upload`` and ``respond_form``.
+  As in Maestro, the person's actor and participant are the placeholder ``"Humano"``
+  (``events/publication.ts``, ``participantView``): the agent's context has no name, e-mail
+  or identity IDs of a web chat person (Core's connection context reaches the delivery in
+  plan 5);
+- the agent's own publication of a person's message, ``agent_publish``: the Maestro side of
+  production ``AgentServer.dispatch`` (``POST /agent/threads/:id/events`` with a declared
+  person and ``trigger: true``, Maestro 99c2902). The declared name goes with the message;
+  the declared e-mail and identity IDs go back only to this agent, in its delivery context.
+  The agent content accepts a URL part (``media_link``), which a web chat person cannot send.
+  The SDK side of this call is plan 5: the parity harness plays it, as it plays the web chat;
 - the Maestro service: it signs one dispatch per delivery (``deliveries_for`` and
   ``deliver``) and answers the SDK callbacks (context, heartbeat, outputs, stream,
-  complete, artifacts), with the same semantics as ``CallbackFixture`` in
+  complete, artifacts, temporary links), with the same semantics as ``CallbackFixture`` in
   ``tests/test_maestro_executor.py``.
 
 Every request, from either side, is checked against the vendored contract with
@@ -14,21 +23,34 @@ Every request, from either side, is checked against the vendored contract with
 any state. A request the contract does not accept changes nothing: a client request
 raises ``FakeMaestroRejected``, and a callback gets the contract's ``Public.Error`` (also
 kept in ``rejections``). Every response and every stored event goes through
-``MaestroContracts.validate`` too, so a bug in the fake fails loudly.
+``MaestroContracts.validate`` too, so a bug in the fake fails loudly. One exception: the
+request schema of ``agent_publish`` (``Public.AgentEventCreateRequest``) is not vendored yet
+(plan 5 syncs it), so each part is checked against ``Public.ContentPart`` and the stored
+event against ``Public.Event.message.created``.
 
-Each accepted output becomes the event of its type (index 4.4: ``message.create`` ->
-``message.created``, ``run.update`` -> ``run.updated``, ...), with the payload as sent
-plus the fields the contract says Maestro adds. The fake does not apply ``thread.update``
-or ``participant.add`` to the thread state, and it creates no ``form.responded`` delivery
-(plan 3, task 7). It issues temporary artifact links (``ARTIFACT_LINKS_ENABLED``) for the
-files linked to the delivery's thread up to its context cutoff, without serving their bytes. Scope: one person and one agent per thread,
-no retries or lease renewal, no suspension/interactions, no archive or delete. A real
-Maestro also writes execution events, and none of them has a legacy ``ThreadEvent``.
+As Maestro does:
 
-``legacy_view`` and ``legacy_thread_view`` (test only) map Maestro data to the
-production shapes that ``normalize`` compares. They only rename and reshape what
-Maestro has. A production field that Maestro does not carry keeps the production
-model default (``None`` or the ``User`` defaults). They never fill it from the scenario.
+- a new thread starts with ``thread.created`` (sequence 1) and carries the SDK fields of
+  index 4.3 (``queue``, ``channel``, ...);
+- each accepted output becomes the event of its type (index 4.4: ``message.create`` ->
+  ``message.created``, ``run.update`` -> ``run.updated``, ...), with the payload as sent plus
+  the fields Maestro adds. ``thread.update`` changes the title and queue of the thread and
+  ``participant.add`` adds the person (without name, e-mail or identity IDs; one already in
+  the thread is refused ``already_participant``);
+- ``respond_form`` answers a production form (``form.created``): it records
+  ``form.responded``, its own causal root, and ``deliveries_for`` gives it one delivery to
+  the form's author;
+- files follow the production type matrix (``infer_chat_upload_kind``) up to 25 MiB, and an
+  execution gets a temporary link (``ARTIFACT_LINKS_ENABLED``) for each file linked to its
+  thread up to the context cutoff, without the fake serving the bytes.
+
+Scope: one agent per thread, no retries or lease renewal, no suspension/interactions, no
+archive or delete. A real Maestro also writes execution events, and none of them has a
+legacy ``ThreadEvent``.
+
+``agent_view`` gives the thread as the agent's delivery context has it (the whole thread,
+no cutoff): the parity harness reads it back through the SDK's own conversion
+(``MaestroExecutionPersistence``), never through a view of its own.
 """
 
 from __future__ import annotations
@@ -60,7 +82,8 @@ from dooers.agents.server.maestro import MaestroConfig, MaestroDeliveryAdapter, 
 from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.context import MaestroPrivateResources, MaestroPrivateScope
 from dooers.agents.server.protocol.maestro import MaestroContracts
-from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
+from dooers.agents.server.protocol.models import User
+from dooers.agents.server.storage.chat_upload_file_policy import infer_chat_upload_kind
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import AGENT_ID, ASSISTANT_NAME, ORG_ID, WORKSPACE_ID
 from tests.test_maestro_admission import BASE, json_bytes, request, sign, signed_request, timestamp
@@ -75,10 +98,20 @@ RUNTIME_ENDPOINT = "http://127.0.0.1:9000/api/dev/agent/maestro/deliveries"
 CORE_BASE_URL = "http://127.0.0.1:8788/api/v1"
 #: Outputs that make a phase `responded` in Maestro (spec M07-005/006); the SDK has its own copy.
 VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.create"})
-#: Maestro accepts only these file types today (``LOCAL_SYNTHETIC_MIME_TYPES``, design 5.5).
-MAESTRO_MIME_TYPES = frozenset({"text/plain", "application/pdf", "image/png", "image/jpeg", "audio/wav"})
-MAX_ARTIFACT_BYTES = 8388608
-_ACTORS = {"human": "user", "agent": "assistant", "system": "system"}
+#: ``ARTIFACT_MAX_BYTES`` default of Maestro (25 MiB, the production limit).
+MAX_ARTIFACT_BYTES = 26214400
+#: Name Maestro gives a web chat person in actors and participants (no Core profile in Maestro).
+WEB_CHAT_PERSON_NAME = "Humano"
+#: The thread SDK fields of index 4.3 that every ``Public.Thread`` projection of Maestro carries.
+THREAD_SDK_FIELDS = {
+    "queue": None,
+    "channel": "dooers-platform",
+    "channel_meta": None,
+    "external_key": None,
+    "owner_instance_agent_id": None,
+}
+_PERMISSIONS = ("read", "write", "manage", "supervise", "export", "cancel", "feedback", "archive", "remove_participants")
+_NO_PERMISSIONS = dict.fromkeys(_PERMISSIONS, False)
 
 
 @functools.cache
@@ -111,6 +144,11 @@ async def private_resources(scope: MaestroPrivateScope) -> MaestroPrivateResourc
     return MaestroPrivateResources(scope, MemoryPersistence(), {}, {})
 
 
+def maestro_accepts_file(mime_type: str, filename: str, size: int) -> bool:
+    """Maestro's file policy: the production type matrix (index 2), 1 byte to 25 MiB."""
+    return infer_chat_upload_kind(mime_type, filename) is not None and 0 < size <= MAX_ARTIFACT_BYTES
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -124,7 +162,7 @@ def _sequence_key(sequence: str) -> tuple[int, str]:
 
 
 class FakeMaestroRejected(Exception):
-    """A client request (thread, message, upload, form response) the contract does not accept."""
+    """A client request (thread, message, upload, form response) the contract or a Maestro rule refuses."""
 
     def __init__(self, action: str, reason: str) -> None:
         super().__init__(f"{action}: {reason}")
@@ -133,10 +171,11 @@ class FakeMaestroRejected(Exception):
 
 
 class _CallbackError(Exception):
-    def __init__(self, status: int, code: str) -> None:
+    def __init__(self, status: int, code: str, reason: str | None = None) -> None:
         super().__init__(code)
         self.status = status
         self.code = code
+        self.reason = reason
 
 
 @dataclass
@@ -206,6 +245,8 @@ class FakeMaestro:
         self.deliveries: dict[str, Delivery] = {}
         self.artifacts: dict[str, dict[str, Any]] = {}
         self.rejections: list[tuple[str, str]] = []
+        #: event_id -> e-mail and identity IDs declared by the publishing agent (agent context only).
+        self.declared_profiles: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _core_credential(key: rsa.RSAPrivateKey) -> tuple[str, int]:
@@ -225,7 +266,7 @@ class FakeMaestro:
         token = sign(key, {"typ": "maestro-access+jwt", "alg": "RS256", "kid": "core-fixture"}, claims)
         return token, claims["exp"]
 
-    # -- client side (a person in the web chat) --
+    # -- client side: the web chat (a person) and the agent's own publication --
 
     def _client_request(self, action: str, schema: str, value: dict[str, Any], detail: str = "") -> dict[str, Any]:
         if not self.contracts.is_valid(schema, value):
@@ -233,6 +274,7 @@ class FakeMaestro:
         return deepcopy(value)
 
     def create_thread(self, human: User, *, title: str | None) -> str:
+        """A person creates a workspace thread with the agent in the web chat; ``thread.created`` is sequence 1."""
         request = self._client_request(
             "thread.create",
             "Public.ThreadCreateRequest",
@@ -246,9 +288,9 @@ class FakeMaestro:
         thread_id, now = str(uuid4()), _now()
         person = {
             "participant_id": str(uuid4()),
-            "display_name": human.user_name or human.user_id,
+            "display_name": WEB_CHAT_PERSON_NAME,
             "state": "active",
-            "joined_sequence": "0",
+            "joined_sequence": "1",
             "left_sequence": None,
             "kind": "human",
             "principal_id": human.user_id,
@@ -258,7 +300,7 @@ class FakeMaestro:
             "participant_id": str(uuid4()),
             "display_name": self.assistant_name,
             "state": "active",
-            "joined_sequence": "0",
+            "joined_sequence": "1",
             "left_sequence": None,
             "kind": "agent",
             "principal_id": INSTANCE_AGENT_ID,
@@ -277,17 +319,7 @@ class FakeMaestro:
             "state": "active",
             "version": 1,
             "participants": [person, agent],
-            "permissions": {
-                "read": True,
-                "write": True,
-                "manage": True,
-                "supervise": False,
-                "export": True,
-                "cancel": True,
-                "feedback": True,
-                "archive": True,
-                "remove_participants": True,
-            },
+            "permissions": dict.fromkeys(_NO_PERMISSIONS, True) | {"supervise": False},
             "capabilities": [],
             "last_sequence": "0",
             "cursor": f"thread.{thread_id}.0",
@@ -295,12 +327,17 @@ class FakeMaestro:
             "policy_version": 1,
             "created_at": now,
             "updated_at": now,
+            **THREAD_SDK_FIELDS,
         }
         self.threads[thread_id] = self.contracts.validate("Public.Thread", thread)
         self.events[thread_id] = []
+        # The shared event never carries the creator's permissions (threads/persistence.md).
+        view = {**deepcopy(thread), "permissions": dict(_NO_PERMISSIONS), "last_sequence": "1", "cursor": f"thread.{thread_id}.1"}
+        self._append(thread_id, self._person_actor(person), {"thread": view}, event_type="thread.created")
         return thread_id
 
     def publish(self, thread_id: str, human: User, content: list[dict[str, Any]], *, client_event_id: str) -> dict[str, Any]:
+        """A person's message in the web chat (``Public.MessageCreateRequest``: text, attachment, contact)."""
         request = self._client_request(
             "message.create",
             "Public.MessageCreateRequest",
@@ -308,29 +345,53 @@ class FakeMaestro:
             f"(part types: {[part.get('type') for part in content]})",
         )
         person = self._participant(thread_id, kind="human", principal_id=human.user_id)
-        for part in request["content"]:
-            if part["type"] == "attachment":
-                artifact = self.artifacts.get(part["artifact_id"])
-                if artifact is None or artifact["state"] != "ready_unbound" or artifact["uploaded_by"] != human.user_id:
-                    raise FakeMaestroRejected("message.create", "attachment is not an unbound upload of this person")
-        actor = {
-            "kind": "human",
-            "principal_id": person["principal_id"],
-            "participant_id": person["participant_id"],
-            "display_name": person["display_name"],
-        }
+        self._check_attachments(request["content"], human.user_id)
         payload = {"client_event_id": request["client_event_id"], "content": request["content"], "mentions": request["mentions"]}
-        event = self._append(thread_id, actor, payload)
+        event = self._append(thread_id, self._person_actor(person), payload)
         self._link_attachments(event)
         return event
 
-    def respond_form(self, thread_id: str, human: User, data: Any) -> dict[str, Any]:
-        """The legacy ``form.response``: Maestro answers only interactions, and v1 has no legacy form."""
-        self._participant(thread_id, kind="human", principal_id=human.user_id)
-        raise FakeMaestroRejected(
-            "form.response",
-            "the thread has no open form: the Maestro contract has no event for a legacy form (send.form without suspension)",
-        )
+    def agent_publish(self, thread_id: str, human: User, content: list[dict[str, Any]], *, client_event_id: str) -> dict[str, Any]:
+        """The agent publishes a person's message for itself (production ``AgentServer.dispatch``).
+
+        ``POST /agent/threads/:id/events`` with ``actor: {kind: "human", principal_id,
+        display_name, email, identity_ids}``, the agent content and ``trigger: true``. Only in a
+        thread with one agent, and the person must be in the thread. ``client_event_id`` is the
+        idempotency key. The e-mail and identity IDs with a value are kept apart from the
+        actor and go back only to this agent (``agent_view``).
+        """
+        action = "agent.event.create"
+        if not 1 <= len(content) <= 32 or not all(self.contracts.is_valid("Public.ContentPart", part) for part in content):
+            raise FakeMaestroRejected(action, f"Public.ContentPart does not accept the parts {[part.get('type') for part in content]}")
+        thread = self.threads.get(thread_id)
+        if thread is None or sum(p["kind"] == "agent" and p["state"] != "removed" for p in thread["participants"]) != 1:
+            raise FakeMaestroRejected(action, "multi_agent_thread: only a thread with one agent")
+        person = self._participant(thread_id, kind="human", principal_id=human.user_id)
+        self._check_attachments(content, INSTANCE_AGENT_ID)
+        actor = {**self._person_actor(person), **({"display_name": human.user_name} if human.user_name else {})}
+        event = self._append(thread_id, actor, {"client_event_id": client_event_id, "content": deepcopy(content), "mentions": []})
+        profile = {
+            **({"email": human.user_email} if human.user_email else {}),
+            **({"identity_ids": list(human.identity_ids)} if human.identity_ids else {}),
+        }
+        if profile:
+            self.declared_profiles[event["event_id"]] = profile
+        self._link_attachments(event)
+        return event
+
+    def respond_form(self, thread_id: str, human: User, form_event_id: str, *, values: dict[str, Any], cancelled: bool) -> dict[str, Any]:
+        """``POST /threads/:id/forms/:formEventId/responses``: the answer to a production form.
+
+        As ``respondLegacyFormCommand``: the form must be a ``form.created`` of an agent that is
+        still an active participant (else ``agent_not_participant``); ``form.responded`` opens its
+        own causal root, also when the form is cancelled.
+        """
+        self._client_request("form.response", "Public.FormEventPath", {"id": thread_id, "formEventId": form_event_id})
+        request = self._client_request("form.response", "Public.FormResponseRequest", {"values": values, "cancelled": cancelled})
+        person = self._participant(thread_id, kind="human", principal_id=human.user_id)
+        form = self._form_author(thread_id, form_event_id)[0]
+        payload = {"form_event_id": form["event_id"], "values": request["values"], "cancelled": request["cancelled"]}
+        return self._append(thread_id, self._person_actor(person), payload, event_type="form.responded")
 
     def upload(self, human: User, data: bytes, *, filename: str, mime_type: str) -> dict[str, Any]:
         """A person uploads a file for the next message; returns the attachment part."""
@@ -345,7 +406,7 @@ class FakeMaestro:
                 "workspace_id": WORKSPACE_ID,
             },
         )
-        if mime_type not in MAESTRO_MIME_TYPES or not 0 < len(data) <= MAX_ARTIFACT_BYTES:
+        if not maestro_accepts_file(mime_type, filename, len(data)):
             raise FakeMaestroRejected("artifact.upload", f"Maestro does not accept {mime_type} ({len(data)} bytes)")
         artifact = self._store_artifact(metadata, data, uploaded_by=human.user_id, execution_id=None)
         return {
@@ -359,11 +420,16 @@ class FakeMaestro:
     # -- delivery side --
 
     def deliveries_for(self, event: dict[str, Any]) -> list[Delivery]:
-        """Routing with one person and one agent: a person's message invokes the agent."""
+        """Routing with one agent: a person's message invokes it; a form response goes to the form's author."""
         if event["actor"]["kind"] != "human":
             return []
         thread_id = event["thread_id"]
-        agent = self._participant(thread_id, kind="agent", principal_id=INSTANCE_AGENT_ID)
+        if event["type"] == "form.responded":
+            agent = self._form_author(thread_id, event["payload"]["form_event_id"])[1]
+        elif event["type"] == "message.created":
+            agent = self._participant(thread_id, kind="agent", principal_id=INSTANCE_AGENT_ID)
+        else:
+            return []
         delivery_id, execution_id = str(uuid4()), str(uuid4())
         bound = {
             "organization_id": ORGANIZATION_ID,
@@ -373,7 +439,7 @@ class FakeMaestro:
             "execution_id": execution_id,
             "phase_id": "initial",
             "recipient_participant_id": agent["participant_id"],
-            "instance_agent_id": INSTANCE_AGENT_ID,
+            "instance_agent_id": agent["instance_agent_id"],
             "runtime_id": RUNTIME_ID,
             "lease_fence": "1",
         }
@@ -392,7 +458,7 @@ class FakeMaestro:
                 phase_retry_number=0,
                 causal_depth=0,
             )
-            data["capability_claims"].update(sub=INSTANCE_AGENT_ID, jti=str(uuid4()))
+            data["capability_claims"].update(sub=agent["instance_agent_id"], jti=str(uuid4()))
             # ARTIFACT_LINKS_ENABLED: the capability carries artifact.link.issue, as Maestro signs it.
             data["capability_claims"]["operations"] = [*data["capability_claims"]["operations"], "artifact.link.issue"]
             data["dispatch_claims"]["jti"] = str(uuid4())
@@ -419,8 +485,33 @@ class FakeMaestro:
             yield self
 
     def all_events(self) -> list[dict[str, Any]]:
-        """Every thread (creation order) with its events (sequence order)."""
+        """Every thread (creation order) with its events (sequence order), as stored."""
         return [deepcopy(event) for thread_id in self.threads for event in self.events[thread_id]]
+
+    def agent_view(self, thread_id: str) -> dict[str, Any]:
+        """The whole thread as the agent's delivery context has it: events and participants.
+
+        Same shape as ``MaestroMemory.execution_snapshot()`` (the trigger is the last event).
+        """
+        events = [self._agent_event(event) for event in self.events[thread_id]]
+        return {"trigger_event": deepcopy(events[-1]), "participants": deepcopy(self.threads[thread_id]["participants"]), "events": events}
+
+    def artifact_link(self, thread_id: str, artifact_id: str, *, cutoff: str | None = None) -> dict[str, Any]:
+        """A temporary link (``{url, expires_at}``) to a file linked to the thread (up to ``cutoff``).
+
+        ``LookupError`` when the file is not linked to the thread up to the cutoff.
+        """
+        artifact = self.artifacts.get(artifact_id)
+        if (
+            artifact is None
+            or artifact["state"] != "linked"
+            or artifact["thread_id"] != thread_id
+            or (cutoff is not None and _sequence_key(artifact["linked_sequence"]) > _sequence_key(cutoff))
+        ):
+            raise LookupError(artifact_id)
+        token = f"{artifact_id.replace('-', '')}.{uuid4().hex}"
+        link = {"url": f"{CALLBACK_BASE_URL}/artifact-links/{token}", "expires_at": timestamp(time.time() + 3600)}
+        return self.contracts.validate("Public.ArtifactLinkResponse", link)
 
     # -- Maestro side: SDK callbacks --
 
@@ -457,6 +548,7 @@ class FakeMaestro:
                     "message": f"FakeMaestro rejected {action}.",
                     "retryable": False,
                     "request_id": str(uuid4()),
+                    **({"details": {"reason_code": error.reason}} if error.reason else {}),
                 }
             }
             return httpx.Response(error.status, json=self.contracts.validate("Public.Error", body))
@@ -516,11 +608,11 @@ class FakeMaestro:
         delivery.context_pages += 1
         page = {
             "delivery_id": delivery.delivery_id,
-            "trigger_event": deepcopy(delivery.trigger_event),
+            "trigger_event": self._agent_event(delivery.trigger_event),
             "participants": deepcopy(self.threads[delivery.thread_id]["participants"]),
             "context_cursor": delivery.context_cursor,
             "history": {
-                "items": deepcopy(history[offset:end]),
+                "items": [self._agent_event(event) for event in history[offset:end]],
                 "next_cursor": f"{delivery.context_cursor}.{end}" if has_more else None,
                 "has_more": has_more,
                 "watermark": delivery.envelope["context_cutoff_sequence"],
@@ -619,9 +711,13 @@ class FakeMaestro:
         return self._reply("Public.PersistedResponse", result)
 
     def _stored_payload(self, delivery: Delivery, body: dict[str, Any]) -> dict[str, Any]:
-        """The output payload as sent, plus the fields the contract says Maestro adds."""
+        """The output payload as sent, plus the fields Maestro adds; thread changes are applied.
+
+        Called before the event is appended: a refusal (``_CallbackError``) changes nothing.
+        """
         kind, payload = body["type"], deepcopy(body["payload"])
         thread = self.threads[delivery.thread_id]
+        run = {"run_id": payload.pop("run_id")} if "run_id" in payload else {}
         if kind == "message.create":
             handoff = payload.pop("handoff", None)
             if handoff is not None:
@@ -631,30 +727,36 @@ class FakeMaestro:
                     "recipients": list(handoff["recipients"]),
                     "execution": "sequential",
                 }
-            return {**payload, "execution_id": delivery.execution_id, "output_id": body["output_id"]}
+            return {**payload, **run, "execution_id": delivery.execution_id, "output_id": body["output_id"]}
         if kind == "run.update":
-            return {"agent_id": INSTANCE_AGENT_ID, **payload, "trigger_event_id": delivery.trigger_event["event_id"]}
+            return {"agent_id": INSTANCE_AGENT_ID, **payload, **run, "trigger_event_id": delivery.trigger_event["event_id"]}
         if kind == "thread.update":
-            if payload.get("queue") == "":
-                payload["queue"] = None  # Maestro stores `queue || null`
-            # Recorded only: the thread state keeps its title (plan 3, task 7).
-            current = {"thread_id": thread["thread_id"], "state": thread["state"], "version": thread["version"]}
-            return {"title": thread["title"], **payload, **current}
+            # updateThreadAsAgent: the title "" is valid; the queue "" is null; the version always grows.
+            changes = {key: payload[key] for key in ("title", "queue") if key in payload}
+            if changes.get("queue") == "":
+                changes["queue"] = None
+            thread.update(changes, version=thread["version"] + 1)
+            current = {key: thread[key] for key in ("thread_id", "title", "version", "queue")}
+            return {**current, "state": "active", **run}
         if kind == "participant.add":
-            # Recorded only: the person does not join the thread (plan 3, task 7).
-            user = payload.pop("user")
+            # addHumanAsAgent: only the principal id is kept (no name, e-mail or identity IDs).
+            principal_id = payload["user"]["user_id"]
+            if any(p["kind"] == "human" and p["principal_id"] == principal_id and p["state"] != "removed" for p in thread["participants"]):
+                raise _CallbackError(422, "VALIDATION_FAILED", "already_participant")
             participant = {
                 "participant_id": str(uuid4()),
-                "display_name": user.get("user_name") or user["user_id"],
+                "display_name": WEB_CHAT_PERSON_NAME,
                 "state": "active",
                 "joined_sequence": str(int(thread["last_sequence"]) + 1),
                 "left_sequence": None,
                 "kind": "human",
-                "principal_id": user["user_id"],
+                "principal_id": principal_id,
                 "role": "member",
             }
-            return {**payload, "participant": participant, "history_policy": "full"}
-        return payload
+            thread["participants"].append(participant)
+            thread["version"] += 1
+            return {"participant": deepcopy(participant), "history_policy": "full", **run}
+        return {**payload, **run}
 
     def _complete(self, request: httpx.Request, delivery: Delivery) -> httpx.Response:
         body = self._json(request, "Public.CompleteRequest")
@@ -704,10 +806,9 @@ class FakeMaestro:
         if delivery.state != "running":
             raise _CallbackError(409, "EXECUTION_TERMINAL")
         if (
-            metadata["mime_type"] not in MAESTRO_MIME_TYPES
+            not maestro_accepts_file(metadata["mime_type"], metadata["filename"], len(data))
             or parts["file"].get_content_type() != metadata["mime_type"]
             or metadata["size_bytes"] != len(data)
-            or not 0 < len(data) <= MAX_ARTIFACT_BYTES
             or metadata["sha256"] != hashlib.sha256(data).hexdigest()
         ):
             raise _CallbackError(422, "VALIDATION_FAILED")
@@ -742,19 +843,12 @@ class FakeMaestro:
             raise _CallbackError(400, "INVALID_REQUEST") from None
         if not self.contracts.is_valid("Public.Empty", body):
             raise _CallbackError(400, "INVALID_REQUEST")
-        artifact = self.artifacts.get(artifact_id)
-        cutoff = _sequence_key(delivery.envelope["context_cutoff_sequence"])
-        if (
-            artifact is None
-            or artifact["state"] != "linked"
-            or artifact["thread_id"] != delivery.thread_id
-            or _sequence_key(artifact["linked_sequence"]) > cutoff
-        ):
-            raise _CallbackError(404, "NOT_FOUND")
+        try:
+            link = self.artifact_link(delivery.thread_id, artifact_id, cutoff=delivery.envelope["context_cutoff_sequence"])
+        except LookupError:
+            raise _CallbackError(404, "NOT_FOUND") from None
         if delivery.state != "running":
             raise _CallbackError(409, "EXECUTION_TERMINAL")
-        token = f"{artifact_id.replace('-', '')}.{uuid4().hex}"
-        link = {"url": f"{CALLBACK_BASE_URL}/artifact-links/{token}", "expires_at": timestamp(time.time() + 3600)}
         return self._reply("Public.ArtifactLinkResponse", link)
 
     # -- state --
@@ -769,6 +863,32 @@ class FakeMaestro:
         if len(matches) != 1:
             raise FakeMaestroRejected("thread.access", f"{kind} {principal_id} is not an active participant of the thread")
         return matches[0]
+
+    @staticmethod
+    def _person_actor(person: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "human",
+            "principal_id": person["principal_id"],
+            "participant_id": person["participant_id"],
+            "display_name": person["display_name"],
+        }
+
+    def _form_author(self, thread_id: str, form_event_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The production form (``form.created`` of an agent) and its author, an active agent participant."""
+        form = next((event for event in self.events.get(thread_id, []) if event["event_id"] == form_event_id), None)
+        if form is None or form["type"] != "form.created" or form["actor"]["kind"] != "agent":
+            raise FakeMaestroRejected("form.response", "NOT_FOUND: no production form with this id in the thread")
+        participants = self.threads[thread_id]["participants"]
+        author = next((p for p in participants if p["participant_id"] == form["actor"]["participant_id"]), None)
+        if author is None or author["kind"] != "agent" or author["state"] != "active":
+            raise FakeMaestroRejected("form.response", "FORBIDDEN agent_not_participant")
+        return form, author
+
+    def _agent_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """The event as the agent reads it: a declared person carries the declared e-mail and identity IDs."""
+        view = deepcopy(event)
+        view["actor"].update(self.declared_profiles.get(event["event_id"], {}))
+        return view
 
     def _append(
         self, thread_id: str, actor: dict[str, Any], payload: dict[str, Any], *, event_type: str = "message.created", **extra: Any
@@ -791,8 +911,16 @@ class FakeMaestro:
         }
         event = self.contracts.validate(f"Public.Event.{event_type}", event)
         thread.update(last_sequence=sequence, cursor=f"thread.{thread_id}.{sequence}", updated_at=event["created_at"])
+        self.contracts.validate("Public.Thread", thread)
         self.events[thread_id].append(event)
         return deepcopy(event)
+
+    def _check_attachments(self, content: list[dict[str, Any]], uploader: str) -> None:
+        for part in content:
+            if part["type"] == "attachment":
+                artifact = self.artifacts.get(part["artifact_id"])
+                if artifact is None or artifact["state"] != "ready_unbound" or artifact["uploaded_by"] != uploader:
+                    raise FakeMaestroRejected("message.create", "attachment is not an unbound upload of this sender")
 
     def _store_artifact(self, metadata: dict[str, Any], data: bytes, *, uploaded_by: str, execution_id: str | None) -> dict[str, Any]:
         artifact = {
@@ -818,71 +946,3 @@ class FakeMaestro:
                 artifact = self.artifacts[part["artifact_id"]]
                 if artifact["state"] != "linked":
                     artifact.update(state="linked", thread_id=event["thread_id"], linked_sequence=event["sequence"])
-
-
-# -- Production views (test only) --
-
-
-def _legacy_part(part: dict[str, Any]) -> dict[str, Any]:
-    if part["type"] == "text":
-        return {"type": "text", "text": part["text"]}
-    if part["type"] == "contact":
-        return {"type": "contact", **{key: deepcopy(part[key]) for key in ("display_name", "vcard", "phones") if key in part}}
-    if part["type"] == "media_link":
-        # A URL the SDK could not upload: the production part keeps the agent's URL (index 4.3).
-        view = {"type": part["kind"], "url": part["url"]}
-        return view | {key: part[key] for key in ("mime_type", "filename", "alt", "duration") if key in part}
-    mime_type = part.get("mime_type")
-    kind = "image" if (mime_type or "").startswith("image/") else "audio" if (mime_type or "").startswith("audio/") else "document"
-    view = {"type": kind, "ref_id": part["artifact_id"], "filename": part.get("filename"), "mime_type": mime_type}
-    if kind == "document":
-        view["size_bytes"] = part.get("size_bytes")
-    return view
-
-
-def legacy_view(event: dict[str, Any]) -> dict[str, Any]:
-    """A Maestro ``message.created`` event as the production ``ThreadEvent`` dump.
-
-    Renames only: ``event_id`` is the id, the actor kind is the legacy actor, the actor
-    display name is the author and, for a person, the ``User``. An attachment is the media
-    part of its MIME family with the artifact id as ``ref_id`` (no URL: Maestro has none).
-    Maestro has no run, e-mail, ``data`` or stored client event id, so those keep the
-    production defaults.
-    """
-    if event.get("type") != "message.created":
-        raise ValueError(f"no legacy ThreadEvent for the Maestro event {event.get('type')!r}")
-    actor = event["actor"]
-    user = User(user_id=actor["principal_id"], user_name=actor["display_name"]) if actor["kind"] == "human" else User(user_id="")
-    return ThreadEvent(
-        id=event["event_id"],
-        thread_id=event["thread_id"],
-        type="message",
-        actor=_ACTORS[actor["kind"]],
-        author=actor["display_name"],
-        user=user,
-        content=[_legacy_part(part) for part in event["payload"]["content"]],
-        created_at=_parse(event["created_at"]),
-    ).model_dump()
-
-
-def legacy_thread_view(thread: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
-    """A Maestro thread as the production ``Thread`` dump (no queue or metadata in Maestro v1).
-
-    Production lists the agent in ``users`` too, so ``users`` is every active participant
-    in participant order. The owner is the person with the ``owner`` role.
-    """
-    active = [p for p in thread["participants"] if p["state"] == "active"]
-    (agent,) = [p for p in active if p["kind"] == "agent"]
-    (owner,) = [p for p in active if p["kind"] == "human" and p["role"] == "owner"]
-    return Thread(
-        id=thread["thread_id"],
-        agent_id=agent["instance_agent_id"],
-        organization_id=thread["organization_id"],
-        workspace_id=thread["workspace_id"],
-        owner=User(user_id=owner["principal_id"], user_name=owner["display_name"]),
-        users=[User(user_id=p["principal_id"], user_name=p["display_name"]) for p in active],
-        title=thread["title"] or None,
-        created_at=_parse(thread["created_at"]),
-        updated_at=_parse(thread["updated_at"]),
-        last_event_at=_parse(events[-1]["created_at"] if events else thread["created_at"]),
-    ).model_dump()

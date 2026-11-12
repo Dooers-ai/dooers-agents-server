@@ -234,12 +234,16 @@ class MaestroEventSink:
 
     @property
     def published_events(self) -> list[dict[str, Any]]:
-        """The events Maestro stored for the accepted outputs (the echoes), in output order.
+        """The events Maestro stored for the accepted outputs (the echoes), in Maestro order, once each.
 
         Production stores each yielded event before the handler reads again; the handler's
-        memory adds these to the execution snapshot (read-your-writes). Copies.
+        memory adds these to the execution snapshot (read-your-writes). The order is the
+        Maestro sequence, not the ordinal: a stream keeps its ordinal while it is open, and the
+        outputs persisted meanwhile come before its final message. Copies.
         """
-        return [deepcopy(self._receipts[ordinal]["event"]) for ordinal in sorted(self._receipts)]
+        events = {receipt["event"]["event_id"]: receipt["event"] for receipt in self._receipts.values()}
+        ordered = sorted(events.values(), key=lambda event: (len(event["sequence"]), event["sequence"]))
+        return [deepcopy(event) for event in ordered]
 
     @property
     def published_media_urls(self) -> dict[str, str]:

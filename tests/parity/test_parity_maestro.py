@@ -5,7 +5,8 @@ against ``FakeMaestro`` (or through the Maestro-mode ``AgentServer`` call that i
 scenario's ingress). The result must equal the legacy ground truth after ``normalize``.
 ``KNOWN_GAPS`` lists every scenario that still differs. Those run as strict xfail that
 accepts only the failure the gap states (``Gap.raises``): a fixed gap, or a gap that
-starts to fail for another reason, fails here until a plan updates the list.
+starts to fail for another reason, fails here until a plan updates the list. A gap that
+names declared differences (``Gap.masked``) must match once they are masked.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from dooers.agents.server.exceptions import ThreadManagementModeError
 from tests.parity import harness
 from tests.parity.fake_maestro import FakeMaestro, FakeMaestroRejected
 from tests.parity.harness import ContractViolation, run_legacy, run_maestro
-from tests.parity.known_gaps import GAP_REASONS, GAPS, KNOWN_GAPS
+from tests.parity.known_gaps import DECLARED_DIFFERENCES, GAP_REASONS, GAPS, KNOWN_GAPS, masked
 from tests.parity.normalize import normalize
 from tests.parity.scenarios import SCENARIOS
 
@@ -45,6 +46,10 @@ def test_every_known_gap_states_what_differs():
     for gap in GAPS.values():
         assert gap.raises in {AssertionError, ThreadManagementModeError, FakeMaestroRejected}
         assert (gap.match is None) == (gap.raises is AssertionError)
+        # Only the AgentServer ingress, WhatsApp and Core's context (plan 5) and the public chat (plan 6) are left.
+        assert "plan 5" in gap.reason or "plan 6" in gap.reason, gap.reason
+        assert set(gap.masked) <= set(DECLARED_DIFFERENCES)
+        assert not gap.masked or (gap.raises is AssertionError and any("plan 5" in DECLARED_DIFFERENCES[m][0] for m in gap.masked))
 
 
 @pytest.mark.parametrize("name", sorted(KNOWN_GAPS))
@@ -53,6 +58,9 @@ async def test_known_gap_fails_as_stated(name):
     if gap.raises is AssertionError:
         result = await run_maestro(name)
         assert [(d["status"], d["state"], d["reason_code"]) for d in result.deliveries] == list(gap.deliveries)
+        if gap.masked:
+            # The declared differences are the whole gap: masked on both sides, the results are equal.
+            assert masked(normalize(result), gap.masked) == masked(normalize(await run_legacy(name)), gap.masked)
     else:
         with pytest.raises(gap.raises, match=gap.match):
             await run_maestro(name)
@@ -81,6 +89,11 @@ async def test_refused_sdk_request_fails_the_run(monkeypatch):
 
 async def test_refused_sdk_request_outranks_the_scenario_failure(monkeypatch):
     _refuse_heartbeats(monkeypatch)
+
+    def refused_form_response(self, *args, **kwargs):
+        raise FakeMaestroRejected("form.response", "scenario failure after the refused heartbeats")
+
+    monkeypatch.setattr(FakeMaestro, "respond_form", refused_form_response)
     with pytest.raises(ContractViolation) as error:
         await run_maestro("form_response_submit")
     assert isinstance(error.value.__context__, FakeMaestroRejected)
@@ -132,11 +145,59 @@ async def test_public_chat_reaches_the_maestro_mode_router():
     assert result.events == [] and result.outputs["threads"] == [] and result.deliveries == []
 
 
-@pytest.mark.parametrize(
-    "name,action",
-    [("history_openai", "message.create"), ("incoming_fields", "message.create"), ("form_response_submit", "form.response")],
-)
-async def test_input_outside_the_maestro_contract_is_rejected_by_the_fake(name, action):
+async def test_web_chat_person_cannot_send_a_url_part(monkeypatch):
+    """A URL part reaches Maestro only from the agent (``media_link``); the web chat sends uploads."""
+    scenario = SCENARIOS["form_response_submit"]
+    photo = {"type": "image", "url": "https://cdn.example.com/foto.png", "mime_type": "image/png"}
+    turns = (replace(scenario.incoming.turns[0], content=({"type": "text", "text": "Veja"}, photo)), *scenario.incoming.turns[1:])
+    monkeypatch.setitem(SCENARIOS, "form_response_submit", replace(scenario, incoming=replace(scenario.incoming, turns=turns)))
     with pytest.raises(FakeMaestroRejected) as error:
-        await run_maestro(name)
-    assert error.value.action == action
+        await run_maestro("form_response_submit")
+    assert error.value.action == "message.create"
+
+
+class _Recorded(FakeMaestro):
+    """The FakeMaestro of the last ``run_maestro``, to look at what Maestro stored."""
+
+    last: FakeMaestro | None = None
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        _Recorded.last = self
+
+
+async def test_dispatch_turn_is_the_agents_publication_of_the_person(monkeypatch):
+    monkeypatch.setattr(harness, "FakeMaestro", _Recorded)
+    await run_maestro("history_openai")
+    fake = _Recorded.last
+    (thread_id,) = fake.threads
+    photo = next(event for event in fake.events[thread_id] if event["type"] == "message.created")
+    assert photo["actor"]["display_name"] == "Ana Souza" and "email" not in photo["actor"]
+    assert photo["payload"]["content"][1] == {
+        "type": "media_link",
+        "kind": "image",
+        "url": "https://cdn.example.com/foto.png",
+        "mime_type": "image/png",
+        "filename": "foto.png",
+    }
+    # The declared e-mail and identity IDs go back only to the agent, in its context.
+    actor = fake.agent_view(thread_id)["events"][1]["actor"]
+    assert (actor["email"], actor["identity_ids"]) == ("ana@example.com", ["idp-ana"])
+
+
+async def test_media_upload_scenario_uploads_the_files(monkeypatch):
+    """``media_upload`` runs the upload path: each served URL becomes an attachment of the agent."""
+    monkeypatch.setattr(harness, "FakeMaestro", _Recorded)
+    await run_maestro("media_upload")
+    fake = _Recorded.last
+    parts = [
+        event["payload"]["content"][0]
+        for event in fake.all_events()
+        if event["type"] == "message.created" and event["actor"]["kind"] == "agent" and "text" not in event["payload"]["content"][0]
+    ]
+    assert [(part["type"], part["mime_type"], part["filename"]) for part in parts] == [
+        ("attachment", "image/png", "grafico.png"),
+        ("attachment", "audio/ogg", "resposta.ogg"),
+        ("attachment", "application/pdf", "relatorio.pdf"),
+    ]
+    assert {fake.artifacts[part["artifact_id"]]["state"] for part in parts} == {"linked"}

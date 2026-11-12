@@ -527,14 +527,18 @@ async def test_raw_events_and_thread_after_yield_equal_production():
     trigger = next(e for e in raw if e.content and e.content[0].text.startswith("Pode me passar"))
     assert trigger.run_id is not None and trigger.run_id == raw[-1].run_id
 
-    # Users without the roles: a Maestro delivery has no Core roles yet (plan 5; README).
+    # Users without the roles: a Maestro delivery has no Core roles yet (plan 5; README). A person the
+    # agent added keeps only the principal in Maestro (participant.add): no name ("Humano"), e-mail or
+    # identity IDs, until Core's connection context reaches the delivery (plan 5).
     def people(users):
         return [(u.user_id, u.user_name, u.user_email, u.identity_ids) for u in users]
 
+    added = ("user-2", "Bia Lima", None, [])
+    assert people(expected_thread.users)[-1] == added
     assert (thread.title, thread.queue, people(thread.users)) == (
         expected_thread.title,
         expected_thread.queue,
-        people(expected_thread.users),
+        [*people(expected_thread.users)[:-1], ("user-2", "Humano", None, [])],
     )
     assert [user.user_id for user in thread.users] == [USER.user_id, AGENT_ID, "user-2"]
 
@@ -554,8 +558,19 @@ async def test_own_uploaded_files_keep_their_url_in_the_execution():
 
     assert [event.id for event in raw] == [trigger["event_id"], echo["event_id"]]
     assert raw[1].content[0].url == "https://cdn.example.com/grafico.png"
-    assert [(a.url, a.ref_id) for a in artifacts] == [("https://cdn.example.com/grafico.png", artifact)]
+    # Production's send.image part: the URL, no ref_id.
+    assert [(a.url, a.ref_id) for a in artifacts] == [("https://cdn.example.com/grafico.png", None)]
     assert issued == []
+
+
+async def test_an_echo_already_read_is_read_once():
+    """An echo with the id of an event the snapshot has, or a repeated echo, is read once."""
+    thread = MaestroThread(shared_contracts())
+    trigger = thread.message(PERSON, [_text("Oi")])
+    reply = thread.message(MAESTRO_AGENT, [_text("Olá!")])
+    memory = _memory(thread, cutoff=1, published=Published([deepcopy(trigger), deepcopy(reply), deepcopy(reply)]))
+
+    assert [event.id for event in await memory.get_history_raw()] == [trigger["event_id"], reply["event_id"]]
 
 
 # -- get_thread --
@@ -690,12 +705,17 @@ def _agent_config(fake: FakeMaestro, **values: Any) -> AgentConfig:
     )
 
 
-async def _deliver_turns(fake: FakeMaestro, handler, turns: list[list[dict[str, Any]]], *, config: Any = None) -> list[Any]:
+async def _deliver_turns(
+    fake: FakeMaestro, handler, turns: list[list[dict[str, Any]]], *, config: Any = None, dispatch: bool = False
+) -> list[Any]:
+    """Each turn through a Maestro delivery: the person in the web chat, or (``dispatch``) the agent's
+    own publication of the person's message, Maestro's side of production ``AgentServer.dispatch``."""
     adapter = create_text_delivery_adapter(config or fake.config, handler, private_resources)
     thread_id = fake.create_thread(USER, title=None)
+    publish = fake.agent_publish if dispatch else fake.publish
     responses = []
     for number, content in enumerate(turns, start=1):
-        trigger = fake.publish(thread_id, USER, content, client_event_id=f"client-{number}")
+        trigger = publish(thread_id, USER, content, client_event_id=f"client-{number}")
         (delivery,) = fake.deliveries_for(trigger)
         responses.append(await fake.deliver(adapter, delivery))
     return responses
@@ -734,14 +754,11 @@ async def test_executor_gives_the_handler_the_production_memory():
     production = await _production((PHOTO_TURN, LAST_TURN))
     for fmt in HISTORY_FORMATS:
         assert _normalized(seen["histories"][fmt]) == _normalized(await production.get_history(format=fmt)), fmt
-    assert [(e.actor, e.author) for e in seen["raw"]] == [("user", USER.user_name), ("assistant", ASSISTANT_NAME), ("user", USER.user_name)]
+    # A web chat person has no name in Maestro's agent context ("Humano") until Core's context reaches it (plan 5).
+    person = fake_module.WEB_CHAT_PERSON_NAME
+    assert [(e.actor, e.author) for e in seen["raw"]] == [("user", person), ("assistant", ASSISTANT_NAME), ("user", person)]
     assert seen["raw"][0].content[1].url.startswith(f"{fake_module.CALLBACK_BASE_URL}/artifact-links/")
     assert isinstance(seen["thread"], Thread) and seen["thread"].id == seen["raw"][0].thread_id
-
-
-def _without_user(events: list[ThreadEvent]) -> list[dict[str, Any]]:
-    # FakeMaestro's person has no e-mail (agent-only data, plan 3 task 7): the user is compared elsewhere.
-    return [event.model_dump(exclude={"user"}) for event in events]
 
 
 async def _read_after_yield(on, send, memory, seen):
@@ -749,7 +766,7 @@ async def _read_after_yield(on, send, memory, seen):
     yield send.text("Primeira parte.")
     yield send.update_user_event(on.context.event_id, [_text("Oi (editado)")])
     yield send.update_thread(queue="suporte")
-    seen["raw"] = _without_user(await memory.get_history_raw())
+    seen["raw"] = [event.model_dump() for event in await memory.get_history_raw()]
     seen["histories"] = {fmt: await memory.get_history(format=fmt) for fmt in HISTORY_FORMATS}
     seen["queue"] = (await memory.get_thread()).queue
     yield send.text("Segunda parte.")
@@ -770,7 +787,7 @@ async def test_executor_reads_after_yield_like_production():
             yield event
 
     with fake.serving():
-        (response,) = await _deliver_turns(fake, handler, [[_text("Oi")]], config=_agent_config(fake))
+        (response,) = await _deliver_turns(fake, handler, [[_text("Oi")]], config=_agent_config(fake), dispatch=True)
     persistence = MemoryPersistence()
     pipeline = HandlerPipeline(persistence=persistence, assistant_name=ASSISTANT_NAME)
     context = HandlerContext(
@@ -793,7 +810,84 @@ async def test_executor_reads_after_yield_like_production():
     # The echo of run_start is the run.updated (running) that names the trigger.
     thread_id = next(iter(fake.threads))
     start = next(event for event in fake.events[thread_id] if event["type"] == "run.updated")
-    assert (start["payload"]["status"], start["payload"]["trigger_event_id"]) == ("running", fake.events[thread_id][0]["event_id"])
+    trigger = next(event for event in fake.events[thread_id] if event["type"] == "message.created")
+    assert (start["payload"]["status"], start["payload"]["trigger_event_id"]) == ("running", trigger["event_id"])
+
+
+async def test_echoes_follow_the_maestro_order_with_an_open_stream():
+    """A stream keeps its ordinal while open: a text persisted meanwhile is read before the stream's message."""
+    fake = FakeMaestro(product_capabilities=("stream.delta",))
+    seen: dict[str, Any] = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        stream = send.open_text()
+        await stream.delta("Resposta em partes")
+        yield send.text("Antes do fim do stream.")
+        await stream.finish()
+        seen["texts"] = [event.content[0].text for event in await memory.get_history_raw() if event.actor == "assistant"]
+
+    with fake.serving():
+        (response,) = await _deliver_turns(fake, handler, [[_text("Oi")]], dispatch=True)
+
+    assert response.json()["state"] == "responded"
+    (thread_id,) = fake.threads
+    stored = [event["payload"]["content"][0]["text"] for event in fake.events[thread_id] if event["actor"]["kind"] == "agent"]
+    assert seen["texts"] == stored == ["Antes do fim do stream.", "Resposta em partes"]
+
+
+async def test_a_tolerated_refusal_has_no_echo():
+    """``already_participant``: the handler goes on, and the refused output is not read back."""
+    fake = FakeMaestro()
+    seen: dict[str, Any] = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        yield send.add_participant(USER.user_id, user_name=USER.user_name)
+        seen["users"] = [user.user_id for user in (await memory.get_thread()).users]
+        seen["raw"] = [event.type for event in await memory.get_history_raw()]
+        yield send.text("Você já está na conversa.")
+
+    with fake.serving():
+        (response,) = await _deliver_turns(fake, handler, [[_text("Me adicione")]], dispatch=True)
+
+    assert response.json()["state"] == "responded"
+    assert fake.rejections == [("outputs", "VALIDATION_FAILED")]
+    assert seen == {"users": [USER.user_id, AGENT_ID], "raw": ["message"]}
+
+
+async def _edit_own_message(on, send, memory, seen):
+    yield send.text("Rascunho")
+    own = (await memory.get_history_raw())[-1]
+    yield send.update_user_event(own.id, [_text("Versão final")])
+    seen["raw"] = [event.model_dump() for event in await memory.get_history_raw()]
+    seen["history"] = await memory.get_history(format="openai")
+
+
+async def test_an_edit_of_its_own_echo_reads_like_production():
+    """``update_user_event`` on the agent's own message of this execution: the next read has the edit."""
+    fake = FakeMaestro()
+    maestro: dict[str, Any] = {}
+    production: dict[str, Any] = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        async for event in _edit_own_message(on, send, memory, maestro):
+            yield event
+
+    async def production_handler(on, send, memory, analytics, settings):
+        async for event in _edit_own_message(on, send, memory, production):
+            yield event
+
+    with fake.serving():
+        (response,) = await _deliver_turns(fake, handler, [[_text("Oi")]], config=_agent_config(fake), dispatch=True)
+    pipeline = HandlerPipeline(persistence=MemoryPersistence(), assistant_name=ASSISTANT_NAME)
+    context = HandlerContext(
+        handler=production_handler, agent_id=AGENT_ID, organization_id=ORG_ID, workspace_id=WORKSPACE_ID, message="Oi", user=USER
+    )
+    async for _ in pipeline.execute(context, await pipeline.setup(context)):
+        pass
+
+    assert response.json()["state"] == "responded"
+    assert _normalized(maestro) == _normalized(production)
+    assert maestro["history"][-1] == {"role": "assistant", "content": "Versão final"}
 
 
 async def test_own_uploaded_file_is_read_back_with_its_url(monkeypatch):
@@ -818,8 +912,8 @@ async def test_own_uploaded_file_is_read_back_with_its_url(monkeypatch):
 
     assert response.json()["state"] == "responded"
     image = seen["raw"][-1].content[0]
-    # Production keeps the URL send.image received; Maestro has no link past the cutoff.
-    assert (image.url, image.ref_id is not None, links) == (data_url, True, [])
+    # Production keeps the URL send.image received, without ref_id; Maestro has no link past the cutoff.
+    assert (image.url, image.ref_id, links) == (data_url, None, [])
 
 
 async def test_messages_after_the_cutoff_stay_out():

@@ -121,7 +121,13 @@ class MaestroExecutionPersistence(Persistence):
         snapshot = await self._memory.execution_snapshot()
         events, participants, uploaded = list(snapshot["events"]), list(snapshot["participants"]), {}
         if self._published is not None:
-            echoes = self._published.published_events
+            # An echo is after the cutoff; an event already read (same event id) is not added again.
+            known_events = {event["event_id"] for event in events}
+            echoes = []
+            for echo in self._published.published_events:
+                if echo["event_id"] not in known_events:
+                    known_events.add(echo["event_id"])
+                    echoes.append(echo)
             events.extend(echoes)
             known = {participant["participant_id"] for participant in participants}
             for echo in echoes:

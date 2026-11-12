@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import patch
+
 import httpx
 import pytest
 
+import dooers.agents.server.maestro.media_fetch as media_fetch_module
+from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.maestro import create_text_delivery_adapter
 from dooers.agents.server.protocol.models import User
 from tests.parity.fake_maestro import (
     CALLBACK_BASE_URL,
+    WEB_CHAT_PERSON_NAME,
     FakeMaestro,
     FakeMaestroRejected,
-    legacy_thread_view,
-    legacy_view,
     private_resources,
     shared_contracts,
 )
+from tests.parity.model import USER
+from tests.test_maestro_legacy_model import MaestroThread, _every_send, _runs_only
 
 ANA = User(user_id="user-1", user_name="Ana Souza", user_email="ana@example.com")
 
@@ -27,6 +33,12 @@ async def _deliver(fake, handler, content=None, *, title="Atendimento"):
     adapter = create_text_delivery_adapter(fake.config, handler, private_resources)
     response = await fake.deliver(adapter, delivery)
     return thread_id, delivery, response
+
+
+def _after_creation(fake: FakeMaestro, thread_id: str) -> list[dict[str, Any]]:
+    created, *events = fake.events[thread_id]
+    assert created["type"] == "thread.created" and created["sequence"] == "1"
+    return events
 
 
 async def test_text_reply_becomes_an_agent_message_event():
@@ -44,9 +56,11 @@ async def test_text_reply_becomes_an_agent_message_event():
         thread_id, delivery, response = await _deliver(fake, handler)
 
     assert response.status_code == 200 and response.json()["state"] == "responded"
-    assert seen == {"message": "Olá", "user": User(user_id="user-1", user_name="Ana Souza")}
-    assert [event["type"] for event in fake.events[thread_id]] == ["message.created", "run.updated", "message.created", "run.updated"]
-    human, start, reply, end = fake.events[thread_id]
+    # Maestro's web chat person: no name, e-mail or identity IDs in the agent's context (plan 5).
+    assert seen == {"message": "Olá", "user": User(user_id="user-1", user_name=WEB_CHAT_PERSON_NAME)}
+    events = _after_creation(fake, thread_id)
+    assert [event["type"] for event in events] == ["message.created", "run.updated", "message.created", "run.updated"]
+    human, start, reply, end = events
     assert (start["payload"]["status"], end["payload"]["status"]) == ("running", "succeeded")
     assert start["payload"]["run_id"] == reply["payload"]["run_id"] == end["payload"]["run_id"]
     assert start["payload"]["trigger_event_id"] == human["event_id"]
@@ -68,6 +82,18 @@ async def test_text_reply_becomes_an_agent_message_event():
     assert fake.rejections == []
 
 
+def test_thread_created_is_the_first_event_with_the_sdk_fields():
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(ANA, title="Atendimento")
+    (created,) = fake.events[thread_id]
+    view = created["payload"]["thread"]
+    assert (created["type"], created["sequence"], created["actor"]["kind"]) == ("thread.created", "1", "human")
+    assert (view["title"], view["queue"], view["channel"], view["channel_meta"]) == ("Atendimento", None, "dooers-platform", None)
+    # The shared event never carries the creator's permissions.
+    assert not any(view["permissions"].values())
+    assert [p["joined_sequence"] for p in view["participants"]] == ["1", "1"]
+
+
 async def test_send_refused_by_the_sink_completes_failed_without_an_event():
     fake = FakeMaestro()
 
@@ -80,26 +106,104 @@ async def test_send_refused_by_the_sink_completes_failed_without_an_event():
 
     assert response.json()["state"] == "failed"
     assert (delivery.state, delivery.reason_code) == ("failed", "unsupported_capability")
-    assert [event["actor"]["kind"] for event in fake.events[thread_id]] == ["human"]
+    assert [event["actor"]["kind"] for event in _after_creation(fake, thread_id)] == ["human"]
 
 
 def test_publish_outside_the_contract_is_rejected():
     fake = FakeMaestro()
     thread_id = fake.create_thread(ANA, title=None)
     image = {"type": "image", "url": "https://cdn.example.com/foto.png", "mime_type": "image/png"}
+    link = {"type": "media_link", "kind": "image", "url": "https://cdn.example.com/foto.png"}
+    for part in (image, link):
+        with pytest.raises(FakeMaestroRejected) as error:
+            fake.publish(thread_id, ANA, [{"type": "text", "text": "Veja"}, part], client_event_id="client-1")
+        assert error.value.action == "message.create"
+    assert _after_creation(fake, thread_id) == []
+
+
+def test_agent_publish_declares_the_person_only_to_the_agent():
+    """``AgentServer.dispatch``'s Maestro side: the declared name goes with the message; e-mail and identity IDs only to the agent."""
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(USER, title=None)
+    link = {"type": "media_link", "kind": "image", "url": "https://cdn.example.com/foto.png", "mime_type": "image/png"}
+    event = fake.agent_publish(thread_id, USER, [{"type": "text", "text": "Veja"}, link], client_event_id="client-1")
+
+    assert event["actor"]["display_name"] == "Ana Souza" and {"email", "identity_ids"}.isdisjoint(event["actor"])
+    assert shared_contracts().is_valid("Public.Event.message.created", fake.events[thread_id][-1])
+    actor = fake.agent_view(thread_id)["events"][-1]["actor"]
+    assert (actor["email"], actor["identity_ids"]) == ("ana@example.com", ["idp-ana"])
     with pytest.raises(FakeMaestroRejected) as error:
-        fake.publish(thread_id, ANA, [{"type": "text", "text": "Veja"}, image], client_event_id="client-1")
-    assert error.value.action == "message.create"
-    assert "image" in str(error.value)
-    assert fake.events[thread_id] == []
+        fake.agent_publish(thread_id, USER, [{"type": "image", "url": "https://cdn.example.com/foto.png"}], client_event_id="client-2")
+    assert error.value.action == "agent.event.create"
+    (delivery,) = fake.deliveries_for(event)
+    assert delivery.envelope["trigger_event_id"] == event["event_id"]
 
 
-def test_form_response_needs_an_open_form_interaction():
+def test_form_response_needs_a_production_form():
     fake = FakeMaestro()
     thread_id = fake.create_thread(ANA, title=None)
+    message = fake.publish(thread_id, ANA, [{"type": "text", "text": "Olá"}], client_event_id="client-1")
     with pytest.raises(FakeMaestroRejected) as error:
-        fake.respond_form(thread_id, ANA, {"cancelled": False, "values": {"nome": "Ana"}})
-    assert error.value.action == "form.response"
+        fake.respond_form(thread_id, ANA, message["event_id"], values={"nome": "Ana"}, cancelled=False)
+    assert error.value.action == "form.response" and "NOT_FOUND" in error.value.reason
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_form_response_is_a_delivery_to_the_form_author(cancelled):
+    fake = FakeMaestro()
+    seen = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        if on.form_event_id is None:
+            yield send.form("Seu nome?", [send.form_text("nome", label="Nome")])
+        else:
+            seen.update(form_data=on.form_data, form_cancelled=on.form_cancelled, form_event_id=on.form_event_id)
+            yield send.text("Obrigado.")
+
+    with fake.serving():
+        adapter = create_text_delivery_adapter(fake.config, handler, private_resources)
+        thread_id = fake.create_thread(ANA, title=None)
+        message = fake.publish(thread_id, ANA, [{"type": "text", "text": "Olá"}], client_event_id="client-1")
+        (first,) = fake.deliveries_for(message)
+        await fake.deliver(adapter, first)
+        form = next(event for event in fake.events[thread_id] if event["type"] == "form.created")
+        values = {} if cancelled else {"nome": "Ana"}
+        response = fake.respond_form(thread_id, ANA, form["event_id"], values=values, cancelled=cancelled)
+        (second,) = fake.deliveries_for(response)
+        reply = await fake.deliver(adapter, second)
+
+    assert reply.json()["state"] == "responded"
+    assert (response["type"], response["root_event_id"], response["causation_event_id"]) == ("form.responded", response["event_id"], None)
+    assert response["payload"] == {"form_event_id": form["event_id"], "values": values, "cancelled": cancelled}
+    assert second.envelope["recipient_participant_id"] == form["actor"]["participant_id"]
+    assert seen == {"form_data": values, "form_cancelled": cancelled, "form_event_id": form["event_id"]}
+    assert fake.rejections == []
+
+
+async def test_thread_changes_are_applied_and_a_present_person_is_refused(caplog):
+    fake = FakeMaestro()
+
+    async def handler(on, send, memory, analytics, settings):
+        yield send.update_thread(title="Pedido 42", queue="suporte")
+        yield send.add_participant("user-2", user_name="Bia Lima", user_email="bia@example.com")
+        # Already in the thread: Maestro refuses it (already_participant) and the handler goes on, as in production.
+        yield send.add_participant("user-1")
+        yield send.text("Pronto.")
+
+    with fake.serving():
+        thread_id, delivery, response = await _deliver(fake, handler)
+
+    thread = fake.threads[thread_id]
+    assert response.json()["state"] == "responded"
+    assert (thread["title"], thread["queue"], thread["version"]) == ("Pedido 42", "suporte", 3)
+    added = thread["participants"][-1]
+    # Maestro keeps only the principal: no name, e-mail or identity IDs of the request.
+    assert (added["principal_id"], added["display_name"], added["role"]) == ("user-2", WEB_CHAT_PERSON_NAME, "member")
+    updated, joined = (event for event in fake.events[thread_id] if event["type"] in {"thread.updated", "participant.added"})
+    assert updated["payload"] == {"thread_id": thread_id, "title": "Pedido 42", "queue": "suporte", "version": 2, "state": "active"}
+    assert joined["payload"]["participant"] == added and added["joined_sequence"] == joined["sequence"]
+    assert fake.rejections == [("outputs", "VALIDATION_FAILED")]
+    assert [event["type"] for event in _after_creation(fake, thread_id)][-1] == "message.created"
 
 
 def test_callbacks_outside_the_contract_get_contract_errors():
@@ -126,49 +230,6 @@ def test_callbacks_outside_the_contract_get_contract_errors():
     ]
 
 
-async def test_legacy_view_maps_message_events_without_inventing_fields():
-    fake = FakeMaestro()
-
-    async def handler(on, send, memory, analytics, settings):
-        yield send.text("Oi, Ana!")
-
-    with fake.serving():
-        thread_id, _delivery, _response = await _deliver(fake, handler)
-    human, reply = (legacy_view(event) for event in fake.events[thread_id])
-
-    assert human["id"] == fake.events[thread_id][0]["event_id"] and human["thread_id"] == thread_id
-    assert (human["type"], human["actor"], human["author"]) == ("message", "user", "Ana Souza")
-    # The Maestro actor has no e-mail, run or client event id: the view leaves them empty.
-    assert human["user"] == User(user_id="user-1", user_name="Ana Souza").model_dump()
-    assert (human["run_id"], human["client_event_id"], human["data"]) == (None, None, None)
-    assert (reply["actor"], reply["author"], reply["user"]) == ("assistant", "Assistente", User(user_id="").model_dump())
-    assert reply["content"] == [{"type": "text", "text": "Oi, Ana!"}]
-    with pytest.raises(ValueError, match="execution.started"):
-        legacy_view({**fake.events[thread_id][0], "type": "execution.started"})
-
-
-async def test_legacy_thread_view_maps_the_maestro_thread():
-    fake = FakeMaestro()
-
-    async def handler(on, send, memory, analytics, settings):
-        yield send.text("Oi")
-
-    with fake.serving():
-        thread_id, _delivery, _response = await _deliver(fake, handler, title="Atendimento")
-    view = legacy_thread_view(fake.threads[thread_id], fake.events[thread_id])
-
-    assert (view["id"], view["agent_id"], view["title"], view["queue"]) == (
-        thread_id,
-        fake.config.instance_agent_id,
-        "Atendimento",
-        None,
-    )
-    assert (view["organization_id"], view["workspace_id"]) == (fake.config.organization_id, fake.config.workspace_id)
-    assert view["owner"] == User(user_id="user-1", user_name="Ana Souza").model_dump()
-    # Production lists the agent among the users, after the person.
-    assert view["users"] == [view["owner"], User(user_id=fake.config.instance_agent_id, user_name="Assistente").model_dump()]
-
-
 async def test_artifacts_upload_hydrate_and_link():
     fake = FakeMaestro(artifact_mime_types=("text/plain",))
     seen = {}
@@ -183,20 +244,24 @@ async def test_artifacts_upload_hydrate_and_link():
 
     assert response.json()["state"] == "responded"
     assert seen["parts"] == [("text", None, None), ("document", b"nota fiscal", "nota.txt")]
-    reply = fake.events[thread_id][1]
+    reply = _after_creation(fake, thread_id)[1]
     (attachment,) = reply["payload"]["content"]
+    assert attachment == {
+        "type": "attachment",
+        "artifact_id": attachment["artifact_id"],
+        "filename": "recibo.txt",
+        "mime_type": "text/plain",
+        "size_bytes": 9,
+    }
     assert fake.artifacts[attachment["artifact_id"]]["data"] == b"recibo 42"
     assert {artifact["state"] for artifact in fake.artifacts.values()} == {"linked"}
-    assert legacy_view(reply)["content"] == [
-        {
-            "type": "document",
-            "url": None,
-            "filename": "recibo.txt",
-            "mime_type": "text/plain",
-            "size_bytes": 9,
-            "ref_id": attachment["artifact_id"],
-        }
-    ]
+
+
+def test_upload_follows_the_production_file_types():
+    fake = FakeMaestro()
+    assert fake.upload(ANA, b"OggS audio", filename="recado.ogg", mime_type="audio/ogg")["mime_type"] == "audio/ogg"
+    with pytest.raises(FakeMaestroRejected):
+        fake.upload(ANA, b"MZ binary", filename="setup.exe", mime_type="application/x-msdownload")
 
 
 def test_artifact_link_only_for_files_linked_up_to_the_cutoff():
@@ -218,6 +283,10 @@ def test_artifact_link_only_for_files_linked_up_to_the_cutoff():
     response = issue(late)
     assert response.status_code == 200 and response.json()["url"].startswith(f"{CALLBACK_BASE_URL}/artifact-links/")
     assert fake.rejections == [("artifact.link.issue", "NOT_FOUND")]
+    # Outside an execution (the harness's read back), any file linked to the thread has a link.
+    assert fake.artifact_link(thread_id, note["artifact_id"])["url"].startswith(f"{CALLBACK_BASE_URL}/artifact-links/")
+    with pytest.raises(LookupError):
+        fake.artifact_link(fake.create_thread(ANA, title=None), note["artifact_id"])
 
 
 @pytest.mark.parametrize(
@@ -270,7 +339,7 @@ async def test_stream_deltas_are_ephemeral_and_the_final_text_is_one_event():
 
     assert response.json()["state"] == "responded"
     assert "".join(chunk["delta"] for chunk in delivery.stream_chunks) == "Olá, mundo"
-    assert fake.events[thread_id][1]["payload"]["content"] == [{"type": "text", "text": "Olá, mundo"}]
+    assert _after_creation(fake, thread_id)[1]["payload"]["content"] == [{"type": "text", "text": "Olá, mundo"}]
 
 
 async def test_context_pages_cover_the_whole_history():
@@ -293,3 +362,55 @@ async def test_context_pages_cover_the_whole_history():
     assert response.json()["state"] == "responded"
     assert seen == {"raw": 105, "thread": thread_id}
     assert delivery.context_pages > 2
+
+
+# -- The Maestro shapes ``tests/test_maestro_legacy_model.py`` writes by hand --
+
+_ID_KEYS = frozenset({"run_id", "event_id", "trigger_event_id", "participant_id", "thread_id"})
+#: Bookkeeping Maestro adds to an agent's message; the conversion does not read it.
+_BOOKKEEPING = frozenset({"execution_id", "output_id"})
+
+
+def _shape(value: Any, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {k: _shape(v, k) for k, v in value.items() if k not in _BOOKKEEPING}
+    if isinstance(value, list):
+        return [_shape(item) for item in value]
+    if key in _ID_KEYS or key == "joined_sequence":
+        return f"<{key}>"
+    return value
+
+
+def _outputs_shape(events: list[dict[str, Any]]) -> list[tuple[str, str, Any]]:
+    return [(event["type"], event["actor"]["kind"], _shape(event["payload"])) for event in events]
+
+
+async def _offline_resolver(host: str, port: int) -> list[str]:
+    raise OSError(f"offline: no DNS for {host}")
+
+
+@pytest.mark.parametrize("build", [_every_send, _runs_only], ids=["every_send", "runs"])
+async def test_legacy_model_test_shapes_are_the_ones_maestro_stores(build):
+    """The events ``MaestroThread.publish`` writes by hand equal what FakeMaestro stores for the same sends.
+
+    Same ``AgentSend`` list, once through the SDK's sink and FakeMaestro (offline media URLs:
+    ``media_link``), once through the round-trip test's ``MaestroThread``. Ids, sequences and
+    Maestro's bookkeeping on agent messages are left out.
+    """
+    fake = FakeMaestro()
+
+    async def handler(on, send, memory, analytics, settings):
+        for event in build(send, on.context.event_id):
+            yield event
+
+    with fake.serving(), patch.object(media_fetch_module, "_system_resolver", _offline_resolver):
+        thread_id, _delivery, response = await _deliver(fake, handler, title="Nova conversa")
+    assert response.json()["state"] == "responded" and fake.rejections == []
+    stored = _after_creation(fake, thread_id)[1:]
+
+    person = _after_creation(fake, thread_id)[0]["actor"]
+    thread = MaestroThread(shared_contracts())
+    trigger = thread.message(person, [{"type": "text", "text": "Olá"}])
+    thread.publish(build(AgentSend(), trigger["event_id"]), trigger, actor=stored[0]["actor"])
+
+    assert _outputs_shape(stored) == _outputs_shape(thread.events[1:])

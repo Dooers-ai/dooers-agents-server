@@ -41,7 +41,7 @@ from dooers.agents.server.protocol.models import AudioPart, ContactPart, Documen
 from dooers.tools.rag.runtime import current_execution_context
 from tests.parity import fake_maestro as fake_module
 from tests.parity.fake_maestro import CALLBACK_BASE_URL, FakeMaestro
-from tests.parity.harness import _maestro_content, run_legacy
+from tests.parity.harness import _agent_content, _maestro_content, run_legacy
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import ASSISTANT_NAME, USER, ParityResult, close_capture, open_capture
 from tests.parity.normalize import normalize
@@ -70,38 +70,6 @@ def with_links(data: dict[str, Any]) -> None:
 # -- FakeMaestro deliveries (the person, the thread and the agent of the parity scenarios) --
 
 
-def _person(maestro: FakeMaestro, thread_id: str) -> dict[str, Any]:
-    participant = maestro._participant(thread_id, kind="human", principal_id=USER.user_id)
-    return {"kind": "human", "principal_id": USER.user_id, "participant_id": participant["participant_id"], "display_name": USER.user_name}
-
-
-@pytest.fixture
-def agent_only_fields(monkeypatch):
-    """Maestro adds the person's e-mail and identity IDs to the agent's delivery context only.
-
-    Stored events (``Public.Event.*``) never carry them; the fake's context gets them here.
-    """
-    context = FakeMaestro._context
-
-    def enriched(self, request, delivery_id):
-        page = context(self, request, delivery_id).json()
-        events = [page["trigger_event"], *([page["invocation_event"]] if "invocation_event" in page else []), *page["history"]["items"]]
-        for actor in [event["actor"] for event in events]:
-            if actor["kind"] == "human" and actor["principal_id"] == USER.user_id:
-                actor.update(email=USER.user_email, identity_ids=list(USER.identity_ids))
-        return self._reply("Public.ContextResponse", page)
-
-    monkeypatch.setattr(FakeMaestro, "_context", enriched)
-
-
-def _new_thread(maestro: FakeMaestro, title: str | None) -> tuple[str, dict[str, Any]]:
-    """A thread as Maestro creates it for a person: ``thread.created`` is its first event."""
-    thread_id = maestro.create_thread(USER, title=title)
-    person = _person(maestro, thread_id)
-    maestro._append(thread_id, person, {"thread": deepcopy(maestro.threads[thread_id])}, event_type="thread.created")
-    return thread_id, person
-
-
 async def _deliver(maestro: FakeMaestro, adapter, event: dict[str, Any]) -> None:
     for delivery in maestro.deliveries_for(event):
         response = await maestro.deliver(adapter, delivery)
@@ -115,16 +83,13 @@ def _resources(queues=()) -> Callable:
     return resolve
 
 
-def _media_link(part: dict[str, Any]) -> dict[str, Any]:
-    """A URL part of the scenario as the agent's context carries it (``media_link``: no ``size_bytes``)."""
-    if part["type"] not in {"image", "audio", "document"}:
-        return part
-    extra = {key: part[key] for key in ("mime_type", "filename", "duration") if key in part}
-    return {"type": "media_link", "kind": part["type"], "url": part["url"], **extra}
+async def test_incoming_fields_match_production():
+    """Same handler, same input as the parity scenario ``incoming_fields``: the handler reads the same values.
 
-
-async def test_incoming_fields_match_production(agent_only_fields):
-    """Same handler, same input as the parity scenario ``incoming_fields``: the handler reads the same values."""
+    The turns are the agent's own publication of the person's message (Maestro's side of production
+    ``AgentServer.dispatch``): the declared e-mail and identity IDs reach the agent's context, and
+    the URL parts are ``media_link`` parts.
+    """
     scenario = SCENARIOS["incoming_fields"]
     spec = scenario.incoming
     legacy = (await run_legacy("incoming_fields")).incoming
@@ -133,11 +98,11 @@ async def test_incoming_fields_match_production(agent_only_fields):
     capture, token = open_capture()
     try:
         with maestro.serving():
-            thread_id, person = _new_thread(maestro, spec.thread_title)
+            thread_id = maestro.create_thread(USER, title=spec.thread_title)
             for number, turn in enumerate(spec.turns, start=1):
-                content = [_media_link(part) for part in _maestro_content(turn)]
-                payload = {"client_event_id": f"client-{number}", "content": content, "mentions": []}
-                await _deliver(maestro, adapter, maestro._append(thread_id, person, payload))
+                await _deliver(
+                    maestro, adapter, maestro.agent_publish(thread_id, USER, _agent_content(turn), client_event_id=f"client-{number}")
+                )
     finally:
         close_capture(token)
     expected = deepcopy(legacy)
@@ -157,7 +122,7 @@ async def test_incoming_fields_match_production(agent_only_fields):
 
 
 @pytest.mark.parametrize("name", ["form_response_submit", "form_response_cancel"])
-async def test_form_cancel_invokes_handler(name, agent_only_fields):
+async def test_form_cancel_invokes_handler(name):
     """``form.responded`` is a new delivery to the form's author; submit and cancel both run the handler."""
     scenario = SCENARIOS[name]
     legacy = (await run_legacy(name)).incoming
@@ -166,13 +131,13 @@ async def test_form_cancel_invokes_handler(name, agent_only_fields):
     capture, token = open_capture()
     try:
         with maestro.serving():
-            thread_id, person = _new_thread(maestro, None)
-            first = {"client_event_id": "client-1", "content": _maestro_content(scenario.incoming.turns[0]), "mentions": []}
-            await _deliver(maestro, adapter, maestro._append(thread_id, person, first))
+            thread_id = maestro.create_thread(USER, title=None)
+            first = maestro.publish(thread_id, USER, _maestro_content(scenario.incoming.turns[0]), client_event_id="client-1")
+            await _deliver(maestro, adapter, first)
             (form,) = [event for event in maestro.events[thread_id] if event["type"] == "form.created"]
             data = dict(scenario.incoming.turns[1].data)
-            response = {"form_event_id": form["event_id"], "values": data["values"], "cancelled": data["cancelled"]}
-            await _deliver(maestro, adapter, maestro._append(thread_id, person, response, event_type="form.responded"))
+            response = maestro.respond_form(thread_id, USER, form["event_id"], values=data["values"], cancelled=data["cancelled"])
+            await _deliver(maestro, adapter, response)
     finally:
         close_capture(token)
     received = capture.incoming
@@ -205,14 +170,12 @@ async def test_media_part_has_bytes_and_link(monkeypatch, caplog):
     adapter = create_text_delivery_adapter(maestro.config, handler, _resources())
     caplog.set_level(logging.DEBUG)
     with maestro.serving():
-        thread_id, person = _new_thread(maestro, None)
+        thread_id = maestro.create_thread(USER, title=None)
         image = maestro.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
         audio = {**maestro.upload(USER, b"RIFF fixture", filename="recado.wav", mime_type="audio/wav"), "duration": 4.0}
         document = maestro.upload(USER, b"%PDF fixture", filename="nota.pdf", mime_type="application/pdf")
-        payload = {"client_event_id": "client-1", "content": [image, audio, document, deepcopy(image)], "mentions": []}
-        trigger = maestro._append(thread_id, person, payload)
-        maestro._link_attachments(trigger)
-        await _deliver(maestro, adapter, trigger)
+        content = [image, audio, document, deepcopy(image)]
+        await _deliver(maestro, adapter, maestro.publish(thread_id, USER, content, client_event_id="client-1"))
 
     image_part, audio_part, document_part, again = seen["content"]
     links = f"{CALLBACK_BASE_URL}/artifact-links/"
@@ -247,11 +210,9 @@ async def test_link_route_off_fails_the_delivery_loudly(monkeypatch, caplog):
     maestro = FakeMaestro()
     adapter = create_text_delivery_adapter(maestro.config, handler, _resources())
     with maestro.serving():
-        thread_id, person = _new_thread(maestro, None)
+        thread_id = maestro.create_thread(USER, title=None)
         note = maestro.upload(USER, b"nota fiscal", filename="nota.txt", mime_type="text/plain")
-        trigger = maestro._append(thread_id, person, {"client_event_id": "client-1", "content": [note], "mentions": []})
-        maestro._link_attachments(trigger)
-        (delivery,) = maestro.deliveries_for(trigger)
+        (delivery,) = maestro.deliveries_for(maestro.publish(thread_id, USER, [note], client_event_id="client-1"))
         response = await maestro.deliver(adapter, delivery)
     assert ran == []
     assert (response.status_code, response.json()["error"]["code"]) == (422, "UNSUPPORTED_CAPABILITY")

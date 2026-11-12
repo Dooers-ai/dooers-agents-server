@@ -218,6 +218,26 @@ def _history(fmt: str) -> Check:
     return check
 
 
+def _media_upload(result: ParityResult) -> None:
+    """Production stores each media URL with the send's metadata; the next turn reads them back."""
+    assert [(e["actor"], e["content"][0]["type"]) for e in result.events[1:4]] == [
+        ("assistant", "image"),
+        ("assistant", "audio"),
+        ("assistant", "document"),
+    ]
+    image, audio, document = (e["content"][0] for e in result.events[1:4])
+    assert (image["url"], image["filename"], image["ref_id"], image["alt"]) == (
+        "https://cdn.example.com/online/grafico.png",
+        None,
+        None,
+        "Gráfico de vendas",
+    )
+    assert (audio["filename"], audio["duration"], document["filename"], document["size_bytes"]) == (None, 3.5, "relatorio.pdf", None)
+    for fmt in ("openai", "anthropic"):
+        texts = [message["content"] for message in result.histories[fmt]]
+        assert texts[1:4] == ["[image: image]", "[audio: audio, audio/ogg, 3.5s]", "[document: relatorio.pdf]"], texts
+
+
 def _server_dispatch(result: ParityResult) -> None:
     calls = result.outputs["dispatch"]
     assert [call["is_new_thread"] for call in calls] == [True, False, True]
@@ -314,6 +334,7 @@ SUBJECTS: dict[str, Subject] = {
     "image": Subject(("events",), _all(_TWO_MESSAGES, _last_part("image", mime_type="image/png"))),
     "document": Subject(("events",), _all(_TWO_MESSAGES, _last_part("document", filename="relatorio.pdf"))),
     "audio": Subject(("events",), _all(_TWO_MESSAGES, _last_part("audio", duration=3.5))),
+    "media_upload": Subject(("events", "histories.openai", "histories.anthropic"), _media_upload),
     "contact": Subject(("events",), _all(_TWO_MESSAGES, _last_part("contact", display_name="Suporte Dooers"))),
     "template": Subject(("events",), _all(_TWO_MESSAGES, _last_part("text", text="[template: order_update (pt_BR)]"))),
     "reasoning": Subject(("events",), _types("message", "reasoning")),

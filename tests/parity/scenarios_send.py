@@ -18,6 +18,7 @@ from tests.parity.model import (
     Scenario,
     ScenarioInput,
     Turn,
+    capture_histories,
     capture_incoming,
 )
 
@@ -141,6 +142,28 @@ def _chart(chart_type: str) -> Handler:
     )
 
 
+#: Media URLs that answer (``ScenarioInput.media``): in Maestro mode the SDK uploads these files.
+ONLINE_MEDIA: dict[str, tuple[bytes, str]] = {
+    "https://cdn.example.com/online/grafico.png": (b"\x89PNG\r\n\x1a\nparity-chart", "image/png"),
+    "https://cdn.example.com/online/resposta.ogg": (b"OggS\x00parity-audio", "audio/ogg"),
+    "https://cdn.example.com/online/relatorio.pdf": (b"%PDF-1.4 parity-report", "application/pdf"),
+}
+
+
+async def _media_upload(on, send, memory, analytics, settings):
+    """Turn 1 sends files from URLs that answer; turn 2 reads them back in the history."""
+    yield send.run_start()
+    if on.message == "Resuma a conversa":
+        await capture_histories(memory)
+        yield send.text("Resumo pronto.")
+    else:
+        image, audio, document = ONLINE_MEDIA
+        yield send.image(image, mime_type="image/png", alt="Gráfico de vendas")
+        yield send.audio(audio, mime_type="audio/ogg", duration=3.5)
+        yield send.document(document, filename="relatorio.pdf", mime_type="application/pdf")
+    yield send.run_end()
+
+
 def _form_response_turns(data: dict[str, Any]) -> tuple[Turn, ...]:
     return (
         Turn(message="Quero me cadastrar"),
@@ -178,6 +201,11 @@ SEND_SCENARIOS: dict[str, Scenario] = {
     "audio": Scenario(
         handler=_reply(lambda on, send: [send.audio("https://cdn.example.com/resposta.ogg", mime_type="audio/ogg", duration=3.5)]),
         incoming=ScenarioInput(),
+    ),
+    "media_upload": Scenario(
+        handler=_media_upload,
+        incoming=ScenarioInput(turns=(Turn(message="Me mande o relatório"), Turn(message="Resuma a conversa")), media=ONLINE_MEDIA),
+        history_formats=("openai", "anthropic"),
     ),
     "contact": Scenario(
         handler=_reply(

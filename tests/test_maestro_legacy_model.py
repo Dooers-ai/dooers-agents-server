@@ -141,10 +141,11 @@ class MaestroThread:
             run = {"run_id": payload["run_id"]} if "run_id" in payload else {}
             return {"thread_id": self.thread_id, "state": "active", **self.state, **run}
         if kind == "participant.add":
+            # addHumanAsAgent keeps only the principal; Maestro names a person "Humano" (participantView).
             user = payload.pop("user")
             participant = {
                 "participant_id": str(uuid4()),
-                "display_name": user.get("user_name") or user["user_id"],
+                "display_name": "Humano",
                 "state": "active",
                 "joined_sequence": str(len(self.events) + 1),
                 "left_sequence": None,
@@ -350,6 +351,34 @@ async def test_attachments_get_the_temporary_link_and_keep_their_metadata(contra
     ]
     # One link per artifact for the whole conversion (LinkResolver cache).
     assert issued == [image, audio, document]
+
+
+async def test_agent_attachments_are_the_production_send_media_parts(contracts):
+    """An agent's file is the URL of its ``send.image``/``audio``/``document``, which the SDK uploaded.
+
+    Production (``HandlerPipeline.execute``) stores that URL with the send's metadata only: no
+    ``ref_id``, and no file name for an image or an audio (the history text says ``[image: image]``).
+    """
+    thread = MaestroThread(contracts)
+    image, audio, document = str(uuid4()), str(uuid4()), str(uuid4())
+    event = thread.message(
+        AGENT,
+        [
+            # The sink uploads with the file name of the URL and adds the send's alt/duration.
+            {"type": "attachment", "artifact_id": image, "mime_type": "image/png", "filename": "cat.png", "size_bytes": 9, "alt": "Gato"},
+            {"type": "attachment", "artifact_id": audio, "mime_type": "audio/ogg", "filename": "a.ogg", "size_bytes": 7, "duration": 3.5},
+            {"type": "attachment", "artifact_id": document, "mime_type": "application/pdf", "filename": "a.pdf", "size_bytes": 12},
+        ],
+    )
+
+    converted = await _one(event, links=_links())
+
+    url = "https://maestro.example/v1/artifact-links/{}.sig".format
+    assert converted.content == [
+        WireS2C_ImagePart(url=url(image), mime_type="image/png", alt="Gato"),
+        WireS2C_AudioPart(url=url(audio), mime_type="audio/ogg", duration=3.5),
+        WireS2C_DocumentPart(url=url(document), mime_type="application/pdf", filename="a.pdf"),
+    ]
 
 
 async def test_media_link_and_contact_parts_are_the_production_url_parts(contracts):

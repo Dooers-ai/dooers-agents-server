@@ -31,6 +31,7 @@ EXPECTED_SCENARIOS = {
     "image",
     "document",
     "audio",
+    "media_upload",
     "contact",
     "template",
     "reasoning",

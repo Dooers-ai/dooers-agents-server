@@ -173,7 +173,10 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
   leitura confere de novo lease, capability e cancelamento; depois do fim da execução, ela
   falha.
 - Leitura depois de `yield`: a memória junta ao snapshot os eventos que o Maestro gravou
-  para as saídas já aceitas nesta execução (o eco das saídas, na ordem). Assim uma leitura
+  para as saídas já aceitas nesta execução (o eco das saídas). Os ecos vêm na ordem do
+  Maestro (`sequence`), uma vez cada um: uma saída gravada enquanto um stream está aberto
+  vem antes da mensagem final do stream. Uma saída recusada e tolerada (por exemplo
+  `already_participant`) não tem eco. Assim uma leitura
   depois de `yield send.*` vê a saída, como em produção: mensagem, edição, fila, título,
   participante e o `run_id` que `run_start` dá ao gatilho (o eco de `run_start` é um
   `run.updated` com `status="running"` e `trigger_event_id`).
@@ -187,6 +190,12 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
   ao LLM com o link (`langchain`, `openai_completions`, `openai_responses`). Um arquivo que
   esta execução enviou fica com a URL de origem (`send.image(url)`), como produção guarda;
   ele passa do corte, e o Maestro não emite link para ele.
+- Arquivo de um agente (a URL de `send.image`/`audio`/`document` que o SDK enviou): a parte
+  tem a forma de produção, só a URL e os metadados do `send` (imagem: `mime_type` e `alt`;
+  áudio: `mime_type` e `duration`; documento: `mime_type` e `filename`). Não tem `ref_id`,
+  e a imagem e o áudio não têm nome de arquivo (o texto do histórico é `[image: image]`).
+  **Diferença declarada:** nas execuções seguintes, a URL é o link temporário do Maestro.
+  Produção guarda a URL de origem.
 - Rota de link desligada (capability sem `artifact.link.issue` ou resposta
   `UNSUPPORTED_CAPABILITY`): a entrega falha com `UNSUPPORTED_CAPABILITY` (HTTP 422) e o log
   de erro dá as configurações. Um 403/404 para **um** arquivo (removido, fora do corte):
@@ -591,6 +600,45 @@ deploy. O smoke de wheel instalado comprova resposta confirmada e recusa de fals
 sucesso após ACK de complete perdido, separado do checkout e sem pytest/Uvicorn.
 
 Execução entre réplicas, retry e efeitos exigem a composição durável E05-09 em [journal.md](journal.md). A factory textual E05-08 conserva seu comportamento de ensaio; seu guard em memória não reserva invocação entre processos.
+
+## Paridade com a produção (`tests/parity`)
+
+A suíte de paridade roda cada cenário duas vezes: no caminho de produção
+(`thread_management="agent"`) e no modo Maestro, contra o `FakeMaestro`. O `FakeMaestro`
+confere cada pedido com o contrato vendorizado e tem as regras do Maestro: `thread.created`,
+mudança de título e fila, participante novo, link temporário, entrega de `form.responded` e
+a política de arquivos de produção. A leitura do Maestro passa pela conversão do SDK
+(`MaestroExecutionPersistence` e `legacy_model.to_runs`), a mesma do handler.
+
+- Cada `send.*` de produção (exceto `send.whatsapp.*`), cada tipo de gráfico, cada campo de
+  form, os runs, `AgentIncoming`, `form.responded` e `get_history` nos 8 formatos dão o
+  resultado de produção.
+- `send.image`/`audio`/`document` têm dois cenários: URL fora do ar (parte `media_link`) e
+  URL que responde (upload; cenário `media_upload`).
+- O turno de `AgentServer.dispatch` entra no Maestro como a publicação do próprio agente
+  (`POST /agent/threads/:id/events`, pessoa declarada, `trigger: true`). O nome declarado
+  vai com a mensagem. O e-mail e os `identity_ids` declarados voltam só a este agente, no
+  contexto da entrega. A chamada do SDK que publica é do plano 5.
+
+Diferenças declaradas:
+
+- Papéis do usuário (`system_role`, `organization_role`, `workspace_role`) e catálogo de
+  filas: vêm do contexto de conexão do Core no plano 5. Até lá, os papéis ficam nos padrões
+  de `User` e as filas vêm de `MaestroPrivateResources.queues`.
+- Pessoa do chat web: o contexto do agente não tem nome (o Maestro mostra `"Humano"`),
+  e-mail nem `identity_ids` dela. O mesmo vale para `owner` e `users` de `get_thread()`
+  (participantes do Maestro). Produção tem os dados do Core. Correção no plano 5.
+- `run_start(agent_id=<o próprio agente>)` volta como `agent_id=None` no `Run`, como
+  `send.run_start()` sem argumento.
+- Documento por URL (`media_link`): sem tamanho. A parte gravada tem `size_bytes=None` e a
+  parte do handler tem `size_bytes=0`.
+- Arquivo de um agente: depois da execução, a URL é o link temporário (ver acima).
+- URL de mídia com esquema diferente de `http`/`https` falha a execução (ver acima).
+
+Lacunas abertas (`tests/parity/known_gaps.py`): a entrada pelo `AgentServer` (`dispatch`,
+`ingest`, `repository`, `memory(thread_id)`, `chat_upload`) e o WhatsApp ficam para o plano 5.
+O chat público fica para o plano 6. Cada lacuna diz o plano que a fecha. Uma lacuna que é
+só uma diferença declarada tem de dar o mesmo resultado com essa diferença mascarada.
 
 ## Incremental local (E09-03)
 

@@ -57,6 +57,13 @@ _ATTACHMENT_FIELDS = {
     "audio": ("mime_type", "filename", "duration"),
     "document": ("mime_type", "filename", "size_bytes"),
 }
+#: Metadata of production ``send.image``/``send.audio``/``send.document`` (``HandlerPipeline.execute``):
+#: an agent's attachment (a URL the SDK uploaded) keeps only these, and no ``ref_id``.
+_AGENT_MEDIA_FIELDS = {
+    "image": ("mime_type", "alt"),
+    "audio": ("mime_type", "duration"),
+    "document": ("mime_type", "filename"),
+}
 #: Metadata each production part keeps from a Maestro ``media_link`` (a URL the SDK did not upload).
 _MEDIA_LINK_FIELDS = {
     "image": ("mime_type", "filename", "alt"),
@@ -169,7 +176,8 @@ def _media_family(mime_type: str | None) -> str:
     return "image" if mime_type.startswith("image/") else "audio" if mime_type.startswith("audio/") else "document"
 
 
-async def _part(part: dict[str, Any], links: LinkResolver) -> Any:
+async def _part(part: dict[str, Any], links: LinkResolver, *, agent: bool = False) -> Any:
+    """The production part of one Maestro part; ``agent`` when an agent wrote the message."""
     kind = part["type"]
     if kind == "text":
         return WireS2C_TextPart(text=part["text"])
@@ -181,10 +189,15 @@ async def _part(part: dict[str, Any], links: LinkResolver) -> Any:
         family = part["kind"]
         return _MEDIA_PARTS[family](url=part["url"], **{key: part[key] for key in _MEDIA_LINK_FIELDS[family] if key in part})
     if kind == "attachment":
-        # The temporary link is the URL production keeps for an upload; the artifact id is its ref_id.
         family = _media_family(part.get("mime_type"))
+        url = await links.url_for(part["artifact_id"])
+        if agent:
+            # An agent's file is the URL of send.image/audio/document the SDK uploaded: production
+            # stores that URL with the send's metadata only (no file name of the URL, no ref_id).
+            return _MEDIA_PARTS[family](url=url, **{key: part[key] for key in _AGENT_MEDIA_FIELDS[family] if key in part})
+        # A person's upload: the temporary link is the URL production keeps; the artifact id is its ref_id.
         metadata = {key: part[key] for key in _ATTACHMENT_FIELDS[family] if key in part}
-        return _MEDIA_PARTS[family](url=await links.url_for(part["artifact_id"]), ref_id=part["artifact_id"], **metadata)
+        return _MEDIA_PARTS[family](url=url, ref_id=part["artifact_id"], **metadata)
     raise ValueError(f"unknown Maestro content part {kind!r}")
 
 
@@ -221,7 +234,7 @@ async def _message(
     assistant_name: str,
 ) -> ThreadEvent:
     payload, actor = event["payload"], event["actor"]
-    content = [await _part(part, links) for part in payload["content"]]
+    content = [await _part(part, links, agent=actor["kind"] == "agent") for part in payload["content"]]
     user = User(user_id="")
     if _own(actor, recipient_instance_id):
         # pipeline.py: ``author=event.data.get("author") or self._assistant_name``.
@@ -338,7 +351,11 @@ async def to_thread_event(
 
     ``recipient_instance_id`` is the agent that runs the handler; ``agent_names`` gives the
     name of each agent by instance id; ``multi_agent`` is true when the thread has several
-    active agents. An ``attachment`` gets its temporary link from ``links``.
+    active agents. An ``attachment`` gets its temporary link from ``links``. A person's
+    attachment is an upload (``ref_id`` = artifact id, with its file metadata); an agent's is
+    the URL its ``send.image``/``audio``/``document`` gave, which the SDK uploaded: production
+    stores only the URL and that send's metadata, so the part has no ``ref_id`` (an image or
+    audio has no file name either).
     ``assistant_name`` is ``AgentConfig.assistant_name``: production writes it as the author of
     its agent's events (and as the agent's ``user_name`` of a queue change), whatever name the
     agent has in Maestro.

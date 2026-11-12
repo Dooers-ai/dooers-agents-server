@@ -136,6 +136,10 @@ class ScenarioInput:
     service_secrets: Mapping[str, str] | None = None
     #: Extra observables in ``ParityResult.outputs``: ``"threads"``, ``"runs"``.
     observe: frozenset[str] = frozenset()
+    #: Files that media URLs serve (URL -> (bytes, Content-Type)); any other URL is offline.
+    #: Production never downloads an agent's media URL; in Maestro mode the SDK downloads it and
+    #: uploads the file (an offline URL gives a ``media_link``).
+    media: Mapping[str, tuple[bytes, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
