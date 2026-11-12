@@ -5,18 +5,69 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 
-from .callbacks import MaestroCallbackClient, MaestroCallbackError
+from .callbacks import OUTPUT_RULE_REFUSALS, MaestroCallbackClient, MaestroCallbackError
+from .client import MaestroContextError
+from .media_fetch import MediaFetchError, decode_data_url, fetch_media, is_data_url
+from .outputs import MAX_PHASE_OUTPUTS, MaestroOutput, RunTracker, UnsupportedAgentEvent, media_output, output_for
+
+logger = logging.getLogger(__name__)
+
+#: ``send_type`` de produção que viram uma saída direta (``outputs.output_for``).
+_DIRECT_SENDS = frozenset(
+    {
+        "text",
+        "contact",
+        "template",
+        "reasoning",
+        "tool_call",
+        "tool_result",
+        "tool_transaction",
+        "form",
+        "chart",
+        "event_update",
+        "thread_update",
+        "participant_add",
+    }
+)
+#: Mídia por URL: download, upload e parte ``attachment`` (ou ``media_link``).
+_MEDIA_SENDS = frozenset({"image", "audio", "document"})
+#: Os mesmos ``send_type`` aparecem em ``send.whatsapp.*`` com ``data["whatsapp"]`` (plano 5).
+_MESSAGE_SENDS = frozenset({"text", "contact", "template"}) | _MEDIA_SENDS
+_MEDIA_TIMEOUT_SECONDS = 30.0
+#: Rule refusals (``details.reason_code``) that do not stop the handler, by output type.
+#: Production ``send.update_thread``/``send.add_participant`` never fail the handler
+#: (``pipeline.py`` participant_add: denied -> warning, existing participant -> upsert), and a
+#: ``run_start``/``run_end`` for another agent in a thread with several agents is not an error.
+_TOLERATED_REFUSALS = {
+    "thread.update": OUTPUT_RULE_REFUSALS,
+    "participant.add": OUTPUT_RULE_REFUSALS,
+    "run.update": frozenset({"multi_agent_thread"}),
+}
+
+
+def _artifact_filename(name: str) -> str:
+    """Nome aceito pelo contrato (sem ``/``, ``\\`` e controles; até 255 unidades UTF-16)."""
+    name = re.sub(r"[/\\\x00-\x1f\x7f]", "_", name).strip() or "file"
+    while len(name.encode("utf-16-le", "surrogatepass")) > 510:
+        name = name[:-1]
+    return name
 
 
 class MaestroSend(AgentSend):
-    """Superfície do handler Maestro. Recursos não textuais falham no sink."""
+    """Superfície do handler Maestro: a de produção mais os extras do Maestro.
+
+    ``update_user_event``, ``update_thread`` e ``add_participant`` são os de
+    ``AgentSend``. ``send.whatsapp.*`` falha no sink (plano 5).
+    """
 
     def __init__(self, sink: MaestroEventSink | None = None) -> None:
         super().__init__()
@@ -40,11 +91,14 @@ class MaestroSend(AgentSend):
         *,
         suspension=None,
     ) -> AgentEvent:
-        """Explicit Maestro suspension; legacy AgentSend.form is unchanged.
+        """Without ``suspension``: the production form (a ``form.create`` output).
 
-        In this opt-in surface, elements are canonical fields and message is title.
-        Labels/size remain legacy-only; no silent conversion of callback controls.
+        With ``suspension``: explicit Maestro suspension. In that opt-in surface,
+        elements are canonical fields and message is title. Labels/size remain
+        legacy-only; no silent conversion of callback controls.
         """
+        if suspension is None:
+            return AgentSend.form(self, message, elements, submit_label, cancel_label, size)
         from .interactions import MaestroFormSuspension
 
         if not isinstance(suspension, MaestroFormSuspension) or self._sink is None:
@@ -127,15 +181,6 @@ class MaestroSend(AgentSend):
             raise MaestroCallbackError("INVALID_REQUEST")
         return AgentEvent("silence", {"reason_code": reason_code or "explicit_silent"})
 
-    def update_user_event(self, event_id: str, content: list[dict]) -> AgentEvent:
-        raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
-
-    def update_thread(self, *, title: str | None = None) -> AgentEvent:
-        raise MaestroCallbackError("FORBIDDEN")
-
-    def add_participant(self, user_id: str, **kwargs: Any) -> AgentEvent:
-        raise MaestroCallbackError("FORBIDDEN")
-
 
 @dataclass(frozen=True)
 class MaestroOutputIntent:
@@ -151,7 +196,10 @@ class MaestroOutputIntent:
 
 
 class MaestroEventSink:
-    """Uma mensagem completa por send.text, nunca concatenação/stream implícito."""
+    """Uma saída por chamada ``send.*`` de produção, na ordem do handler.
+
+    Uma mensagem completa por send.text, nunca concatenação/stream implícito.
+    """
 
     def __init__(self, client: MaestroCallbackClient, *, checkpoints=None, journal_execution=None) -> None:
         self._client = client
@@ -165,6 +213,7 @@ class MaestroEventSink:
         self._silent: str | None = None
         self._finished = False
         self._failed = False
+        self._runs = RunTracker()
 
     @property
     def event_ids(self) -> tuple[str, ...]:
@@ -192,7 +241,7 @@ class MaestroEventSink:
             raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
         if self._silent is not None:
             raise MaestroCallbackError("INVALID_REQUEST")
-        if len(self._intents) >= 98 or sum(not stream.closed for stream in self._streams) >= 16:
+        if len(self._intents) >= MAX_PHASE_OUTPUTS or sum(not stream.closed for stream in self._streams) >= 16:
             raise MaestroCallbackError("QUOTA_EXCEEDED")
         ordinal = len(self._intents)
         self._intents.append(None)
@@ -253,16 +302,14 @@ class MaestroEventSink:
                 raise MaestroCallbackError("INVALID_REQUEST")
             if self._silent is not None and event.send_type != "run_end":
                 raise MaestroCallbackError("INVALID_REQUEST")
-            if event.send_type == "text":
-                if set(event.data) - {"text", "author"} or event.data.get("author") is not None:
-                    raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
-                if len(self._intents) >= 98:
-                    raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
-                intent = self.prepare_text(event.data.get("text"), len(self._intents))
-                self._intents.append(intent)
-                await self.persist_with_retry(intent)
+            if event.send_type in _MESSAGE_SENDS and "whatsapp" in event.data:
+                raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")  # send.whatsapp.*: plano 5
+            if event.send_type in _DIRECT_SENDS:
+                await self._publish(event)
+            elif event.send_type in _MEDIA_SENDS:
+                await self._publish_media(event)
             elif event.send_type == "maestro.handoff":
-                if set(event.data) != {"participant_id", "text"} or len(self._intents) >= 98:
+                if set(event.data) != {"participant_id", "text"} or len(self._intents) >= MAX_PHASE_OUTPUTS:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 intent = self.prepare_text(event.data["text"], len(self._intents), event.data["participant_id"])
                 self._intents.append(intent)
@@ -270,7 +317,7 @@ class MaestroEventSink:
             elif event.send_type == "maestro.form.suspend":
                 if self._checkpoints is None or self._journal is None or set(event.data) != {"interaction", "checkpoint"}:
                     raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
-                if any(intent is None for intent in self._intents) or len(self._intents) >= 98:
+                if any(intent is None for intent in self._intents) or len(self._intents) >= MAX_PHASE_OUTPUTS:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 descriptor = await self._checkpoints.save(self._journal, event.data["checkpoint"], len(self._intents))
                 # Unknown ACK propagates; the executor never proceeds or completes.
@@ -295,7 +342,7 @@ class MaestroEventSink:
                     }
                 ):
                     raise MaestroCallbackError("FORBIDDEN")
-                if any(intent is None for intent in self._intents) or len(self._intents) >= 98:
+                if any(intent is None for intent in self._intents) or len(self._intents) >= MAX_PHASE_OUTPUTS:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 descriptor = await self._checkpoints.save(self._journal, event.data["checkpoint"], len(self._intents))
                 runtime.current(self._journal)
@@ -326,7 +373,7 @@ class MaestroEventSink:
             elif event.send_type == "maestro.artifact":
                 from .artifacts import MaestroArtifactsClient
 
-                if set(event.data) != {"data", "filename", "mime_type"} or len(self._intents) >= 98:
+                if set(event.data) != {"data", "filename", "mime_type"} or len(self._intents) >= MAX_PHASE_OUTPUTS:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 ordinal = len(self._intents)
                 attachment = await MaestroArtifactsClient(self._client).upload(**event.data, ordinal=ordinal)
@@ -344,20 +391,135 @@ class MaestroEventSink:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 self._silent = reason
             elif event.send_type == "run_start":
-                if set(event.data) != {"agent_id"} or event.data["agent_id"] not in {None, self._client.config.instance_agent_id}:
-                    raise MaestroCallbackError("FORBIDDEN")
+                if set(event.data) != {"agent_id"}:
+                    raise MaestroCallbackError("INVALID_REQUEST")
                 await self._client.heartbeat("run_started")
+                await self._publish(event)
             elif event.send_type == "run_end":
                 if set(event.data) != {"status", "error"} or event.data["status"] not in {"succeeded", "failed"}:
                     raise MaestroCallbackError("INVALID_REQUEST")
-                if event.data["status"] == "failed":
-                    raise MaestroCallbackError("INVALID_REQUEST")
                 await self._client.heartbeat("run_finished")
+                await self._publish(event)  # failed is a run status, not a phase failure
             else:
                 raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")
         except Exception:
             self._failed = True
             raise
+
+    def _output_intent(self, output: MaestroOutput, ordinal: int) -> MaestroOutputIntent:
+        value = {"output_id": f"output:{ordinal}", "type": output.type, "payload": output.payload}
+        try:
+            self._client._contracts.validate("Public.OutputRequest", {**value, "lease_fence": self._client._envelope["lease_fence"]})
+            raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        except (ValueError, TypeError):  # MaestroContractError is a ValueError
+            raise MaestroCallbackError("INVALID_REQUEST") from None
+        return MaestroOutputIntent(ordinal, raw, hashlib.sha256(raw).hexdigest())
+
+    async def _persist_output(self, output: MaestroOutput, ordinal: int) -> None:
+        if ordinal >= MAX_PHASE_OUTPUTS:
+            raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
+        intent = self._output_intent(output, ordinal)
+        self._intents.append(intent)
+        try:
+            await self.persist_with_retry(intent)
+        except MaestroCallbackError as error:
+            if error.unknown or error.reason_code not in _TOLERATED_REFUSALS.get(output.type, ()):
+                raise
+            # Maestro refused it as a rule (nothing recorded): the handler continues, as in
+            # production, and the ordinal is free for the next output.
+            self._intents.pop()
+            logger.warning("maestro %s refused (reason=%s); the handler continues", output.type, error.reason_code)
+
+    async def _publish(self, event: AgentEvent) -> None:
+        """Saída de produção (índice 4.4); ``None`` não envia nada e não consome ordinal."""
+        if event.send_type == "participant_add":
+            user = event.data.get("user")
+            if not isinstance(user, dict):
+                raise MaestroCallbackError("INVALID_REQUEST")
+            if not user.get("user_id"):
+                # Production: no user_id (e-mail only or empty) adds nobody and never fails.
+                logger.warning("maestro send.add_participant without user_id: skipped")
+                return
+        text = event.data.get("text") if event.send_type == "text" else None
+        try:
+            if isinstance(text, str) and len(text.encode("utf-8")) > self._client.config.max_output_bytes:
+                raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
+        except UnicodeError:
+            raise MaestroCallbackError("INVALID_REQUEST") from None
+        ordinal = len(self._intents)
+        try:
+            output = output_for(event, ordinal, runs=self._runs)
+        except UnsupportedAgentEvent:
+            raise MaestroCallbackError("UNSUPPORTED_CAPABILITY") from None
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise MaestroCallbackError("INVALID_REQUEST") from None
+        if output is not None:
+            await self._persist_output(output, ordinal)
+
+    async def _publish_media(self, event: AgentEvent) -> None:
+        """``send.image``/``audio``/``document``: a URL vira artefato do Maestro.
+
+        Produção guarda só a URL e nunca falha por causa dela. Aqui o SDK baixa a URL
+        (``fetch_media``; uma URL ``data:`` é decodificada no local) e envia o arquivo
+        (``upload``). Se o download falha, o tipo sai da política de produção ou o
+        Maestro recusa o arquivo, a mensagem leva a parte ``media_link`` com a URL
+        original (índice 4.3) e o handler continua. O ``media_link`` só aceita
+        ``http``/``https``: com outra URL (``data:`` incluída), esses casos falham a
+        execução (``INVALID_REQUEST``).
+        """
+        ordinal = len(self._intents)
+        if ordinal >= MAX_PHASE_OUTPUTS:
+            raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
+        if not isinstance(event.data.get("url"), str):
+            raise MaestroCallbackError("INVALID_REQUEST")
+        part = await self._media_part(event, ordinal)
+        await self._persist_output(media_output(event, part, runs=self._runs), ordinal)
+
+    async def _media_part(self, event: AgentEvent, ordinal: int) -> dict[str, Any]:
+        from .artifacts import MaestroArtifactsClient, artifact_type_allowed
+
+        data = event.data
+        extra = {key: data[key] for key in ("alt", "duration") if data.get(key) is not None}
+        limits = {
+            "max_bytes": self._client.config.max_artifact_bytes,
+            "hint_mime": data.get("mime_type"),
+            "hint_filename": data.get("filename"),
+        }
+        try:
+            if is_data_url(data["url"]):
+                fetched = decode_data_url(data["url"], **limits)
+            else:
+                fetched = await fetch_media(data["url"], timeout_s=min(_MEDIA_TIMEOUT_SECONDS, self._client._check_current()), **limits)
+        except MediaFetchError as error:
+            return self._media_link(event, error.reason)
+        self._active()
+        filename = _artifact_filename(fetched.filename)
+        if not artifact_type_allowed(self._client.config, fetched.mime_type, filename):
+            return self._media_link(event, "policy")
+        try:
+            attachment = await MaestroArtifactsClient(self._client).upload(
+                fetched.data, filename=filename, mime_type=fetched.mime_type, ordinal=ordinal
+            )
+        except MaestroContextError as error:
+            if error.code != "CONTEXT_LIMIT":
+                raise
+            return self._media_link(event, "upload_rejected")
+        return {**attachment, **extra}
+
+    def _media_link(self, event: AgentEvent, reason: str) -> dict[str, Any]:
+        # Only the reason code: the URL may carry a token or the file (diagnostics.py rule).
+        try:
+            scheme = urlsplit(event.data["url"]).scheme.lower()
+        except ValueError:
+            scheme = ""
+        if scheme not in {"http", "https"}:
+            logger.warning("maestro send.%s: media URL not uploaded (reason=%s); no media_link for this scheme", event.send_type, reason)
+            raise MaestroCallbackError("INVALID_REQUEST")
+        logger.warning("maestro send.%s: media URL not uploaded (reason=%s); publishing media_link", event.send_type, reason)
+        keys = ("mime_type", "filename", "alt", "duration")
+        return {"type": "media_link", "kind": event.send_type, "url": event.data["url"]} | {
+            key: event.data[key] for key in keys if event.data.get(key) is not None
+        }
 
     def normal_outcome(self) -> tuple[str, str]:
         self._active()

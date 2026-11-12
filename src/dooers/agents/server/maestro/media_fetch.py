@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import ipaddress
 import mimetypes
 import posixpath
@@ -8,7 +10,7 @@ import socket
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import unquote, unquote_to_bytes, urljoin, urlsplit
 
 import httpx
 
@@ -194,6 +196,51 @@ async def fetch_media(
     filename = hint_filename or _filename_from_url(final_url)
     mime = _clean_mime(hint_mime) or _clean_mime(content_type) or mimetypes.guess_type(filename)[0] or FALLBACK_MIME
     return FetchedMedia(data=data, mime_type=mime, filename=filename)
+
+
+def is_data_url(url: object) -> bool:
+    return isinstance(url, str) and url[:5].lower() == "data:"
+
+
+def decode_data_url(
+    url: str,
+    *,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    hint_mime: str | None = None,
+    hint_filename: str | None = None,
+) -> FetchedMedia:
+    """Decode a ``data:`` URL (RFC 2397) locally, with the same size limit as ``fetch_media``.
+
+    ``data:[<mime>][;<param>=<value>]*[;base64],<data>``. The MIME comes from the URL;
+    without one, ``hint_mime`` and then ``text/plain`` (RFC 2397 default). Raises only
+    ``MediaFetchError``: ``scheme`` for a malformed URL, ``too_large`` above ``max_bytes``.
+    """
+    if not is_data_url(url):
+        raise MediaFetchError("scheme", "not a data URL")
+    header, comma, payload = url[5:].partition(",")
+    if not comma:
+        raise MediaFetchError("scheme", "data URL without ','")
+    params = [part.strip() for part in header.split(";")]
+    encoded = len(params) > 1 and params[-1].lower() == "base64"
+    if encoded:
+        params.pop()
+    mime = _clean_mime(params[0]) if params and "=" not in params[0] else None
+    try:
+        raw = unquote_to_bytes(payload)
+        if encoded:
+            compact = b"".join(raw.split())
+            if len(compact) // 4 * 3 > max_bytes + 3:  # refuse before allocating the decoded bytes
+                raise MediaFetchError("too_large")
+            data = base64.b64decode(compact, validate=True)
+        else:
+            data = raw
+    except (binascii.Error, ValueError) as exc:
+        raise MediaFetchError("scheme", f"invalid data URL payload: {type(exc).__name__}") from exc
+    if len(data) > max_bytes:
+        raise MediaFetchError("too_large")
+    mime = mime or _clean_mime(hint_mime) or "text/plain"
+    extension = mimetypes.guess_extension(mime) or ""
+    return FetchedMedia(data=data, mime_type=mime, filename=hint_filename or f"{FALLBACK_FILENAME}{extension}")
 
 
 async def _download(

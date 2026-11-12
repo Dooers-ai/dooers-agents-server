@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,6 +15,25 @@ import httpx
 
 from .client import MaestroContextClient, MaestroContextError
 from .security import strict_json
+
+
+def artifact_type_allowed(config: Any, mime_type: str, filename: str) -> bool:
+    """Política de produção para arquivos (``infer_chat_upload_kind``: imagem, áudio ou documento).
+
+    ``MaestroConfig.artifact_mime_types`` vazio (padrão) aceita tudo que a política aceita.
+    Não vazio, restringe a esses tipos.
+    """
+    from dooers.agents.server.storage.chat_upload_file_policy import infer_chat_upload_kind
+
+    if (
+        not isinstance(mime_type, str)
+        or not isinstance(filename, str)
+        or not re.fullmatch(r"[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+", mime_type)
+        or not 3 <= len(mime_type) <= 128
+        or infer_chat_upload_kind(mime_type, filename) is None
+    ):
+        return False
+    return not config.artifact_mime_types or mime_type in config.artifact_mime_types
 
 
 @dataclass(frozen=True)
@@ -45,7 +65,7 @@ class MaestroArtifactsClient:
 
     def _operation(self, operation: str) -> float:
         client = self._client
-        if not client.config.artifact_mime_types or operation not in client._claims["operations"]:
+        if operation not in client._claims["operations"]:
             raise MaestroContextError("UNSUPPORTED_CAPABILITY")
         return min(client._check_current(), client.config.artifact_timeout_seconds)
 
@@ -81,7 +101,7 @@ class MaestroArtifactsClient:
                         mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
                         length = response.headers.get("content-length", "")
                         if (
-                            mime not in client.config.artifact_mime_types
+                            not artifact_type_allowed(client.config, mime, reference.filename or "attachment")
                             or response.headers.get("content-encoding", "identity") != "identity"
                             or not length.isascii()
                             or not length.isdecimal()
@@ -123,15 +143,17 @@ class MaestroArtifactsClient:
             raise MaestroContextError("CONTEXT_LIMIT" if status in {413, 422, 429} else "CONTEXT_UNAVAILABLE")
 
     async def upload(self, data: bytes, *, filename: str, mime_type: str, ordinal: int) -> dict[str, Any]:
+        from .outputs import MAX_PHASE_OUTPUTS  # outputs imports handlers; keep this module import-light
+
         client = self._client
         try:
             budget = self._operation("artifact.upload")
             if (
                 type(data) is not bytes
                 or not 0 < len(data) <= client.config.max_artifact_bytes
-                or mime_type not in client.config.artifact_mime_types
+                or not artifact_type_allowed(client.config, mime_type, filename)
                 or type(ordinal) is not int
-                or not 0 <= ordinal < 98
+                or not 0 <= ordinal < MAX_PHASE_OUTPUTS
             ):
                 raise MaestroContextError("CONTEXT_LIMIT")
             envelope = client._envelope
@@ -176,7 +198,9 @@ class MaestroArtifactsClient:
                         if (
                             result["upload_mode"] != "multipart_proxy"
                             or artifact["state"] != "ready_unbound"
-                            or any(artifact[key] != value[key] for key in ("filename", "mime_type", "size_bytes", "sha256"))
+                            # Maestro stores a canonical MIME (e.g. audio/x-wav -> audio/wav) and
+                            # refuses a part whose mime_type differs from it: the part uses the stored one.
+                            or any(artifact[key] != value[key] for key in ("filename", "size_bytes", "sha256"))
                         ):
                             raise MaestroContextError("CONTEXT_INVALID")
                         client._check_current()
@@ -186,7 +210,7 @@ class MaestroArtifactsClient:
                             "type": "attachment",
                             "artifact_id": artifact["artifact_id"],
                             "filename": filename,
-                            "mime_type": mime_type,
+                            "mime_type": artifact["mime_type"],
                             "size_bytes": len(data),
                         }
         except MaestroContextError:

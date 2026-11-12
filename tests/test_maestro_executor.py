@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import re
 import socket
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +16,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from dooers.agents.server.handlers.send import AgentEvent, AgentSend
+from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.maestro import (
     MaestroCallbackClient,
     MaestroCallbackError,
@@ -44,11 +47,29 @@ def contracts():
     return MaestroContracts()
 
 
+STORED_EVENT_TYPES = {
+    "message.create": "message.created",
+    "reasoning.create": "reasoning.created",
+    "tool_call.create": "tool_call.created",
+    "tool_result.create": "tool_result.created",
+    "tool_transaction.create": "tool_transaction.created",
+    "chart.create": "chart.created",
+    "form.create": "form.created",
+    "message.update": "message.updated",
+    "run.update": "run.updated",
+    "thread.update": "thread.updated",
+    "participant.add": "participant.added",
+}
+
+
 class CallbackFixture:
     def __init__(self, key):
         self.key = key
         self.requests = []
         self.outputs = {}
+        self.artifacts = {}
+        self.stored_mime = {}  # declared MIME -> canonical MIME Maestro stores (e.g. audio/x-wav -> audio/wav)
+        self.refuse_output = {}  # output type -> (HTTP status, Public.Error code, details.reason_code); nothing stored
         self.completions = []
         self.tasks = set()
         self.drop_output = 0
@@ -60,6 +81,68 @@ class CallbackFixture:
         self.heartbeat_count = 0
         self.callback_seen = asyncio.Event()
 
+    def stored_payload(self, body):
+        """Payload of the event Maestro records for an output (fields Maestro adds included)."""
+        payload = deepcopy(body["payload"])
+        kind = body["type"]
+        if kind == "message.create":
+            return {**payload, "execution_id": self.envelope["execution_id"], "output_id": body["output_id"]}
+        if kind == "thread.update":
+            return {"title": "Thread", **payload, "thread_id": self.envelope["thread_id"], "state": "active", "version": 2}
+        if kind == "run.update":
+            return {
+                "agent_id": self.envelope["instance_agent_id"],
+                **payload,
+                "trigger_event_id": self.envelope["trigger_event_id"],
+            }
+        if kind == "participant.add":
+            user = payload.pop("user")
+            participant = {
+                "participant_id": str(uuid4()),
+                "display_name": user.get("user_name") or user["user_id"],
+                "state": "active",
+                "joined_sequence": "1",
+                "left_sequence": None,
+                "kind": "human",
+                "principal_id": user["user_id"],
+                "role": "member",
+            }
+            return {**payload, "participant": participant, "history_policy": "full"}
+        return payload
+
+    def upload(self, headers, body_raw):
+        """``POST /artifacts`` (multipart proxy): metadata first, then the file."""
+        boundary = re.search(r'boundary="?([^";]+)"?', headers["content-type"]).group(1).encode()
+        parts = {}
+        for section in body_raw.split(b"--" + boundary)[1:-1]:
+            head, _, content = section.removeprefix(b"\r\n").partition(b"\r\n\r\n")
+            name = re.search(rb'name="([^"]+)"', head).group(1).decode()
+            mime = re.search(rb"(?im)^content-type:\s*([^\r\n;]+)", head)
+            parts[name] = (mime.group(1).decode().strip() if mime else None, content.removesuffix(b"\r\n"))
+        assert list(parts) == ["metadata", "file"]
+        metadata = json.loads(parts["metadata"][1])
+        file_mime, data = parts["file"]
+        assert metadata["size_bytes"] == len(data) and metadata["sha256"] == hashlib.sha256(data).hexdigest()
+        assert file_mime == metadata["mime_type"]
+        artifact_id = str(uuid4())
+        self.artifacts[artifact_id] = {**metadata, "data": data, "idempotency_key": headers.get("idempotency-key")}
+        artifact = {key: metadata[key] for key in ("filename", "mime_type", "size_bytes", "sha256")}
+        stored = self.stored_mime.get(metadata["mime_type"], metadata["mime_type"])
+        artifact["mime_type"] = self.artifacts[artifact_id]["mime_type"] = stored
+        return {
+            "artifact": {
+                **artifact,
+                "artifact_id": artifact_id,
+                "state": "ready_unbound",
+                "created_at": timestamp(time.time()),
+                "expires_at": None,
+            },
+            "upload_session_id": str(uuid4()),
+            "upload_mode": "multipart_proxy",
+            "max_size_bytes": 26214400,
+            "expires_at": timestamp(time.time() + 3600),
+        }
+
     async def handle(self, reader, writer):
         task = asyncio.current_task()
         self.tasks.add(task)
@@ -68,17 +151,19 @@ class CallbackFixture:
             first, *lines = raw.decode().split("\r\n")
             headers = {k.lower(): v for k, v in (line.split(": ", 1) for line in lines if ": " in line)}
             body_raw = await reader.readexactly(int(headers.get("content-length", "0")))
-            body = strict_json(body_raw) if body_raw else None
             action = "context" if "/context?" in first else first.split()[1].rsplit("/", 1)[-1]
+            body = strict_json(body_raw) if body_raw and action != "artifacts" else None
             self.requests.append((action, headers, body, body_raw))
             self.callback_seen.set()
             assert headers["authorization"] == f"Bearer {self.core_token}"
             assert headers["maestro-execution-capability"] != self.core_token
             claims = strict_json(_decode(headers["maestro-execution-capability"].split(".")[1]))
-            code = self.status.get(action, 200)
+            code = self.status.get(action, 201 if action == "artifacts" else 200)
             extra = {}
             if action == "context":
                 result = self.response
+            elif action == "artifacts":
+                result = self.upload(headers, body_raw)
             elif action == "heartbeat":
                 self.heartbeat_count += 1
                 result = {"lease_until": timestamp(min(time.time() + 59, self.deadline))}
@@ -91,6 +176,10 @@ class CallbackFixture:
                 await asyncio.sleep(self.delay_heartbeat)
             elif action == "stream":
                 result = {"status": "accepted", "ephemeral": True, "output_id": body["output_id"], "chunk_index": body["chunk_index"]}
+            elif action == "outputs" and body["type"] in self.refuse_output:
+                code, error_code, reason_code = self.refuse_output[body["type"]]
+                error = {"code": error_code, "message": "fixture", "retryable": False, "request_id": str(uuid4())}
+                result = {"error": {**error, **({"details": {"reason_code": reason_code}} if reason_code else {})}}
             elif action == "outputs":
                 key = headers["idempotency-key"]
                 semantic = {k: v for k, v in body.items() if k != "lease_fence"}
@@ -115,7 +204,8 @@ class CallbackFixture:
                         delivery_id=self.envelope["delivery_id"],
                         execution_id=self.envelope["execution_id"],
                         output_id=body["output_id"],
-                        payload={**body["payload"], "execution_id": self.envelope["execution_id"], "output_id": body["output_id"]},
+                        type=STORED_EVENT_TYPES[body["type"]],
+                        payload=self.stored_payload(body),
                     )
                     result = {"status": "persisted", "duplicate": False, "event": event, "cursor": "cursor-output"}
                     self.outputs[key] = (deepcopy(semantic), deepcopy(result))
@@ -215,8 +305,9 @@ async def execute_fixture(fixture, handler):
         ("error", "failed", "handler_error"),
         ("partial_error", "failed", "handler_error"),
         ("silent_after_text", "failed", "handler_contract_error"),
-        ("run_failed", "failed", "handler_contract_error"),
-        ("run_only", "silent", "implicit_empty"),
+        # Each run_start/run_end is a run.update output, so a run-only phase responded.
+        ("run_failed", "responded", "responded"),
+        ("run_only", "responded", "responded"),
     ],
 )
 async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, kind, expected, reason):
@@ -244,7 +335,9 @@ async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, 
         assert response.json()["state"] == expected
         assert fixture.completions[-1]["reason_code"] == reason
         assert "secret-not-in-response" not in response.text
-        assert len(fixture.outputs) == (2 if kind == "text" else 1 if kind in {"partial_error", "silent_after_text"} else 0)
+        assert len(fixture.outputs) == (
+            2 if kind in {"text", "run_failed", "run_only"} else 1 if kind in {"partial_error", "silent_after_text"} else 0
+        )
         assert all("outputs" not in value for value in fixture.completions)
         assert fixture.credentials[0].scopes == ("processing:write",)
         assert create_text_delivery_adapter(fixture.config, handler, private).capabilities == ()
@@ -259,29 +352,54 @@ async def test_coroutine_empty_handler(private_key, contracts):
         assert (await execute_fixture(fixture, handler)).json()["state"] == "silent"
 
 
-@pytest.mark.parametrize(
-    "method", ["image", "reasoning", "tool_call", "form", "thread_update", "participant_add", "event_update", "whatsapp"]
-)
-async def test_unsupported_never_publishes(private_key, contracts, method):
+EXPECTED_OUTPUT_TYPE = {
+    "image": "message.create",
+    "reasoning": "reasoning.create",
+    "tool_call": "tool_call.create",
+    "form": "form.create",
+    "thread_update": "thread.update",
+    "participant_add": "participant.add",
+    "event_update": "message.update",
+}
+
+
+@pytest.mark.parametrize("method", sorted(EXPECTED_OUTPUT_TYPE))
+async def test_production_send_publishes_one_output(private_key, contracts, method):
     async with setup(private_key, contracts) as fixture:
 
         async def handler(on, send, *_args):
-            if method == "thread_update":
-                yield send.update_thread(title="bad")
+            if method == "image":
+                # Loopback is not a public host: the media becomes a media_link with the original URL.
+                yield send.image("http://127.0.0.1:9/logo.png")
+            elif method == "reasoning":
+                yield send.reasoning("pensando")
+            elif method == "tool_call":
+                yield send.tool_call("buscar", {"q": "x"})
+            elif method == "form":
+                yield send.form("Preencha", [send.form_text("nome")])
+            elif method == "thread_update":
+                yield send.update_thread(title="Novo")
             elif method == "participant_add":
-                yield send.add_participant("bad")
-            elif method == "event_update":
-                yield send.update_user_event(on.context.event_id, [])
-            elif method == "whatsapp":
-                yield send.whatsapp.text("bad", to_e164="+5511111111111", instance_id="bad")
+                yield send.add_participant("user-2")
             else:
-                yield AgentEvent(method, {})
+                yield send.update_user_event(on.context.event_id, [{"type": "text", "text": "editado"}])
 
         response = await execute_fixture(fixture, handler)
-        assert response.status_code != 202
-        assert response.status_code in {200, 403}
-        if response.status_code == 200:
-            assert response.json()["state"] == "failed"
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "responded"
+        ((output, _result),) = fixture.outputs.values()
+        assert output["type"] == EXPECTED_OUTPUT_TYPE[method]
+
+
+async def test_whatsapp_send_never_publishes(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.whatsapp.text("bad", to_e164="+5511111111111", instance_id="bad")
+
+        response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200
+        assert response.json()["state"] == "failed"
         assert not fixture.outputs
 
 
@@ -566,12 +684,13 @@ async def test_sink_limits_and_repeated_existing_output_at_limit(private_key, co
     async with setup(private_key, contracts) as fixture:
         client = MaestroCallbackClient(fixture.config, fixture.admission, fixture.lease, contracts=contracts)
         sink = MaestroEventSink(client)
-        for number in range(98):
+        # 998 is the Maestro server cap of outputs per phase.
+        for number in range(998):
             await sink.accept(AgentSend().text(f"output {number}"))
         await sink.persist(sink.intents[0])
-        assert len(fixture.outputs) == len(sink.event_ids) == 98
+        assert len(fixture.outputs) == len(sink.event_ids) == 998
         with pytest.raises(MaestroCallbackError, match="PAYLOAD_TOO_LARGE"):
-            await sink.accept(AgentSend().text("99"))
+            await sink.accept(AgentSend().text("999"))
         client.close()
 
 

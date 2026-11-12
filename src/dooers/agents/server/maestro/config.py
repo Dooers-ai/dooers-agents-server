@@ -74,6 +74,17 @@ def _local_url(value: object, *, allow_origin: bool = False) -> str:
         raise MaestroConfigurationError("MAESTRO_LOCAL_URL_INVALID") from None
 
 
+def _production_mime_type(value: object) -> bool:
+    """Tipo exato (minúsculo, sem curinga) que a política de produção aceita."""
+    from dooers.agents.server.storage.chat_upload_file_policy import infer_chat_upload_kind
+
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", value) is not None
+        and infer_chat_upload_kind(value, "") is not None
+    )
+
+
 @dataclass(frozen=True)
 class MaestroConfig:
     """Perfil local opt-in; segundos e bytes explícitos, sem descoberta pelo request.
@@ -107,9 +118,9 @@ class MaestroConfig:
     max_content_bytes: int = 65536
     max_output_bytes: int = 65536
     product_capabilities: tuple[str, ...] = ()
-    # Empty keeps the existing text-only executor. No implicit MIME/provider policy.
+    # Empty: the production file policy (infer_chat_upload_kind). Non-empty: only these types.
     artifact_mime_types: tuple[str, ...] = ()
-    max_artifact_bytes: int = 8388608
+    max_artifact_bytes: int = 26214400
     max_hydrated_bytes: int = 16777216
     artifact_timeout_seconds: int = 5
     remote_transport: MaestroRemoteTransport | None = field(default=None, repr=False)
@@ -120,9 +131,7 @@ class MaestroConfig:
         if (
             type(self.artifact_mime_types) is not tuple
             or len(set(self.artifact_mime_types)) != len(self.artifact_mime_types)
-            or any(
-                value not in {"text/plain", "application/pdf", "image/png", "image/jpeg", "audio/wav"} for value in self.artifact_mime_types
-            )
+            or not all(_production_mime_type(value) for value in self.artifact_mime_types)
         ):
             raise MaestroConfigurationError("MAESTRO_CAPABILITY_INVALID")
         if type(self.allow_local_http) is not bool or (not self.allow_local_http and self.remote_transport is None):

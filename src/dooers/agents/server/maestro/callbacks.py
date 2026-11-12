@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any
 
@@ -17,13 +18,60 @@ from .config import MaestroConfig
 from .diagnostics import diagnostic_stage
 from .security import strict_json
 
+#: Evento que o Maestro grava para cada ``Public.OutputRequest.type`` (índice 4.4).
+STORED_EVENT_TYPES = {
+    "message.create": "message.created",
+    "reasoning.create": "reasoning.created",
+    "tool_call.create": "tool_call.created",
+    "tool_result.create": "tool_result.created",
+    "tool_transaction.create": "tool_transaction.created",
+    "chart.create": "chart.created",
+    "form.create": "form.created",
+    "message.update": "message.updated",
+    "run.update": "run.updated",
+    "thread.update": "thread.updated",
+    "participant.add": "participant.added",
+}
+
+
+def _receipt_matches(output: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """O evento gravado corresponde à saída pedida."""
+    request = output["payload"]
+    if output["type"] == "message.create":
+        return (
+            payload.get("output_id") == output["output_id"]
+            and payload["content"] == request["content"]
+            and payload["mentions"] == request["mentions"]
+            and (
+                request.get("handoff") is None
+                or (
+                    payload.get("routing_decision", {}).get("mode") == "direct"
+                    and payload.get("routing_decision", {}).get("recipients") == request["handoff"]["recipients"]
+                )
+            )
+        )
+    if output["type"] == "participant.add":
+        return True  # Maestro grava o participante que adicionou, não o ``user`` pedido.
+    # Os outros eventos levam os campos pedidos sem mudança (mais os que o Maestro acrescenta).
+    return all(payload.get(key) == value for key, value in request.items())
+
+
+#: Recusas de regra de negócio de uma saída (``Public.Error.details.reason_code``), não perda de
+#: autoridade: o cliente continua aberto. O sink tolera algumas por tipo de saída (``participant.add``,
+#: ``thread.update`` e ``run.update``).
+OUTPUT_RULE_REFUSALS = frozenset({"already_participant", "agent_not_participant", "multi_agent_thread"})
+
 
 class MaestroCallbackError(MaestroAdmissionError):
-    """Falha sanitizada; unknown preserva incerteza de commit, não permite sucesso."""
+    """Falha sanitizada; unknown preserva incerteza de commit, não permite sucesso.
 
-    def __init__(self, code: str = "DEPENDENCY_UNAVAILABLE", *, unknown: bool = False) -> None:
+    ``reason_code`` é o ``details.reason_code`` do ``Public.Error`` do Maestro, quando há.
+    """
+
+    def __init__(self, code: str = "DEPENDENCY_UNAVAILABLE", *, unknown: bool = False, reason_code: str | None = None) -> None:
         super().__init__(code)
         self.unknown = unknown
+        self.reason_code = reason_code if isinstance(reason_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason_code) else None
 
 
 class MaestroCallbackClient(MaestroContextClient):
@@ -128,19 +176,21 @@ class MaestroCallbackClient(MaestroContextClient):
                                         422: "UNSUPPORTED_CAPABILITY",
                                         429: "RATE_LIMITED",
                                     }.get(response.status_code, "DEPENDENCY_UNAVAILABLE")
-                                    if response.status_code in {401, 403, 404, 409, 410}:
+                                    reason_code = None
+                                    try:
+                                        failure = self._contracts.validate("Public.Error", strict_json(bytes(raw)))["error"]
+                                        error, reason_code = failure["code"], failure.get("details", {}).get("reason_code")
+                                        if (
+                                            response.status_code == 409
+                                            and error in {"LEASE_STALE", "EXECUTION_TERMINAL", "IDEMPOTENCY_CONFLICT"}
+                                        ) or (response.status_code in {422, 429} and error == "QUOTA_EXCEEDED"):
+                                            error_code = error
+                                    except Exception:
+                                        pass
+                                    rule_refusal = action == "outputs" and reason_code in OUTPUT_RULE_REFUSALS
+                                    if response.status_code in {401, 403, 404, 409, 410} and not rule_refusal:
                                         self._closed = True
-                                    if response.status_code in {409, 422, 429}:
-                                        try:
-                                            error = self._contracts.validate("Public.Error", strict_json(bytes(raw)))["error"]["code"]
-                                            if (
-                                                response.status_code == 409
-                                                and error in {"LEASE_STALE", "EXECUTION_TERMINAL", "IDEMPOTENCY_CONFLICT"}
-                                            ) or (response.status_code in {422, 429} and error == "QUOTA_EXCEEDED"):
-                                                error_code = error
-                                        except Exception:
-                                            pass
-                                    raise MaestroCallbackError(error_code, unknown=response.status_code >= 500)
+                                    raise MaestroCallbackError(error_code, unknown=response.status_code >= 500, reason_code=reason_code)
                                 result = self._contracts.validate(response_schema, strict_json(bytes(raw)))
                                 if time.time() >= credential.expires_at:
                                     raise MaestroCallbackError("UNAUTHENTICATED", unknown=True)
@@ -213,7 +263,7 @@ class MaestroCallbackClient(MaestroContextClient):
         payload = event["payload"]
         if (
             event["thread_id"] != envelope["thread_id"]
-            or event["type"] != "message.created"
+            or event["type"] != STORED_EVENT_TYPES.get(output["type"])
             or actor["kind"] != "agent"
             or actor["instance_agent_id"] != envelope["instance_agent_id"]
             or actor["principal_id"] != envelope["instance_agent_id"]
@@ -222,16 +272,7 @@ class MaestroCallbackClient(MaestroContextClient):
             or event["causation_event_id"] != envelope["trigger_event_id"]
             or event.get("delivery_id") != envelope["delivery_id"]
             or event.get("output_id") != output["output_id"]
-            or payload.get("output_id") != output["output_id"]
-            or payload["content"] != output["payload"]["content"]
-            or payload["mentions"] != output["payload"]["mentions"]
-            or (
-                output["payload"].get("handoff") is not None
-                and (
-                    payload.get("routing_decision", {}).get("mode") != "direct"
-                    or payload.get("routing_decision", {}).get("recipients") != output["payload"]["handoff"]["recipients"]
-                )
-            )
+            or not _receipt_matches(output, payload)
         ):
             self._closed = True
             raise MaestroCallbackError(unknown=True)

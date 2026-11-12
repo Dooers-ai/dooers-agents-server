@@ -164,7 +164,7 @@ async def test_resume_requires_exact_source_and_current_shared_backend(private_j
         await store.load(resumed, private_context)
 
 
-def test_legacy_form_constructor_stays_exact_and_maestro_requires_explicit_suspend():
+def test_legacy_form_constructor_stays_exact_and_maestro_suspends_only_on_request():
     data = {
         "message": "Title",
         "elements": [{"type": "text", "name": "name"}],
@@ -174,8 +174,10 @@ def test_legacy_form_constructor_stays_exact_and_maestro_requires_explicit_suspe
     }
     event = AgentSend().form(data["message"], data["elements"])
     assert event.send_type == "form" and event.data == data
+    # Without suspension, MaestroSend.form is the production form (a form.create output).
+    assert MaestroSend().form(data["message"], data["elements"]) == event
     with pytest.raises(MaestroCallbackError, match="UNSUPPORTED_CAPABILITY"):
-        MaestroSend().form("Title", [])
+        MaestroSend().form("Title", [], suspension=object())
 
 
 @pytest.mark.parametrize("unknown", [False, True])

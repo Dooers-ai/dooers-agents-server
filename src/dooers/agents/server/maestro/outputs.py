@@ -7,7 +7,8 @@ neles).
 
 Este módulo é puro: não faz E/S e não conhece ``output_id`` nem ``lease_fence``
 (o sink monta o ``Public.OutputRequest``). Os tipos com mídia (``image``,
-``audio``, ``document``) ficam fora, porque precisam de upload.
+``audio``, ``document``) ficam fora de ``output_for``, porque precisam de upload;
+``media_output`` monta a mensagem deles depois que o sink tem a parte.
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ from typing import Any
 from uuid import uuid4
 
 from dooers.agents.server.handlers.send import AgentEvent
+
+#: Saídas por fase (``output:0`` até ``output:997``): o teto do servidor do Maestro
+#: (``execution_outputs`` por entrega e fase). Produção não tem teto por execução.
+MAX_PHASE_OUTPUTS = 998
 
 
 class UnsupportedAgentEvent(ValueError):
@@ -157,6 +162,19 @@ def output_for(event: AgentEvent, ordinal: int, *, runs: RunTracker | None = Non
     if event.send_type not in ("run_start", "run_end") and tracker.current is not None:
         payload["run_id"] = tracker.current
     return MaestroOutput(output_type, payload)
+
+
+def media_output(event: AgentEvent, part: dict[str, Any], *, runs: RunTracker | None = None) -> MaestroOutput:
+    """``message.create`` de ``image``, ``audio`` ou ``document`` com a parte já pronta.
+
+    O sink monta ``part`` (``attachment`` depois do upload, ou ``media_link``). O resto
+    do payload segue a mesma regra das outras mensagens: ``author``, ``whatsapp`` e o
+    ``run_id`` do run atual.
+    """
+    payload = _message(event, deepcopy(part))
+    if runs is not None and runs.current is not None:
+        payload["run_id"] = runs.current
+    return MaestroOutput("message.create", payload)
 
 
 # --- inverso -----------------------------------------------------------------

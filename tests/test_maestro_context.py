@@ -428,9 +428,15 @@ async def test_artifact_references_are_authorized_not_downloaded(private_key, co
         assert cursor is None and more is False
         assert not hasattr(refs[0], "url") and not hasattr(refs[0], "data")
         page["trigger_event"]["payload"]["content"].append(part)
+        # Artifacts follow the production file policy by default: only the capability's
+        # operations decide whether the SDK may download. Without artifact.download, it never does.
+        claims = memory._client._claims
+        memory._client._claims = {**claims, "operations": [op for op in claims["operations"] if op != "artifact.download"]}
+        requests = len(server.requests)
         with pytest.raises(MaestroContextError, match="UNSUPPORTED_CAPABILITY"):
             async with maestro_handler_context(memory, private):
                 pytest.fail("unhydrated attachment")
+        assert not any("/download" in first for first, _headers in server.requests[requests:])
 
 
 async def test_capability_renewal_verified_same_binding_and_used_on_next_read(private_key, contracts):

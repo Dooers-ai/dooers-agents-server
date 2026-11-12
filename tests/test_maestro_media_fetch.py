@@ -404,3 +404,40 @@ async def test_fetch_closed_loopback_port_raises_network(server):
     with pytest.raises(MediaFetchError) as exc:
         await fetch_media(f"http://127.0.0.1:{port}/x")
     assert exc.value.reason == "network"
+
+
+# --- data: URLs (decoded locally, no network) ---------------------------------
+
+
+def test_data_url_base64_keeps_bytes_and_mime():
+    import base64
+
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    media = module.decode_data_url("data:image/png;base64," + base64.b64encode(png).decode(), hint_mime="image/jpeg")
+    assert media == FetchedMedia(data=png, mime_type="image/png", filename="file.png")
+
+
+def test_data_url_percent_encoded_and_defaults():
+    assert module.decode_data_url("data:text/plain;charset=utf-8,Ol%C3%A1%2C%20mundo", hint_filename="nota.txt") == FetchedMedia(
+        data="Olá, mundo".encode(), mime_type="text/plain", filename="nota.txt"
+    )
+    # No MIME in the URL: the declared one, then text/plain (RFC 2397).
+    assert module.decode_data_url("data:;base64,AAE=", hint_mime="audio/wav").mime_type == "audio/wav"
+    assert module.decode_data_url("data:,x").mime_type == "text/plain"
+
+
+@pytest.mark.parametrize(
+    "url,reason",
+    [
+        ("data:image/png;base64,@@@", "scheme"),
+        ("data:image/png;base64,abc", "scheme"),  # bad padding
+        ("data:image/png;base64", "scheme"),  # no comma
+        ("https://example.com/x.png", "scheme"),
+        ("data:image/png;base64,AAECAwQF", "too_large"),  # 6 bytes
+        ("data:text/plain,123456", "too_large"),
+    ],
+)
+def test_data_url_errors(url, reason):
+    with pytest.raises(MediaFetchError) as error:
+        module.decode_data_url(url, max_bytes=5)
+    assert error.value.reason == reason

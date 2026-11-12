@@ -343,8 +343,8 @@ identificar repetição; esse hash não é enviado como autoridade nem substitui
 hash/ledger canônico do Maestro. Um ACK de saída perdido permite **uma** repetição
 limitada da mesma intenção, ID, corpo e chave. Uma segunda incerteza interrompe a
 invocação para recuperação durável. Conflito de conteúdo recebe erro permanente;
-não reinicia o handler nem gera UUID novo. O teto local é 98 mensagens por fase;
-repetir uma intenção já criada não consome novo slot.
+não reinicia o handler nem gera UUID novo. O teto local é 998 saídas por fase (o
+teto do servidor do Maestro); repetir uma intenção já criada não consome novo slot.
 
 Só o retorno normal do handler sem mensagem produz `silent/implicit_empty`.
 `send.silence()` usa `explicit_silent` por padrão ou um reason_code válido fornecido
@@ -352,8 +352,10 @@ pelo criador. Silêncio depois de mensagem ou mensagem depois de silêncio é er
 saída parcial já confirmada é preservada, com `failed` quando a falha pode ser
 confirmada. Exceção e timeout usam códigos fechados (`handler_error`,
 `handler_timeout`), sem expor a exception. `run_start/run_end` enviam progresso por
-heartbeat, sem nova execução/evento durável. `run_end(failed)` representa falha;
-`run_end(succeeded)` sozinho ainda termina como `implicit_empty`.
+heartbeat e gravam uma saída `run.update` cada um (o `run_end` sem run atual não grava
+nada, como na produção). `run_end(failed)` é o status do run, não falha a fase. Uma
+fase só com `run.update` termina como `responded`, porque o Maestro recusa `silent`
+com saídas gravadas.
 
 Completar ocorre dentro da requisição, após fechar o generator e parar/aguardar o
 heartbeat, com reserva de 30 s e margem de 10 s dentro do deadline canônico. HTTP
@@ -372,11 +374,30 @@ remoto impede novas saídas. Não promete desfazer efeitos já iniciados. Nenhum
 OTEL/export task é iniciado por este executor; a instrumentação/exportação futura
 precisa respeitar esse lifecycle e não herdar o export em background do legado.
 
-`MaestroSend` preserva a forma da assinatura do handler, com `silence` aditivo nessa
-superfície. `update_thread`/`add_participant` falham `FORBIDDEN`,
-`update_user_event` falha `UNSUPPORTED_CAPABILITY`. Mídia, forms, stream, reasoning,
-tools, charts e envio WhatsApp por `send.whatsapp` são recusados pelo sink textual.
-Não são transformados em texto nem encaminhados ao histórico legado. Recursos
+`MaestroSend` tem a superfície de produção de `AgentSend`, com os extras do Maestro
+(`silence`, `handoff`, `artifact`, `open_text`, `form(..., suspension=...)` e outros).
+Cada `send.*` de produção grava uma saída (`outputs.output_for`, índice 4.4).
+`send.image`/`audio`/`document` baixam a URL (`fetch_media`) e enviam o arquivo como
+artefato; se o download falha, o tipo sai da política de produção ou o Maestro recusa
+o arquivo, a mensagem leva a parte `media_link` com a URL original e um log `warning`
+com o motivo. A parte enviada usa o `mime_type` que o Maestro gravou (MIME canônico), não o
+declarado. Uma URL `data:` é decodificada no local (base64 ou percent-encoding), com o
+mesmo limite de `max_artifact_bytes` e a mesma política de tipo (MIME da própria URL).
+Só `send.whatsapp.*` continua recusado (`UNSUPPORTED_CAPABILITY`, plano 5).
+
+Como em produção, `send.update_thread` e `send.add_participant` não falham o handler. Se o
+Maestro recusa a saída `thread.update` ou `participant.add` por regra
+(`details.reason_code` `already_participant`, `agent_not_participant` ou
+`multi_agent_thread`), o sink grava um log `warning`, não consome o ordinal e o handler
+continua; o cliente fica aberto. O mesmo vale para a saída `run.update` (`run_start`/`run_end`)
+recusada com `multi_agent_thread`. `send.add_participant` sem `user_id` (só e-mail ou vazio)
+não gera saída e grava um log `warning`.
+
+Divergência da produção: o contrato só aceita `http`/`https` na parte `media_link`.
+Com uma URL `data:` recusada (malformada, grande demais ou fora da política de tipo) ou
+com outro esquema (`ftp:`, `file:` e outros), não há `media_link` possível: a execução
+falha com `handler_contract_error`. Em produção, `send.image`/`audio`/`document` só
+guardam a URL e nunca falham por causa dela. Recursos
 privados RAG/WhatsApp/settings/analytics continuam vinculados pela camada E05-07.
 `AgentSend` e o pipeline legado não foram alterados por E05-08.
 

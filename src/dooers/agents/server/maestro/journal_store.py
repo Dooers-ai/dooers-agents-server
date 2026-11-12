@@ -520,7 +520,7 @@ class PostgresEffectJournal:
             set(result) != {"delivery_id", "execution_id", "state", "result_event_ids"}
             or result["state"] not in {"responded", "silent", "failed", "canceled", "waiting_input"}
             or type(result["result_event_ids"]) is not list
-            or len(result["result_event_ids"]) > 100
+            or len(result["result_event_ids"]) > 1000
             or len(set(result["result_event_ids"])) != len(result["result_event_ids"])
         ):
             raise JournalError("JOURNAL_BINDING_INVALID")
