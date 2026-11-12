@@ -163,15 +163,7 @@ async def test_cancel_pending_flush_closes_all_resources(private_key, contracts)
         assert not [t for t in asyncio.all_tasks() if t.get_name() == "maestro-heartbeat"]
 
 
-async def test_streamed_answer_reaches_the_full_agent_message_limit(private_key, contracts, monkeypatch):
-    from dooers.agents.server.protocol.maestro import MaestroContracts
-
-    # The pinned contract still caps agent text at 64 Ki characters: relax only the schemas of the size-bound messages.
-    validate = MaestroContracts.validate
-    relaxed = {"Public.OutputRequest", "Public.PersistedResponse"}
-    monkeypatch.setattr(
-        MaestroContracts, "validate", lambda self, schema, data: data if schema in relaxed else validate(self, schema, data)
-    )
+async def test_streamed_answer_reaches_the_full_agent_message_limit(private_key, contracts):
     async with setup(private_key, contracts, config_change=ENABLED) as f:
         text = "".join(f"{number:04d}" + "x" * 1019 + "\n" for number in range(600))  # 600 KiB in 1 KiB deltas
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-
 import pytest
 
 from dooers.agents.server.handlers.send import AgentSend
@@ -14,30 +12,6 @@ from dooers.agents.server.protocol.maestro import MaestroContracts
 from tests.test_maestro_executor import execute_fixture, setup
 
 KIB = 1024
-# The contract bundle pinned in this repository still caps message text at 64 Ki characters
-# (``x-maestro-string-length``); Maestro raises it for agent text. Until the bundle is re-vendored,
-# these tests relax the schema check of the size-bound messages and exercise only the SDK limits.
-_RELAXED = {"Public.OutputRequest", "Public.PersistedResponse"}
-
-
-@pytest.fixture(autouse=True)
-def relaxed_message_size(monkeypatch):
-    validate = MaestroContracts.validate
-    monkeypatch.setattr(
-        MaestroContracts, "validate", lambda self, schema, data: deepcopy(data) if schema in _RELAXED else validate(self, schema, data)
-    )
-
-
-@pytest.mark.xfail(strict=True, reason="vendored contract still caps agent text at 64 Ki characters; remove after re-vendoring")
-def test_vendored_contract_accepts_large_agent_text(contracts):
-    text = "a" * (900 * KIB)
-    output = {
-        "output_id": "output:0",
-        "type": "message.create",
-        "lease_fence": "1",
-        "payload": {"content": [{"type": "text", "text": text}]},
-    }
-    assert contracts.is_valid("Public.OutputRequest", output)
 
 
 @pytest.fixture(scope="module")
@@ -126,8 +100,9 @@ async def test_contact_and_template_below_the_limit_are_published(private_key, c
     async with setup(private_key, contracts) as fixture:
         small = "x" * (500 * KIB)
         send = AgentSend()
+        # The contract caps a vcard at 64 Ki characters (only agent text part is larger), so the contact stays below it.
         event = (
-            send.contact(display_name="Ana", vcard=small)
+            send.contact(display_name="Ana", vcard="x" * (60 * KIB))
             if shape == "contact"
             else send.template("t", "pt_BR", template_components=[{"type": "body", "text": small}])
         )

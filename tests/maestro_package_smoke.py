@@ -30,9 +30,9 @@ for case in json.loads(fixture_bytes)["cases"]:
     valid = contracts.is_valid(case["schema"], case["data"])
     assert valid == case["valid"]
     results.append((case["id"], case["schema"], valid))
-assert len(results) == 778
+assert len(results) == 780
 assert hashlib.sha256(json.dumps(results, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() == (
-    "c71b4e7ad853eed8d0d8397a00e75f0152e22f35f1314632c04754ead5576308"
+    "6c3b3988304bbaf0f81e2dc56a33a1991684818f562697925ba3c863dacb67f3"
 )
 assert not any(Path(module.__file__).parent.glob("bundle/**/__pycache__"))
-print(json.dumps({"installed_version": version("dooers-agents-server"), "schemas": 161, "fixtures": 778, "legacy_imports": True}))
+print(json.dumps({"installed_version": version("dooers-agents-server"), "schemas": 161, "fixtures": 780, "legacy_imports": True}))

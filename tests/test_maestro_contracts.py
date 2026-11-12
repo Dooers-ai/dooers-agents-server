@@ -44,10 +44,10 @@ def test_same_corpus_as_typescript(contracts, case):
 def test_consumer_classification_and_manifest(contracts):
     results = [(case["id"], case["schema"], contracts.is_valid(case["schema"], case["data"])) for case in CASES]
     assert len(contracts.schema_names) == 161
-    assert len(results) == len({case["id"] for case in CASES}) == 778
-    assert sum(result[2] for result in results) == 335
+    assert len(results) == len({case["id"] for case in CASES}) == 780
+    assert sum(result[2] for result in results) == 336
     checksum = hashlib.sha256(json.dumps(results, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
-    assert checksum == "c71b4e7ad853eed8d0d8397a00e75f0152e22f35f1314632c04754ead5576308"
+    assert checksum == "6c3b3988304bbaf0f81e2dc56a33a1991684818f562697925ba3c863dacb67f3"
     pin = json.loads((ROOT / "consumer-manifest.json").read_bytes())
     assert pin["classification"]["sha256"] == checksum
     assert hashlib.sha256(EXTRA_BYTES).hexdigest() == pin["consumer_fixture_sha256"]

@@ -425,7 +425,7 @@ async def test_network_and_pagination_bounds(private_key, contracts, mode):
 
 @pytest.mark.parametrize("size,error", [(2 * 1024 * 1024, None), (3_800_000, None), (9 * 1024 * 1024, "CONTEXT_LIMIT")])
 async def test_context_page_with_one_large_event(private_key, contracts, size, error, monkeypatch):
-    # The pinned contract still caps message text at 64 Ki characters; only the SDK response cap is under test.
+    # The contract caps agent text at 2 Mi characters; the 3.8M-character page is above it, and only the SDK response cap is under test.
     validate = MaestroContracts.validate
     monkeypatch.setattr(
         MaestroContracts,
@@ -448,12 +448,6 @@ async def test_context_page_with_one_large_event(private_key, contracts, size, e
 
 @pytest.mark.parametrize("character,count,error", [("é", 1_500_000, None), ("🌍", 700_000, None), ("é", 2_300_000, "CONTEXT_LIMIT")])
 async def test_non_ascii_context_page_is_measured_in_utf8_bytes(private_key, contracts, monkeypatch, character, count, error):
-    validate = MaestroContracts.validate
-    monkeypatch.setattr(
-        MaestroContracts,
-        "validate",
-        lambda self, schema, data: deepcopy(data) if schema == "Public.ContextResponse" else validate(self, schema, data),
-    )
     async with fixture_server() as server:
         memory, page, _, _ = prepare(private_key, contracts, server)
         # The page carries the large event twice (trigger and history): 6 MB of UTF-8, 18 MB if measured as ASCII escapes.
