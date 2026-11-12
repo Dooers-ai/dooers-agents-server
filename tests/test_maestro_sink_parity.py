@@ -15,9 +15,11 @@ from contextlib import asynccontextmanager
 import pytest
 
 from dooers.agents.server.handlers.send import AgentSend
+from dooers.agents.server.maestro import callbacks as callbacks_module
 from dooers.agents.server.maestro import media_fetch
 from dooers.agents.server.maestro import outputs as outputs_module
 from dooers.agents.server.maestro import sink as sink_module
+from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.sink import MaestroSend
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from tests.test_maestro_executor import execute_fixture, setup
@@ -388,15 +390,30 @@ async def test_thread_rule_refusal_keeps_the_handler_running(private_key, contra
         ("text", (403, "FORBIDDEN", "multi_agent_thread"), 403),  # message.create tolerates no refusal
         # run.update tolerates only multi_agent_thread; a 422 completes the phase as failed.
         ("run_start", (422, "VALIDATION_FAILED", "already_participant"), "failed"),
+        # A rule reason counts only with its own status and code.
+        ("thread_update", (404, "NOT_FOUND", "multi_agent_thread"), 403),
+        ("participant_add", (422, "VALIDATION_FAILED", "multi_agent_thread"), "failed"),
+        ("participant_add", (403, "FORBIDDEN", "already_participant"), 403),
     ],
-    ids=["participant_add-no_reason", "text-multi_agent_thread", "run_start-already_participant"],
+    ids=[
+        "participant_add-no_reason",
+        "text-multi_agent_thread",
+        "run_start-already_participant",
+        "thread_update-404",
+        "participant_add-422-multi_agent_thread",
+        "participant_add-403-already_participant",
+    ],
 )
 async def test_other_refusals_still_stop_the_run(private_key, contracts, send_type, refusal, expected):
     async with setup(private_key, contracts) as fixture:
         fixture.refuse_output[EXPECTED_OUTPUT[send_type]] = refusal
 
         async def handler(_on, send, *_args):
-            calls = {"participant_add": lambda: send.add_participant("user-2"), "run_start": send.run_start}
+            calls = {
+                "participant_add": lambda: send.add_participant("user-2"),
+                "run_start": send.run_start,
+                "thread_update": lambda: send.update_thread(title="Atendimento"),
+            }
             yield calls.get(send_type, lambda: send.text("Olá"))()
             yield send.text("depois")
 
@@ -535,3 +552,174 @@ async def test_run_start_other_agent_records_agent_id(private_key, contracts):
         assert response.json()["state"] == "responded"
         start = published(fixture)[0]
         assert start["payload"]["agent_id"] == OTHER_AGENT and start["payload"]["status"] == "running"
+
+
+# --- Fix round 1 (review of task 3) -------------------------------------------
+
+
+@pytest.mark.parametrize("refused", ["run_start", "run_end"])
+async def test_refused_run_update_leaves_the_run_tracker_as_it_was(private_key, contracts, caplog, refused):
+    async with setup(private_key, contracts) as fixture:
+        status = "running" if refused == "run_start" else "succeeded"
+        remaining = [1]  # refuse only the first run.update with this status
+
+        def refuse(payload):
+            if payload["status"] != status or not remaining[0]:
+                return False
+            remaining[0] -= 1
+            return True
+
+        fixture.refuse_output["run.update"] = (403, "FORBIDDEN", "multi_agent_thread", refuse)
+
+        async def handler(_on, send, *_args):
+            yield send.run_start()
+            yield send.run_end() if refused == "run_end" else send.text("dentro")
+            yield send.text("depois")
+            yield send.run_end()
+
+        with caplog.at_level(logging.WARNING, logger=sink_module.__name__):
+            response = await execute_fixture(fixture, handler)
+        assert response.json()["state"] == "responded"
+        outputs = published(fixture)
+        assert [o["output_id"] for o in outputs] == [f"output:{n}" for n in range(len(outputs))]
+        if refused == "run_start":
+            # No run was recorded: no output carries a run_id, and the final run_end does nothing.
+            assert [o["type"] for o in outputs] == ["message.create", "message.create"]
+            assert all("run_id" not in o["payload"] for o in outputs)
+        else:
+            # The run stays open: the text carries it and the last run_end closes it.
+            start, text, end = outputs
+            run_id = start["payload"]["run_id"]
+            assert text["payload"]["run_id"] == run_id
+            assert end["payload"] == {"run_id": run_id, "status": "succeeded"}
+            refused_requests = [r for r in fixture.requests if r[0] == "outputs" and r[2]["type"] == "run.update"]
+            assert [r[2]["payload"]["run_id"] for r in refused_requests] == [run_id, run_id, run_id]
+
+
+async def test_run_start_with_own_agent_id_is_published(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(on, send, *_args):
+            # Production pipeline.py passes the executing agent's own id.
+            yield send.run_start(agent_id=on.context.agent_id)
+            yield send.text("Olá")
+            yield send.run_end()
+
+        response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200 and response.json()["state"] == "responded"
+        start, text, end = published(fixture)
+        assert start["payload"] == {"run_id": start["payload"]["run_id"], "status": "running"}
+        assert text["payload"]["run_id"] == end["payload"]["run_id"] == start["payload"]["run_id"]
+
+
+async def test_update_thread_empty_queue_sends_null(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.update_thread(queue="")
+
+        response = await execute_fixture(fixture, handler)
+        assert response.json()["state"] == "responded"
+        (output,) = published(fixture)
+        assert output["payload"] == {"queue": None}
+
+
+def _change_recorded_payload(output_type, change):
+    def mutate(action, value):
+        if action == "outputs" and value["event"]["type"] == STORED_EVENT_TYPES[output_type]:
+            change(value["event"]["payload"])
+        return value
+
+    return mutate
+
+
+LENIENT_RECEIPTS = {
+    "thread_update": lambda payload: payload.update(title="Título normalizado"),
+    "run_start": lambda payload: payload.update(status="succeeded"),
+    "event_update": lambda payload: payload.update(content=[{"type": "text", "text": "outro"}]),
+    "participant_add": lambda payload: payload["participant"].update(principal_id="outra-pessoa"),
+}
+
+
+@pytest.mark.parametrize("send_type", sorted(LENIENT_RECEIPTS))
+async def test_recorded_value_wins_for_thread_and_run_receipts(private_key, contracts, caplog, send_type):
+    output_type = EXPECTED_OUTPUT[send_type]
+    async with setup(private_key, contracts) as fixture:
+        fixture.mutate_response = _change_recorded_payload(output_type, LENIENT_RECEIPTS[send_type])
+
+        async def handler(on, send, *_args):
+            yield production_calls(send_type, send, on, "http://127.0.0.1:9")[0]
+            yield send.text("depois")
+
+        with caplog.at_level(logging.WARNING, logger=callbacks_module.__name__):
+            response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200 and response.json()["state"] == "responded"
+        assert [o["type"] for o in published(fixture)] == [output_type, "message.create"]
+        assert any(output_type in r.getMessage() for r in caplog.records if r.name == callbacks_module.__name__)
+
+
+async def test_silence_after_run_only_outputs_completes_responded(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.run_start()
+            yield send.silence()
+            yield send.run_end()
+
+        response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200 and response.json()["state"] == "responded"
+        assert [o["payload"]["status"] for o in published(fixture)] == ["running", "succeeded"]
+        assert fixture.completions[-1]["reason_code"] == "responded"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "503"])
+async def test_unavailable_upload_becomes_media_link(private_key, contracts, loopback_media, caplog, failure):
+    async with (
+        setup(private_key, contracts, config_change={"artifact_timeout_seconds": 1}) as fixture,
+        media_server(MEDIA_ROUTES) as (media, _seen),
+    ):
+        if failure == "timeout":
+            fixture.delay["artifacts"] = 3
+        else:
+            fixture.status["artifacts"] = 503
+
+        async def handler(_on, send, *_args):
+            yield send.image(f"{media}/logo.png", mime_type="image/png")
+            yield send.text("depois")
+
+        with caplog.at_level(logging.WARNING, logger=sink_module.__name__):
+            response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200 and response.json()["state"] == "responded"
+        first, second = published(fixture)
+        link = {"type": "media_link", "kind": "image", "url": f"{media}/logo.png", "mime_type": "image/png"}
+        assert first["payload"]["content"] == [link]
+        assert second["payload"]["content"] == [{"type": "text", "text": "depois"}]
+        assert any("upload_unavailable" in r.getMessage() for r in caplog.records if r.name == sink_module.__name__)
+
+
+async def test_unavailable_upload_of_a_data_url_fails_the_run(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+        fixture.status["artifacts"] = 503
+        url = "data:image/png;base64," + base64.b64encode(PNG).decode()
+
+        async def handler(_on, send, *_args):
+            yield send.image(url)
+
+        response = await execute_fixture(fixture, handler)
+        assert (response.json()["state"], fixture.completions[-1]["reason_code"]) == ("failed", "handler_contract_error")
+        assert not fixture.outputs
+
+
+async def test_upload_timeout_scales_with_the_file_size(private_key, contracts):
+    from dooers.agents.server.maestro import MaestroCallbackClient
+    from dooers.agents.server.maestro.artifacts import MaestroArtifactsClient
+
+    async with setup(private_key, contracts) as fixture:
+        client = MaestroCallbackClient(fixture.config, fixture.admission, fixture.lease, contracts=contracts)
+        artifacts = MaestroArtifactsClient(client)
+        floor = fixture.config.artifact_timeout_seconds
+        assert artifacts._operation("artifact.upload") == floor
+        assert artifacts._operation("artifact.upload", size=1024) == floor
+        assert artifacts._operation("artifact.upload", size=20 * 1048576) == pytest.approx(20)
+        assert artifacts._operation("artifact.upload", size=26214400) <= client._check_current()
+        client.close()

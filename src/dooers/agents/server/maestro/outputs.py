@@ -60,6 +60,10 @@ class RunTracker:
         run_id, self._current = self._current, None
         return run_id
 
+    def restore(self, run_id: str | None) -> None:
+        """Volta ao run atual de antes de um ``run.update`` que o Maestro recusou."""
+        self._current = run_id
+
 
 def _present(data: dict) -> dict:
     return {key: deepcopy(value) for key, value in data.items() if value is not None}

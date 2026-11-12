@@ -28,6 +28,7 @@ from dooers.agents.server.maestro import (
     create_text_delivery_adapter,
     current_maestro_context,
 )
+from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.security import _decode, strict_json
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from dooers.tools.rag.runtime import current_execution_context
@@ -47,21 +48,6 @@ def contracts():
     return MaestroContracts()
 
 
-STORED_EVENT_TYPES = {
-    "message.create": "message.created",
-    "reasoning.create": "reasoning.created",
-    "tool_call.create": "tool_call.created",
-    "tool_result.create": "tool_result.created",
-    "tool_transaction.create": "tool_transaction.created",
-    "chart.create": "chart.created",
-    "form.create": "form.created",
-    "message.update": "message.updated",
-    "run.update": "run.updated",
-    "thread.update": "thread.updated",
-    "participant.add": "participant.added",
-}
-
-
 class CallbackFixture:
     def __init__(self, key):
         self.key = key
@@ -69,7 +55,9 @@ class CallbackFixture:
         self.outputs = {}
         self.artifacts = {}
         self.stored_mime = {}  # declared MIME -> canonical MIME Maestro stores (e.g. audio/x-wav -> audio/wav)
-        self.refuse_output = {}  # output type -> (HTTP status, Public.Error code, details.reason_code); nothing stored
+        # output type -> (HTTP status, Public.Error code, details.reason_code[, payload predicate]); nothing stored
+        self.refuse_output = {}
+        self.delay = {}  # action -> seconds before the response
         self.completions = []
         self.tasks = set()
         self.drop_output = 0
@@ -81,6 +69,10 @@ class CallbackFixture:
         self.heartbeat_count = 0
         self.callback_seen = asyncio.Event()
 
+    def refused(self, body):
+        refusal = self.refuse_output.get(body["type"])
+        return refusal is not None and (len(refusal) < 4 or refusal[3](body["payload"]))
+
     def stored_payload(self, body):
         """Payload of the event Maestro records for an output (fields Maestro adds included)."""
         payload = deepcopy(body["payload"])
@@ -88,6 +80,8 @@ class CallbackFixture:
         if kind == "message.create":
             return {**payload, "execution_id": self.envelope["execution_id"], "output_id": body["output_id"]}
         if kind == "thread.update":
+            if payload.get("queue") == "":
+                payload["queue"] = None  # Maestro stores `queue || null`
             return {"title": "Thread", **payload, "thread_id": self.envelope["thread_id"], "state": "active", "version": 2}
         if kind == "run.update":
             return {
@@ -176,8 +170,8 @@ class CallbackFixture:
                 await asyncio.sleep(self.delay_heartbeat)
             elif action == "stream":
                 result = {"status": "accepted", "ephemeral": True, "output_id": body["output_id"], "chunk_index": body["chunk_index"]}
-            elif action == "outputs" and body["type"] in self.refuse_output:
-                code, error_code, reason_code = self.refuse_output[body["type"]]
+            elif action == "outputs" and self.refused(body):
+                code, error_code, reason_code = self.refuse_output[body["type"]][:3]
                 error = {"code": error_code, "message": "fixture", "retryable": False, "request_id": str(uuid4())}
                 result = {"error": {**error, **({"details": {"reason_code": reason_code}} if reason_code else {})}}
             elif action == "outputs":
@@ -225,6 +219,7 @@ class CallbackFixture:
                     return
             if self.mutate_response:
                 result = self.mutate_response(action, deepcopy(result))
+            await asyncio.sleep(self.delay.get(action, 0))
             raw = json_bytes(result)
             headers = {"Content-Type": "application/json", "Content-Length": str(len(raw)), "Connection": "close", **extra}
             writer.write(

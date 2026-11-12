@@ -355,7 +355,11 @@ confirmada. Exceção e timeout usam códigos fechados (`handler_error`,
 heartbeat e gravam uma saída `run.update` cada um (o `run_end` sem run atual não grava
 nada, como na produção). `run_end(failed)` é o status do run, não falha a fase. Uma
 fase só com `run.update` termina como `responded`, porque o Maestro recusa `silent`
-com saídas gravadas.
+com saídas gravadas. Por isso, `send.silence()` depois de saídas só `run.update` (por
+exemplo `run_start`, `silence`, `run_end`) é aceito e a fase termina `responded`, sem
+mensagem. `run_start(agent_id=<o próprio agente>)`, como a produção faz, grava
+`run.update` sem `agent_id` (o Maestro grava o agente que executa). O run atual só muda
+quando o Maestro aceita o `run.update`.
 
 Completar ocorre dentro da requisição, após fechar o generator e parar/aguardar o
 heartbeat, com reserva de 30 s e margem de 10 s dentro do deadline canônico. HTTP
@@ -379,19 +383,30 @@ precisa respeitar esse lifecycle e não herdar o export em background do legado.
 Cada `send.*` de produção grava uma saída (`outputs.output_for`, índice 4.4).
 `send.image`/`audio`/`document` baixam a URL (`fetch_media`) e enviam o arquivo como
 artefato; se o download falha, o tipo sai da política de produção ou o Maestro recusa
-o arquivo, a mensagem leva a parte `media_link` com a URL original e um log `warning`
-com o motivo. A parte enviada usa o `mime_type` que o Maestro gravou (MIME canônico), não o
-declarado. Uma URL `data:` é decodificada no local (base64 ou percent-encoding), com o
-mesmo limite de `max_artifact_bytes` e a mesma política de tipo (MIME da própria URL).
+o arquivo, ou se o upload passa do tempo ou o Maestro está indisponível (5xx), a mensagem
+leva a parte `media_link` com a URL original e um log `warning` com o motivo. O tempo do
+upload cresce com o tamanho do arquivo (1 MiB/s), com `artifact_timeout_seconds` como piso.
+A parte enviada usa o `mime_type` que o Maestro gravou (MIME canônico), não o declarado.
+Uma URL `data:` é decodificada no local (base64 tolerante como nos navegadores, ou
+percent-encoding), com a mesma política de tipo (MIME da própria URL). Uma URL `data:`
+maior que `ceil(max_artifact_bytes * 4 / 3) + 4096` caracteres é recusada antes de qualquer
+cópia (`too_large`), inclusive percent-encoding perto do limite.
 Só `send.whatsapp.*` continua recusado (`UNSUPPORTED_CAPABILITY`, plano 5).
 
 Como em produção, `send.update_thread` e `send.add_participant` não falham o handler. Se o
-Maestro recusa a saída `thread.update` ou `participant.add` por regra
-(`details.reason_code` `already_participant`, `agent_not_participant` ou
-`multi_agent_thread`), o sink grava um log `warning`, não consome o ordinal e o handler
-continua; o cliente fica aberto. O mesmo vale para a saída `run.update` (`run_start`/`run_end`)
-recusada com `multi_agent_thread`. `send.add_participant` sem `user_id` (só e-mail ou vazio)
-não gera saída e grava um log `warning`.
+Maestro recusa a saída `thread.update` ou `participant.add` por regra (403 `FORBIDDEN` com
+`details.reason_code` `agent_not_participant` ou `multi_agent_thread`, ou 422
+`VALIDATION_FAILED` com `already_participant`), o sink grava um log `warning`, não consome
+o ordinal e o handler continua; o cliente fica aberto. O mesmo vale para a saída `run.update` (`run_start`/`run_end`)
+recusada com 403 `multi_agent_thread`. `send.add_participant` sem `user_id` (só e-mail ou
+vazio) não gera saída e grava um log `warning`. `update_thread(queue="")` envia `queue: null`
+(o Maestro grava `queue || null`; a produção tira a fila).
+
+Recibo de saída: `message.create` e os eventos de conteúdo (`reasoning`, `tool_*`, `chart`,
+`form`) exigem o valor pedido; diferença fecha o cliente e deixa o resultado incerto. Em
+`thread.update`, `participant.add` (`kind` humano e `principal_id` igual ao `user_id`),
+`run.update` e `message.update`, o Maestro pode normalizar o valor: a saída já está gravada,
+o valor gravado vale e o sink grava um log `warning`.
 
 Divergência da produção: o contrato só aceita `http`/`https` na parte `media_link`.
 Com uma URL `data:` recusada (malformada, grande demais ou fora da política de tipo) ou

@@ -47,9 +47,10 @@ _MEDIA_TIMEOUT_SECONDS = 30.0
 #: Production ``send.update_thread``/``send.add_participant`` never fail the handler
 #: (``pipeline.py`` participant_add: denied -> warning, existing participant -> upsert), and a
 #: ``run_start``/``run_end`` for another agent in a thread with several agents is not an error.
+_RULE_REASONS = frozenset(reason for _status, _code, reason in OUTPUT_RULE_REFUSALS)
 _TOLERATED_REFUSALS = {
-    "thread.update": OUTPUT_RULE_REFUSALS,
-    "participant.add": OUTPUT_RULE_REFUSALS,
+    "thread.update": _RULE_REASONS,
+    "participant.add": _RULE_REASONS,
     "run.update": frozenset({"multi_agent_thread"}),
 }
 
@@ -384,7 +385,10 @@ class MaestroEventSink:
                 self._intents.append(intent)
                 await self.persist_with_retry(intent)
             elif event.send_type == "silence":
-                if self._intents or set(event.data) != {"reason_code"}:
+                # Only before any output, or after run.update outputs alone (that phase completes
+                # responded, because Maestro refuses silent with recorded outputs).
+                runs_only = all(intent is not None and intent.output["type"] == "run.update" for intent in self._intents)
+                if not runs_only or set(event.data) != {"reason_code"}:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 reason = event.data["reason_code"]
                 if not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason):
@@ -415,7 +419,8 @@ class MaestroEventSink:
             raise MaestroCallbackError("INVALID_REQUEST") from None
         return MaestroOutputIntent(ordinal, raw, hashlib.sha256(raw).hexdigest())
 
-    async def _persist_output(self, output: MaestroOutput, ordinal: int) -> None:
+    async def _persist_output(self, output: MaestroOutput, ordinal: int) -> bool:
+        """Persist one output. ``False`` when Maestro refused it as a tolerated rule."""
         if ordinal >= MAX_PHASE_OUTPUTS:
             raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
         intent = self._output_intent(output, ordinal)
@@ -423,12 +428,14 @@ class MaestroEventSink:
         try:
             await self.persist_with_retry(intent)
         except MaestroCallbackError as error:
-            if error.unknown or error.reason_code not in _TOLERATED_REFUSALS.get(output.type, ()):
+            if error.unknown or error.rule_refusal not in _TOLERATED_REFUSALS.get(output.type, ()):
                 raise
             # Maestro refused it as a rule (nothing recorded): the handler continues, as in
             # production, and the ordinal is free for the next output.
             self._intents.pop()
-            logger.warning("maestro %s refused (reason=%s); the handler continues", output.type, error.reason_code)
+            logger.warning("maestro %s refused (reason=%s); the handler continues", output.type, error.rule_refusal)
+            return False
+        return True
 
     async def _publish(self, event: AgentEvent) -> None:
         """Saída de produção (índice 4.4); ``None`` não envia nada e não consome ordinal."""
@@ -446,15 +453,23 @@ class MaestroEventSink:
                 raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
         except UnicodeError:
             raise MaestroCallbackError("INVALID_REQUEST") from None
+        if event.send_type == "run_start" and event.data.get("agent_id") == self._client.config.instance_agent_id:
+            # Production passes its own id (pipeline.py); Maestro records the executing agent anyway.
+            event = AgentEvent("run_start", {**event.data, "agent_id": None})
         ordinal = len(self._intents)
+        current_run = self._runs.current
         try:
             output = output_for(event, ordinal, runs=self._runs)
         except UnsupportedAgentEvent:
             raise MaestroCallbackError("UNSUPPORTED_CAPABILITY") from None
         except (KeyError, TypeError, ValueError, AttributeError):
             raise MaestroCallbackError("INVALID_REQUEST") from None
-        if output is not None:
-            await self._persist_output(output, ordinal)
+        if output is None:
+            return
+        if output.type == "thread.update" and output.payload.get("queue") == "":
+            output.payload["queue"] = None  # Maestro stores `queue || null`; production clears the queue
+        if not await self._persist_output(output, ordinal):
+            self._runs.restore(current_run)  # the run changes only when Maestro accepts run.update
 
     async def _publish_media(self, event: AgentEvent) -> None:
         """``send.image``/``audio``/``document``: a URL vira artefato do Maestro.
@@ -501,9 +516,12 @@ class MaestroEventSink:
                 fetched.data, filename=filename, mime_type=fetched.mime_type, ordinal=ordinal
             )
         except MaestroContextError as error:
-            if error.code != "CONTEXT_LIMIT":
+            # Refused, timed out or unavailable: production never fails on the file. Lost access
+            # (ACCESS_REVOKED) or an invalid answer (CONTEXT_INVALID) still stop the run.
+            reason = {"CONTEXT_LIMIT": "upload_rejected", "CONTEXT_UNAVAILABLE": "upload_unavailable"}.get(error.code)
+            if reason is None:
                 raise
-            return self._media_link(event, "upload_rejected")
+            return self._media_link(event, reason)
         return {**attachment, **extra}
 
     def _media_link(self, event: AgentEvent, reason: str) -> dict[str, Any]:

@@ -56,6 +56,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import dooers.agents.server.maestro.adapter as adapter_module
 import dooers.agents.server.maestro.executor as executor_module
 from dooers.agents.server.maestro import MaestroConfig, MaestroDeliveryAdapter, MaestroInstanceCredential
+from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.context import MaestroPrivateResources, MaestroPrivateScope
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
@@ -75,20 +76,6 @@ CORE_BASE_URL = "http://127.0.0.1:8788/api/v1"
 MAESTRO_MIME_TYPES = frozenset({"text/plain", "application/pdf", "image/png", "image/jpeg", "audio/wav"})
 MAX_ARTIFACT_BYTES = 8388608
 _ACTORS = {"human": "user", "agent": "assistant", "system": "system"}
-#: Event Maestro records for each agent output type (index 4.4).
-STORED_EVENT_TYPES = {
-    "message.create": "message.created",
-    "reasoning.create": "reasoning.created",
-    "tool_call.create": "tool_call.created",
-    "tool_result.create": "tool_result.created",
-    "tool_transaction.create": "tool_transaction.created",
-    "chart.create": "chart.created",
-    "form.create": "form.created",
-    "message.update": "message.updated",
-    "run.update": "run.updated",
-    "thread.update": "thread.updated",
-    "participant.add": "participant.added",
-}
 
 
 @functools.cache
@@ -634,6 +621,8 @@ class FakeMaestro:
         if kind == "run.update":
             return {"agent_id": INSTANCE_AGENT_ID, **payload, "trigger_event_id": delivery.trigger_event["event_id"]}
         if kind == "thread.update":
+            if payload.get("queue") == "":
+                payload["queue"] = None  # Maestro stores `queue || null`
             # Recorded only: the thread state keeps its title (plan 3, task 7).
             current = {"thread_id": thread["thread_id"], "state": thread["state"], "version": thread["version"]}
             return {"title": thread["title"], **payload, **current}

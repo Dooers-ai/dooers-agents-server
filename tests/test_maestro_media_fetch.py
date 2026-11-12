@@ -430,7 +430,8 @@ def test_data_url_percent_encoded_and_defaults():
     "url,reason",
     [
         ("data:image/png;base64,@@@", "scheme"),
-        ("data:image/png;base64,abc", "scheme"),  # bad padding
+        ("data:image/png;base64,a", "scheme"),  # length % 4 == 1 cannot be base64
+        ("data:image/png;base64,AA=A", "scheme"),  # "=" inside the data
         ("data:image/png;base64", "scheme"),  # no comma
         ("https://example.com/x.png", "scheme"),
         ("data:image/png;base64,AAECAwQF", "too_large"),  # 6 bytes
@@ -441,3 +442,45 @@ def test_data_url_errors(url, reason):
     with pytest.raises(MediaFetchError) as error:
         module.decode_data_url(url, max_bytes=5)
     assert error.value.reason == reason
+
+
+def test_data_url_base64_is_forgiving_like_browsers():
+    png = b"\x89PNG\r\n\x1a\n"  # iVBORw0KGgo=
+    spaced = "data:image/png;base64,iVBO Rw0K\n\tGgo"  # ASCII whitespace and no padding
+    assert module.decode_data_url(spaced).data == png
+    assert module.decode_data_url("data:;base64,AAE").data == b"\x00\x01"
+    assert module.decode_data_url("data:;base64,AAE%3D").data == b"\x00\x01"  # percent-encoded padding
+
+
+def _traced_peak(function):
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        function()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_too_long_data_url_is_refused_before_any_copy():
+    url = "data:image/png;base64," + " ".join(["AAAA"] * 2_000_000)  # 10 MB of spaced base64
+
+    def decode():
+        with pytest.raises(MediaFetchError) as error:
+            module.decode_data_url(url, max_bytes=1000)
+        assert error.value.reason == "too_large"
+
+    assert _traced_peak(decode) < 64 * 1024
+
+
+def test_spaced_base64_within_the_limit_has_bounded_memory():
+    import base64
+
+    data = bytes(range(256)) * 8192  # 2 MiB
+    encoded = base64.b64encode(data).decode()
+    url = "data:application/pdf;base64," + "\n".join(encoded[i : i + 76] for i in range(0, len(encoded), 76))
+    result = []
+    peak = _traced_peak(lambda: result.append(module.decode_data_url(url, max_bytes=3 * 1048576)))
+    assert result[0].data == data
+    assert peak < 4 * len(url)  # a few linear copies, never a list of chunks

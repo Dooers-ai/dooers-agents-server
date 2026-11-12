@@ -198,6 +198,10 @@ async def fetch_media(
     return FetchedMedia(data=data, mime_type=mime, filename=filename)
 
 
+_DATA_URL_SLACK = 4096  # header and percent-encoding room above the base64 size
+_ASCII_WHITESPACE = b" \t\n\x0c\r"  # WHATWG forgiving-base64 removes these
+
+
 def is_data_url(url: object) -> bool:
     return isinstance(url, str) and url[:5].lower() == "data:"
 
@@ -212,28 +216,34 @@ def decode_data_url(
     """Decode a ``data:`` URL (RFC 2397) locally, with the same size limit as ``fetch_media``.
 
     ``data:[<mime>][;<param>=<value>]*[;base64],<data>``. The MIME comes from the URL;
-    without one, ``hint_mime`` and then ``text/plain`` (RFC 2397 default). Raises only
-    ``MediaFetchError``: ``scheme`` for a malformed URL, ``too_large`` above ``max_bytes``.
+    without one, ``hint_mime`` and then ``text/plain`` (RFC 2397 default). Base64 is
+    forgiving, like browsers: ASCII whitespace is ignored and missing padding is completed.
+
+    Memory stays linear in the URL: a URL longer than ``ceil(max_bytes * 4 / 3) + 4096`` is
+    refused before any copy, so a percent-encoded file near the limit is refused too.
+    Raises only ``MediaFetchError``: ``scheme`` for a malformed URL, ``too_large`` above the limit.
     """
     if not is_data_url(url):
         raise MediaFetchError("scheme", "not a data URL")
-    header, comma, payload = url[5:].partition(",")
-    if not comma:
+    if len(url) > -(-max_bytes * 4 // 3) + _DATA_URL_SLACK:
+        raise MediaFetchError("too_large")
+    comma = url.find(",", 5)
+    if comma < 0:
         raise MediaFetchError("scheme", "data URL without ','")
-    params = [part.strip() for part in header.split(";")]
+    params = [part.strip() for part in url[5:comma].split(";")]
     encoded = len(params) > 1 and params[-1].lower() == "base64"
     if encoded:
         params.pop()
     mime = _clean_mime(params[0]) if params and "=" not in params[0] else None
     try:
-        raw = unquote_to_bytes(payload)
+        data = unquote_to_bytes(url[comma + 1 :])
         if encoded:
-            compact = b"".join(raw.split())
-            if len(compact) // 4 * 3 > max_bytes + 3:  # refuse before allocating the decoded bytes
-                raise MediaFetchError("too_large")
-            data = base64.b64decode(compact, validate=True)
-        else:
-            data = raw
+            data = data.translate(None, _ASCII_WHITESPACE)
+            if len(data) % 4 == 0 and data.endswith(b"="):
+                data = data[:-2] if data.endswith(b"==") else data[:-1]
+            if len(data) % 4 == 1:
+                raise ValueError("base64 length")
+            data = base64.b64decode(data + b"=" * (-len(data) % 4), validate=True)
     except (binascii.Error, ValueError) as exc:
         raise MediaFetchError("scheme", f"invalid data URL payload: {type(exc).__name__}") from exc
     if len(data) > max_bytes:

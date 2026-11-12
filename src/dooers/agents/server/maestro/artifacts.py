@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ import httpx
 
 from .client import MaestroContextClient, MaestroContextError
 from .security import strict_json
+
+_UPLOAD_BYTES_PER_SECOND = 1048576
 
 
 def artifact_type_allowed(config: Any, mime_type: str, filename: str) -> bool:
@@ -63,11 +66,13 @@ class MaestroArtifactsClient:
     def __init__(self, client: MaestroContextClient) -> None:
         self._client = client
 
-    def _operation(self, operation: str) -> float:
+    def _operation(self, operation: str, *, size: int = 0) -> float:
+        """Time budget: ``artifact_timeout_seconds``, longer for a large upload (1 MiB/s floor)."""
         client = self._client
         if operation not in client._claims["operations"]:
             raise MaestroContextError("UNSUPPORTED_CAPABILITY")
-        return min(client._check_current(), client.config.artifact_timeout_seconds)
+        seconds = max(client.config.artifact_timeout_seconds, math.ceil(size / _UPLOAD_BYTES_PER_SECOND))
+        return min(client._check_current(), seconds)
 
     async def _headers(self, *, uploading: bool = False) -> tuple[dict[str, str], float]:
         client = self._client
@@ -147,7 +152,7 @@ class MaestroArtifactsClient:
 
         client = self._client
         try:
-            budget = self._operation("artifact.upload")
+            budget = self._operation("artifact.upload", size=len(data) if type(data) is bytes else 0)
             if (
                 type(data) is not bytes
                 or not 0 < len(data) <= client.config.max_artifact_bytes
