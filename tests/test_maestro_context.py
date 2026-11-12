@@ -423,6 +423,29 @@ async def test_network_and_pagination_bounds(private_key, contracts, mode):
         assert len(server.requests) == 1
 
 
+@pytest.mark.parametrize("size,error", [(2 * 1024 * 1024, None), (3_800_000, None), (9 * 1024 * 1024, "CONTEXT_LIMIT")])
+async def test_context_page_with_one_large_event(private_key, contracts, size, error, monkeypatch):
+    # The pinned contract still caps message text at 64 Ki characters; only the SDK response cap is under test.
+    validate = MaestroContracts.validate
+    monkeypatch.setattr(
+        MaestroContracts,
+        "validate",
+        lambda self, schema, data: deepcopy(data) if schema == "Public.ContextResponse" else validate(self, schema, data),
+    )
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        # Maestro never cuts an event: one large event is a whole page (trigger and history carry it).
+        page["trigger_event"]["payload"]["content"][0]["text"] = "x" * size
+        page["history"]["items"] = [deepcopy(page["trigger_event"])]
+        server.response = page
+        if error:
+            with pytest.raises(MaestroContextError, match=error):
+                await memory.get_history_raw()
+        else:
+            raw = await memory.get_history_raw()
+            assert len(raw[0]["payload"]["content"][0]["text"]) == size
+
+
 async def test_artifact_references_are_authorized_not_downloaded(private_key, contracts):
     async with fixture_server() as server:
         memory, page, _, _ = prepare(private_key, contracts, server)

@@ -155,8 +155,10 @@ async def test_production_send_is_published(private_key, contracts, loopback_med
 
         response = await execute_fixture(fixture, handler)
         assert response.status_code == 200, response.text
-        assert response.json()["state"] == "responded"
         outputs = published(fixture)
+        # Only a visible reply (message, form, chart) makes the phase responded (Maestro M07-005/006).
+        visible = any(o["type"] in {"message.create", "form.create", "chart.create"} for o in outputs)
+        assert response.json()["state"] == ("responded" if visible else "silent")
         assert outputs and outputs[-1]["type"] == EXPECTED_OUTPUT[send_type]
         assert [output["output_id"] for output in outputs] == [f"output:{n}" for n in range(len(outputs))]
         if send_type in {"image", "document", "audio"}:
@@ -524,7 +526,7 @@ async def test_update_thread_accepts_queue_keyword(private_key, contracts):
             yield send.update_thread(title="x", queue="suporte")
 
         response = await execute_fixture(fixture, handler)
-        assert response.json()["state"] == "responded"
+        assert response.json()["state"] == "silent"
         (output,) = published(fixture)
         assert output == {"output_id": "output:0", "type": "thread.update", "payload": {"title": "x", "queue": "suporte"}}
 
@@ -656,7 +658,7 @@ async def test_update_thread_empty_queue_sends_null(private_key, contracts):
             yield send.update_thread(queue="")
 
         response = await execute_fixture(fixture, handler)
-        assert response.json()["state"] == "responded"
+        assert response.json()["state"] == "silent"
         (output,) = published(fixture)
         assert output["payload"] == {"queue": None}
 
@@ -695,18 +697,59 @@ async def test_recorded_value_wins_for_thread_and_run_receipts(private_key, cont
         assert any(output_type in r.getMessage() for r in caplog.records if r.name == callbacks_module.__name__)
 
 
-async def test_silence_after_run_only_outputs_completes_responded(private_key, contracts):
+async def test_silence_after_run_outputs_keeps_its_reason_and_completes_silent(private_key, contracts):
     async with setup(private_key, contracts) as fixture:
 
         async def handler(_on, send, *_args):
             yield send.run_start()
-            yield send.silence()
+            yield send.silence("not_relevant")
             yield send.run_end()
 
         response = await execute_fixture(fixture, handler)
-        assert response.status_code == 200 and response.json()["state"] == "responded"
+        assert response.status_code == 200 and response.json()["state"] == "silent"
         assert [o["payload"]["status"] for o in published(fixture)] == ["running", "succeeded"]
-        assert fixture.completions[-1]["reason_code"] == "responded"
+        assert fixture.completions[-1]["outcome"] == "silent"
+        assert fixture.completions[-1]["reason_code"] == "not_relevant"
+
+
+async def test_silence_after_tool_outputs_completes_silent(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.reasoning("pensando")
+            yield send.tool_call("buscar", {"q": "x"})
+            yield send.silence("nothing_to_add")
+
+        response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200 and response.json()["state"] == "silent"
+        assert fixture.completions[-1]["reason_code"] == "nothing_to_add"
+
+
+@pytest.mark.parametrize("visible", ["form", "chart"])
+async def test_form_or_chart_without_text_completes_responded(private_key, contracts, visible):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.run_start()
+            yield production_calls(visible, send, _on, "http://127.0.0.1:9")[0]
+            yield send.run_end()
+
+        response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200 and response.json()["state"] == "responded", response.text
+        assert fixture.completions[-1]["outcome"] == "responded"
+
+
+async def test_silence_after_a_visible_reply_fails_the_phase(private_key, contracts):
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.run_start()
+            yield send.text("Oi")
+            yield send.silence("not_relevant")
+
+        response = await execute_fixture(fixture, handler)
+        assert response.json()["state"] == "failed"
+        assert fixture.completions[-1]["reason_code"] == "handler_contract_error"
 
 
 @pytest.mark.parametrize("failure", ["timeout", "503"])

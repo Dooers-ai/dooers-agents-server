@@ -18,6 +18,14 @@ from .config import MaestroConfig, MaestroCredentialRequest, MaestroInstanceCred
 from .diagnostics import diagnostic_stage
 from .security import _decode, load_public_keys, renewed_capability, strict_json
 
+#: Response cap of a delivery context page. Maestro never cuts an event, so one page can hold a single
+#: event of up to ~3.8 MiB, once as the trigger and once in the history: 8 MiB covers both.
+MAX_CONTEXT_PAGE_BYTES = 8388608
+#: Response cap of every other read and callback (heartbeat, complete, interaction/approval context).
+MAX_RESPONSE_BYTES = 1048576
+#: Response cap of an output callback: it echoes the stored event, up to ~3.8 MiB for a 1 MiB message.
+MAX_OUTPUT_RESPONSE_BYTES = 4194304
+
 
 class MaestroContextError(RuntimeError):
     """Código fechado; nunca contém URL, token, payload ou erro do transporte."""
@@ -43,7 +51,7 @@ class MaestroContextClient:
         lease: MaestroCurrentLease,
         *,
         contracts: MaestroContracts | None = None,
-        max_page_bytes: int = 1048576,
+        max_page_bytes: int = MAX_CONTEXT_PAGE_BYTES,
     ) -> None:
         self.config, self.admission = config, admission
         self._lease = lease
@@ -54,7 +62,7 @@ class MaestroContextClient:
         self._capability = admission.execution_capability
         self._claims = admission.capability_claims
         self._keys = load_public_keys(config.trusted_public_keys)
-        if type(max_page_bytes) is not int or not 1024 <= max_page_bytes <= 4194304:
+        if type(max_page_bytes) is not int or not 1024 <= max_page_bytes <= MAX_CONTEXT_PAGE_BYTES:
             raise MaestroContextError("CONTEXT_LIMIT")
         self.max_page_bytes = max_page_bytes
         self._envelope = admission.envelope
@@ -230,12 +238,12 @@ class MaestroContextClient:
                             ):
                                 raise MaestroContextError("CONTEXT_INVALID")
                             length = response.headers.get("content-length")
-                            if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
+                            if length is not None and (not length.isdecimal() or int(length) > MAX_RESPONSE_BYTES):
                                 raise MaestroContextError("CONTEXT_LIMIT")
                             raw = bytearray()
                             async for chunk in response.aiter_raw():
                                 raw.extend(chunk)
-                                if len(raw) > self.max_page_bytes:
+                                if len(raw) > MAX_RESPONSE_BYTES:
                                     raise MaestroContextError("CONTEXT_LIMIT")
                             self._check_current()
                             if time.time() >= credential.expires_at:

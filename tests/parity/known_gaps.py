@@ -60,14 +60,16 @@ _THREAD_PEOPLE = (
     "the thread owner and users have no user_email or identity_ids (Maestro participants have neither) and the default roles (plan 5)"
 )
 _RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
+#: A phase without a visible reply (message, form or chart) completes silent: Maestro refuses responded for it.
+_SILENT: tuple[Outcome, ...] = ((200, "silent", "implicit_empty"),)
 
 
-def _not_mapped(event: str) -> Gap:
+def _not_mapped(event: str, deliveries: tuple[Outcome, ...] = _RESPONDED) -> Gap:
     """The sink publishes the output (plan 3, task 3), but the legacy view maps only ``message.created``."""
     return Gap(
         f"{event} is recorded, but the legacy view maps only message.created, so the agent event is missing "
         f"(plan 3, tasks 5 and 7); {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_RESPONDED,
+        deliveries=deliveries,
     )
 
 
@@ -106,10 +108,10 @@ GAPS: dict[str, Gap] = {
         + _EVERY_WEB_CHAT_TURN,
         deliveries=_RESPONDED,
     ),
-    "reasoning": _not_mapped("reasoning.created"),
-    "tool_call": _not_mapped("tool_call.created"),
-    "tool_result": _not_mapped("tool_result.created"),
-    "tool_transaction": _not_mapped("tool_transaction.created"),
+    "reasoning": _not_mapped("reasoning.created", _SILENT),
+    "tool_call": _not_mapped("tool_call.created", _SILENT),
+    "tool_result": _not_mapped("tool_result.created", _SILENT),
+    "tool_transaction": _not_mapped("tool_transaction.created", _SILENT),
     "chart": _not_mapped("chart.created"),
     **{f"chart_{chart_type}": _not_mapped(f"chart.created (chart_type={chart_type!r})") for chart_type in CHART_VARIANTS},
     "form": _not_mapped("form.created"),
@@ -133,22 +135,22 @@ GAPS: dict[str, Gap] = {
     "update_user_event": Gap(
         "message.updated is recorded but not applied: the person's message keeps its text in the legacy view "
         "(plan 3, tasks 5 and 7); " + _EVERY_WEB_CHAT_TURN,
-        deliveries=_RESPONDED,
+        deliveries=_SILENT,
     ),
     "update_thread_title": Gap(
         "thread.updated is recorded, but the fake does not apply it: the title stays 'Nova conversa' (plan 3, task 7); "
         f"{_THREAD_PEOPLE}; {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_RESPONDED,
+        deliveries=_SILENT,
     ),
     "update_thread_queue": Gap(
         "thread.updated (queue) is recorded, but the fake does not apply it and the legacy view has no thread.update event "
         f"(plan 3, task 7); {_THREAD_PEOPLE}; {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_RESPONDED,
+        deliveries=_SILENT,
     ),
     "add_participant": Gap(
         "participant.added is recorded, but the fake does not add Bia to the thread (plan 3, task 7); "
         f"{_THREAD_PEOPLE}; {_EVERY_WEB_CHAT_TURN}",
-        deliveries=_RESPONDED,
+        deliveries=_SILENT,
     ),
     # AgentServer, channels and public chat
     "server_dispatch": _server_blocked("dispatch"),

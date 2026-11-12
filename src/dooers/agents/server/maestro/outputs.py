@@ -13,6 +13,7 @@ Este módulo é puro: não faz E/S e não conhece ``output_id`` nem ``lease_fenc
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,33 @@ from dooers.agents.server.handlers.send import AgentEvent
 #: Saídas por fase (``output:0`` até ``output:997``): o teto do servidor do Maestro
 #: (``execution_outputs`` por entrega e fase). Produção não tem teto por execução.
 MAX_PHASE_OUTPUTS = 998
+
+
+#: Outputs that make a phase ``responded``: a visible reply (Maestro M07-005/006). Any other output
+#: (run, reasoning, tool, thread, participant, message edit) leaves the phase ``silent``.
+VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.create"})
+
+
+def message_content_bytes(payload: dict) -> int:
+    """Size of an agent message as Maestro counts it against its limit.
+
+    UTF-8 bytes of the ``text`` parts, plus the compact JSON of each ``contact`` part, of ``template`` and
+    of ``whatsapp``. Attachments and media links are fixed-size metadata and count zero.
+    """
+
+    def json_bytes(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    total = 0
+    for part in payload.get("content", ()):
+        if part.get("type") == "text":
+            total += len(part["text"].encode("utf-8"))
+        elif part.get("type") == "contact":
+            total += json_bytes(part)
+    for key in ("template", "whatsapp"):
+        if payload.get(key):
+            total += json_bytes(payload[key])
+    return total
 
 
 class UnsupportedAgentEvent(ValueError):

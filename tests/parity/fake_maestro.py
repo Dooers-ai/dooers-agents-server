@@ -74,6 +74,8 @@ CALLBACK_BASE_URL = BASE["configured_callback_base_url"]
 RUNTIME_ENDPOINT = "http://127.0.0.1:9000/api/dev/agent/maestro/deliveries"
 CORE_BASE_URL = "http://127.0.0.1:8788/api/v1"
 #: Maestro accepts only these file types today (``LOCAL_SYNTHETIC_MIME_TYPES``, design 5.5).
+#: Outputs that make a phase `responded` in Maestro (spec M07-005/006); the SDK has its own copy.
+VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.create"})
 MAESTRO_MIME_TYPES = frozenset({"text/plain", "application/pdf", "image/png", "image/jpeg", "audio/wav"})
 MAX_ARTIFACT_BYTES = 8388608
 _ACTORS = {"human": "user", "agent": "assistant", "system": "system"}
@@ -152,6 +154,7 @@ class Delivery:
     status_code: int | None = None
     progress: list[str] = field(default_factory=list)
     output_event_ids: list[str] = field(default_factory=list)
+    output_kinds: list[str] = field(default_factory=list)
     stream_chunks: list[dict[str, Any]] = field(default_factory=list)
     context_pages: int = 0
     replies: dict[str, tuple[dict[str, Any], dict[str, Any]]] = field(default_factory=dict)
@@ -610,6 +613,7 @@ class FakeMaestro:
         if kind == "message.create":
             self._link_attachments(event)
         delivery.output_event_ids.append(event["event_id"])
+        delivery.output_kinds.append(kind)
         result = {"status": "persisted", "duplicate": False, "event": event, "cursor": f"thread.{delivery.thread_id}.{event['sequence']}"}
         self._remember(request, delivery, body, result)
         return self._reply("Public.PersistedResponse", result)
@@ -658,6 +662,10 @@ class FakeMaestro:
         if previous is not None:
             return self._reply("Public.CallbackResponse", previous)
         self._running(delivery, body)
+        # Maestro (M07-005/006): `responded` needs a visible reply in the phase; `silent` refuses one.
+        visible = any(kind in VISIBLE_REPLY_OUTPUTS for kind in delivery.output_kinds)
+        if (body["outcome"] == "responded" and not visible) or (body["outcome"] == "silent" and visible):
+            raise _CallbackError(422, "VALIDATION_FAILED")
         delivery.state, delivery.reason_code = body["outcome"], body.get("reason_code")
         result = {
             "delivery_id": delivery.delivery_id,

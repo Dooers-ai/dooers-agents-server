@@ -220,6 +220,42 @@ def test_artifact_link_only_for_files_linked_up_to_the_cutoff():
     assert fake.rejections == [("artifact.link.issue", "NOT_FOUND")]
 
 
+@pytest.mark.parametrize(
+    "outcome,outputs,accepted",
+    [
+        ("responded", [], False),
+        ("responded", ["run.update", "tool_call.create"], False),
+        ("responded", ["run.update", "message.create"], True),
+        ("responded", ["form.create"], True),
+        ("responded", ["chart.create"], True),
+        ("silent", [], True),
+        ("silent", ["run.update", "reasoning.create", "tool_call.create", "thread.update"], True),
+        ("silent", ["run.update", "message.create"], False),
+        ("silent", ["form.create"], False),
+    ],
+)
+def test_complete_enforces_the_maestro_outcome_rule(outcome, outputs, accepted):
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(ANA, title=None)
+    trigger = fake.publish(thread_id, ANA, [{"type": "text", "text": "Olá"}], client_event_id="client-1")
+    (delivery,) = fake.deliveries_for(trigger)
+    delivery.output_kinds.extend(outputs)
+    url = f"{fake.config.callback_base_url}/executions/{delivery.execution_id}/complete"
+    headers = {
+        "Authorization": f"Bearer {fake.core_token}",
+        "Maestro-Execution-Capability": delivery.capability,
+        "Idempotency-Key": f"complete:{delivery.envelope['delivery_id']}:{delivery.envelope['phase_id']}",
+    }
+    body = {"lease_fence": delivery.envelope["lease_fence"], "outcome": outcome, "reason_code": "x_reason"}
+
+    response = fake.handle(httpx.Request("POST", url, json=body, headers=headers))
+
+    assert (response.status_code == 200) is accepted, response.text
+    if not accepted:
+        assert fake.rejections == [("complete", "VALIDATION_FAILED")]
+        assert shared_contracts().is_valid("Public.Error", response.json())
+
+
 async def test_stream_deltas_are_ephemeral_and_the_final_text_is_one_event():
     fake = FakeMaestro(product_capabilities=("stream.delta",))
 

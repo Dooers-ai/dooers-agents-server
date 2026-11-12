@@ -14,7 +14,7 @@ import httpx
 from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroContracts
 
 from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedResult, MaestroCurrentLease, _epoch
-from .client import MaestroContextClient, MaestroContextError
+from .client import MAX_OUTPUT_RESPONSE_BYTES, MAX_RESPONSE_BYTES, MaestroContextClient, MaestroContextError
 from .config import MaestroConfig
 from .diagnostics import diagnostic_stage
 from .security import strict_json
@@ -120,6 +120,10 @@ class MaestroCallbackError(MaestroAdmissionError):
         self.rule_refusal = rule_refusal if isinstance(rule_refusal, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", rule_refusal) else None
 
 
+#: Largest output body Maestro accepts (``EVENT_REQUEST_MAX_BYTES``): one event, escapes included.
+MAX_OUTPUT_REQUEST_BYTES = 2097152
+
+
 class MaestroCallbackClient(MaestroContextClient):
     """Mesmo estado de capability/lease para memória, heartbeat e sink.
 
@@ -182,7 +186,7 @@ class MaestroCallbackClient(MaestroContextClient):
                         if key is not None:
                             headers["Idempotency-Key"] = key
                         raw_request = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-                        if len(raw_request) > self.config.max_output_bytes + 4096:
+                        if len(raw_request) > (MAX_OUTPUT_REQUEST_BYTES if action == "outputs" else self.config.max_output_bytes + 4096):
                             raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
                         with diagnostic_stage("auth.workload_identity", self._envelope):
                             headers.update(await self.config.transport_headers(self.config.callback_base_url))
@@ -202,13 +206,14 @@ class MaestroCallbackClient(MaestroContextClient):
                                     or response.headers.get("content-encoding", "identity") != "identity"
                                 ):
                                     raise MaestroCallbackError(unknown=True)
+                                limit = MAX_OUTPUT_RESPONSE_BYTES if action == "outputs" else MAX_RESPONSE_BYTES
                                 length = response.headers.get("content-length")
-                                if length is not None and (not length.isdecimal() or int(length) > self.max_page_bytes):
+                                if length is not None and (not length.isdecimal() or int(length) > limit):
                                     raise MaestroCallbackError(unknown=True)
                                 raw = bytearray()
                                 async for chunk in response.aiter_raw():
                                     raw.extend(chunk)
-                                    if len(raw) > self.max_page_bytes:
+                                    if len(raw) > limit:
                                         raise MaestroCallbackError(unknown=True)
                                 if response.status_code != 200:
                                     error_code = {

@@ -132,7 +132,8 @@ Todos os campos em segundos, exceto limites de payload em bytes:
 | admission_timeout_seconds | 20 |
 | lease_seconds / heartbeat_seconds | 60 / 15 |
 | max_concurrency | 2, por adapter/processo, sem fila |
-| max_dispatch_bytes / max_content_bytes / max_output_bytes | 65536 cada |
+| max_dispatch_bytes / max_content_bytes | 65536 cada |
+| max_output_bytes | 1048576 (1 MiB) / 1048576; ver "Limites de tamanho" |
 
 A reserva de conclusão está **dentro** do deadline da execução. Antes do executor,
 saldo deve exceder conclusão+margem. Body tem timeout agregado de leitura; requisição
@@ -175,7 +176,9 @@ persistente, retry ou discovery. Um cliente HTTP efêmero por página evita cook
 entre operações. Timeout inclui resolvedor+rede, é limitado por deadline residual,
 reserva de conclusão, lease e capability. Resposta precisa ser JSON estrito e
 canônico (bundle E05-01 único), sem encoding comprimido; limite de página padrão
-1 MiB (máximo configurável 4 MiB). Erros retornam somente códigos fechados, sem
+8 MiB só para o contexto da entrega (o Maestro nunca corta um evento: uma página pode
+ter um evento de ~3,8 MiB, no gatilho e no histórico); as demais respostas têm 1 MiB e a
+resposta de uma saída (eco do evento gravado) tem 4 MiB. Erros retornam somente códigos fechados, sem
 corpo remoto/URL/segredo. 401/403/404/409/410 encerram leituras naquela execução.
 Validade da credencial é o mínimo entre `exp` assinado e metadata do resolvedor,
 revalidada também depois de receber o corpo.
@@ -398,6 +401,16 @@ retry do transporte, cookie herdado ou URL escolhida pelo input. Respostas e
 requests são limitados, validados e conferidos contra a identidade da execução.
 O contrato é compilado no startup e reutilizado nas invocações.
 
+**Limites de tamanho.** `max_output_bytes` (padrão e teto 1 MiB, configurável de 1 byte a
+1 MiB) limita uma mensagem do agente, contada como o Maestro conta: bytes UTF-8 das partes
+`text`, mais o JSON compacto de cada parte `contact`, de `template` e de `whatsapp`. Acima
+disso o SDK falha com `PAYLOAD_TOO_LARGE` antes de enviar. O corpo de um `outputs` aceita até
+2 MiB (limite do Maestro, com escapes JSON); as outras chamadas mantêm `max_output_bytes` +
+4 KiB. Os previews de stream seguem com 256 KiB agregados nos handles. O contrato vendorizado
+precisa permitir o texto grande do agente (o Maestro sobe o teto de `text` de 64 Ki
+caracteres para 2 MiB); enquanto o bundle não for revendorizado, texto acima de 64 Ki
+caracteres falha na validação local do contrato.
+
 Cada `send.text` é uma mensagem final independente. O sink aloca `output:0`,
 `output:1`, etc. por ordem semântica da fase. A chave HTTP é
 `output:<delivery_id>:<phase_id>:<ordinal>`; attempt/execution/fence não entram na
@@ -416,12 +429,24 @@ saída parcial já confirmada é preservada, com `failed` quando a falha pode se
 confirmada. Exceção e timeout usam códigos fechados (`handler_error`,
 `handler_timeout`), sem expor a exception. `run_start/run_end` enviam progresso por
 heartbeat e gravam uma saída `run.update` cada um (o `run_end` sem run atual não grava
-nada, como na produção). `run_end(failed)` é o status do run, não falha a fase. Uma
-fase só com `run.update` termina como `responded`, porque o Maestro recusa `silent`
-com saídas gravadas. Por isso, `send.silence()` depois de saídas só `run.update` (por
-exemplo `run_start`, `silence`, `run_end`) é aceito e a fase termina `responded`, sem
-mensagem. `run_start(agent_id=<o próprio agente>)`, como a produção faz, grava
-`run.update` sem `agent_id` (o Maestro grava o agente que executa). O run atual só muda
+nada, como na produção). `run_end(failed)` é o status do run, não falha a fase.
+
+**Regra do outcome (M07-005/006).** O Maestro aceita `responded` só se a fase tem ao menos
+uma resposta visível: saída `message.create`, `form.create` ou `chart.create`. Aceita
+`silent` só se a fase não tem nenhuma delas; as demais saídas (`run.update`,
+`reasoning.create`, `tool_*`, `thread.update`, `participant.add`, `message.update`,
+`message.remove`) ficam gravadas e entram em `result_event_ids`. O SDK escolhe o outcome por
+essa regra, em `normal_outcome`:
+
+- fase com resposta visível: `responded` (`reason_code` `responded`);
+- fase sem resposta visível (só `run_start`/`run_end`, ferramentas, raciocínio, etc.): `silent`
+  com `implicit_empty`, e o handler não falha;
+- `send.silence(reason)` depois de `run_start` ou de outras saídas não visíveis mantém o
+  `reason` e termina `silent`. `send.silence()` depois de uma resposta visível continua
+  sendo erro do handler (`failed/handler_contract_error`).
+
+`run_start(agent_id=<o próprio agente>)`, como a produção faz, grava `run.update` sem
+`agent_id` (o Maestro grava o agente que executa). O run atual só muda
 quando o Maestro aceita o `run.update`.
 
 Completar ocorre dentro da requisição, após fechar o generator e parar/aguardar o
@@ -536,7 +561,7 @@ A conclusão da fase e o journal E05-09 continuam com suas autoridades existente
 
 Adota limites E09-01: 16 KiB UTF-8 pendentes por output (também satisfaz UTF-16),
 256 chunks, 16 handles abertos e 256 KiB de texto integral agregado nos handles.
-Final integral tem `max_output_bytes` (até 64 KiB); estes limites não expandem o
+Final integral tem `max_output_bytes` (até 1 MiB); estes limites não expandem o
 contrato durável. A produção contínua coalesce e faz flush quando transcorreram
 50 ms ou a fila enche; `flush()` força a entrega respeitando o intervalo.
 Todos os outputs compartilham espaçamento mínimo de 50 ms na execução, também

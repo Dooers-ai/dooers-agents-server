@@ -300,9 +300,11 @@ async def execute_fixture(fixture, handler):
         ("error", "failed", "handler_error"),
         ("partial_error", "failed", "handler_error"),
         ("silent_after_text", "failed", "handler_contract_error"),
-        # Each run_start/run_end is a run.update output, so a run-only phase responded.
-        ("run_failed", "responded", "responded"),
-        ("run_only", "responded", "responded"),
+        # run_start/run_end are run.update outputs: not a visible reply, so the phase is silent.
+        ("run_failed", "silent", "implicit_empty"),
+        ("run_only", "silent", "implicit_empty"),
+        ("tool_only", "silent", "implicit_empty"),
+        ("run_and_text", "responded", "responded"),
     ],
 )
 async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, kind, expected, reason):
@@ -321,9 +323,14 @@ async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, 
                 raise RuntimeError("secret-not-in-response")
             if kind in {"explicit", "silent_after_text", "reason"}:
                 yield send.silence("not_relevant" if kind == "reason" else None)
-            if kind in {"run_failed", "run_only"}:
+            if kind in {"run_failed", "run_only", "run_and_text"}:
                 yield send.run_start()
+                if kind == "run_and_text":
+                    yield send.text("Resposta")
                 yield send.run_end(status="failed" if kind == "run_failed" else "succeeded")
+            if kind == "tool_only":
+                yield send.tool_call("buscar", {"q": "x"})
+                yield send.reasoning("pensando")
 
         response = await execute_fixture(fixture, handler)
         assert response.status_code == 200, response.text
@@ -331,7 +338,13 @@ async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, 
         assert fixture.completions[-1]["reason_code"] == reason
         assert "secret-not-in-response" not in response.text
         assert len(fixture.outputs) == (
-            2 if kind in {"text", "run_failed", "run_only"} else 1 if kind in {"partial_error", "silent_after_text"} else 0
+            3
+            if kind == "run_and_text"
+            else 2
+            if kind in {"text", "run_failed", "run_only", "tool_only"}
+            else 1
+            if kind in {"partial_error", "silent_after_text"}
+            else 0
         )
         assert all("outputs" not in value for value in fixture.completions)
         assert fixture.credentials[0].scopes == ("processing:write",)
@@ -381,7 +394,9 @@ async def test_production_send_publishes_one_output(private_key, contracts, meth
 
         response = await execute_fixture(fixture, handler)
         assert response.status_code == 200, response.text
-        assert response.json()["state"] == "responded"
+        # Only a visible reply (message, form, chart) makes the phase responded (Maestro M07-005/006).
+        visible = EXPECTED_OUTPUT_TYPE[method] in {"message.create", "form.create", "chart.create"}
+        assert response.json()["state"] == ("responded" if visible else "silent")
         ((output, _result),) = fixture.outputs.values()
         assert output["type"] == EXPECTED_OUTPUT_TYPE[method]
 

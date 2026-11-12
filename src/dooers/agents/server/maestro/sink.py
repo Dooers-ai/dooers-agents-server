@@ -17,7 +17,16 @@ from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from .callbacks import THREAD_OPERATION_OUTPUTS, MaestroCallbackClient, MaestroCallbackError
 from .client import MaestroContextError
 from .media_fetch import MediaFetchError, decode_data_url, fetch_media, is_data_url
-from .outputs import MAX_PHASE_OUTPUTS, MaestroOutput, RunTracker, UnsupportedAgentEvent, media_output, output_for
+from .outputs import (
+    MAX_PHASE_OUTPUTS,
+    VISIBLE_REPLY_OUTPUTS,
+    MaestroOutput,
+    RunTracker,
+    UnsupportedAgentEvent,
+    media_output,
+    message_content_bytes,
+    output_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -386,10 +395,9 @@ class MaestroEventSink:
                 self._intents.append(intent)
                 await self.persist_with_retry(intent)
             elif event.send_type == "silence":
-                # Only before any output, or after run.update outputs alone (that phase completes
-                # responded, because Maestro refuses silent with recorded outputs).
-                runs_only = all(intent is not None and intent.output["type"] == "run.update" for intent in self._intents)
-                if not runs_only or set(event.data) != {"reason_code"}:
+                # Valid until a visible reply is recorded: Maestro refuses silent with one. Run, reasoning and
+                # tool outputs recorded before it stay, and the phase completes silent with this reason.
+                if self._visible_reply() or set(event.data) != {"reason_code"}:
                     raise MaestroCallbackError("INVALID_REQUEST")
                 reason = event.data["reason_code"]
                 if not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason):
@@ -413,6 +421,8 @@ class MaestroEventSink:
 
     def _output_intent(self, output: MaestroOutput, ordinal: int) -> MaestroOutputIntent:
         value = {"output_id": f"output:{ordinal}", "type": output.type, "payload": output.payload}
+        if output.type == "message.create" and message_content_bytes(output.payload) > self._client.config.max_output_bytes:
+            raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
         try:
             self._client._contracts.validate("Public.OutputRequest", {**value, "lease_fence": self._client._envelope["lease_fence"]})
             raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -540,10 +550,14 @@ class MaestroEventSink:
             key: event.data[key] for key in keys if event.data.get(key) is not None
         }
 
+    def _visible_reply(self) -> bool:
+        return any(intent is not None and intent.output["type"] in VISIBLE_REPLY_OUTPUTS for intent in self._intents)
+
     def normal_outcome(self) -> tuple[str, str]:
         self._active()
         if any(intent is None for intent in self._intents):
             raise MaestroCallbackError("INVALID_REQUEST")
         if self._intents and len(self._receipts) != len(self._intents):
             raise MaestroCallbackError(unknown=True)
-        return ("responded", "responded") if self._receipts else ("silent", self._silent or "implicit_empty")
+        # Maestro: responded needs a visible reply in the phase; silent refuses one (M07-005/006).
+        return ("responded", "responded") if self._visible_reply() else ("silent", self._silent or "implicit_empty")

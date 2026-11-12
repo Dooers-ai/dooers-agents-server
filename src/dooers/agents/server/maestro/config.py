@@ -116,7 +116,8 @@ class MaestroConfig:
     max_concurrency: int = 2
     max_dispatch_bytes: int = 65536
     max_content_bytes: int = 65536
-    max_output_bytes: int = 65536
+    #: One agent message (text + contact + template + whatsapp JSON, as Maestro counts it): 1 MiB.
+    max_output_bytes: int = 1048576
     product_capabilities: tuple[str, ...] = ()
     # Empty: the production file policy (infer_chat_upload_kind). Non-empty: only these types.
     artifact_mime_types: tuple[str, ...] = ()
@@ -168,7 +169,7 @@ class MaestroConfig:
             "max_concurrency": (1, 2),
             "max_dispatch_bytes": (1024, 65536),
             "max_content_bytes": (1, 65536),
-            "max_output_bytes": (1, 65536),
+            "max_output_bytes": (1, 1048576),
             "max_artifact_bytes": (1, 26214400),
             "max_hydrated_bytes": (1, 33554432),
             "artifact_timeout_seconds": (1, 10),
