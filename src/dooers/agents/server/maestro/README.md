@@ -168,26 +168,50 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
 `get_history` dá o mesmo resultado de produção nos 8 formatos, e `get_history_raw`,
 `get_thread` e `list_artifacts` devolvem `ThreadEvent`, `Thread` e `ThreadArtifact`.
 
-- Cada leitura faz um snapshot novo do contexto (`MaestroMemory.snapshot()`), sem cache.
-- O snapshot inteiro passa por `fold_events` e pela conversão de `legacy_model.py`.
-  Depois `limit`, `order`, `filters`, `after_event_id` e `before_event_id` escolhem os
-  eventos, como a consulta de produção. Uma edição ou remoção vale em qualquer página.
-- Só os eventos escolhidos recebem link temporário. Uma imagem do histórico vai ao LLM com
-  o link (`langchain`, `openai_completions`, `openai_responses`). Sem a rota de link, a
-  entrega falha com `UNSUPPORTED_CAPABILITY` e o log de erro dá as configurações.
-- O autor dos eventos do próprio agente é `AgentConfig.assistant_name`
-  (`create_text_delivery_adapter(..., assistant_name=...)`, padrão `"Assistant"`), não o
-  nome do agente no Maestro.
+- Um snapshot por execução (`MaestroMemory.execution_snapshot()`): o contexto é lido uma
+  vez, porque abaixo do corte ele não muda. `on` e a memória usam a mesma leitura. Cada
+  leitura confere de novo lease, capability e cancelamento; depois do fim da execução, ela
+  falha.
+- Leitura depois de `yield`: a memória junta ao snapshot os eventos que o Maestro gravou
+  para as saídas já aceitas nesta execução (o eco das saídas, na ordem). Assim uma leitura
+  depois de `yield send.*` vê a saída, como em produção: mensagem, edição, fila, título,
+  participante e o `run_id` que `run_start` dá ao gatilho (o eco de `run_start` é um
+  `run.updated` com `status="running"` e `trigger_event_id`).
+- Diferença declarada: uma mensagem que chega depois do corte fica fora das leituras desta
+  execução. Produção lê a tabela ao vivo e a mostra.
+- O snapshot com os ecos passa inteiro por `fold_events` e pela conversão de
+  `legacy_model.py`. Depois `limit`, `order`, `filters`, `after_event_id` e
+  `before_event_id` escolhem os eventos, como a consulta de produção. Uma edição ou remoção
+  vale em qualquer página.
+- Só os eventos escolhidos recebem link temporário, em paralelo. Uma imagem do histórico vai
+  ao LLM com o link (`langchain`, `openai_completions`, `openai_responses`). Um arquivo que
+  esta execução enviou fica com a URL de origem (`send.image(url)`), como produção guarda;
+  ele passa do corte, e o Maestro não emite link para ele.
+- Rota de link desligada (capability sem `artifact.link.issue` ou resposta
+  `UNSUPPORTED_CAPABILITY`): a entrega falha com `UNSUPPORTED_CAPABILITY` (HTTP 422) e o log
+  de erro dá as configurações. Um 403/404 para **um** arquivo (removido, fora do corte):
+  só essa parte fica sem URL (os formatos de produção mostram `[image: <nome>]`), com um log
+  `warning` com o ID do arquivo; o cliente continua aberto e a entrega segue.
+- Teto do contexto (provisório): o snapshot aceita até 20 páginas e 16 MiB (bytes UTF-8).
+  Acima disso, a entrega falha com `PAYLOAD_TOO_LARGE` (HTTP 413; o Maestro grava
+  `runtime_rejected_payload_too_large`), antes do handler. Produção lê só `limit * 3` linhas
+  e não tem teto. A leitura pelo fim da thread vem numa tarefa seguinte.
+- O autor dos eventos do próprio agente é `AgentConfig.assistant_name`, não o nome do
+  agente no Maestro. Passe o `AgentConfig` do agente no modo Maestro a
+  `create_text_delivery_adapter` ou `create_durable_text_delivery_adapter` (ou
+  `assistant_name=...`); só com o `MaestroConfig`, o nome é `"Assistant"` (padrão de
+  produção).
+- `get_thread()`: `updated_at` e `last_event_at` são a hora do último evento lido (corte e
+  ecos). Produção muda os dois só nos eventos do agente. Os papéis da pessoa ficam no padrão
+  de `User` até o plano 5 (a entrega do Maestro ainda não traz o contexto do Core).
 - Na thread com vários agentes ativos, a mensagem de outro agente é de `user`, com o
   prefixo `[agente: <nome>] `. As mensagens da pessoa e do próprio agente ficam iguais às
   de produção.
 - A escrita e as outras leituras de `Persistence` levantam `ThreadManagementModeError`:
   na execução, o agente escreve por `send`.
 - Extras do Maestro: `hydrate_artifact(reference)` e `list_maestro_artifacts(...)` (o
-  `list_artifacts` de `MaestroMemory`).
-- O snapshot para no corte do contexto. Uma saída que o handler já publicou nesta
-  execução não aparece numa leitura seguinte, nem o `run_id` que `run_start` dá ao
-  gatilho. Em produção, os dois aparecem.
+  `list_artifacts` de `MaestroMemory`). O `actor` de cada referência não tem e-mail nem
+  identity IDs, como o `ThreadArtifact` de produção.
 
 O cliente usa somente a URL de callback confiável do `MaestroConfig`, fixa
 `127.0.0.1`, porta e prefixo, e faz `GET /deliveries/:id/context`. Envia
@@ -229,7 +253,8 @@ Maestro originais como dicionários com actor, IDs, sequência, correlação e p
 sem conversão para `ThreadEvent` legado. `get_history()` usa por padrão as últimas
 50 mensagens, devolvidas cronologicamente. Filtros locais aceitos: `type`,
 `actor_kind`, `instance_agent_id`; nunca modificam o escopo/corte remoto. Limit é
-1–1000. `get_thread()` retorna `MaestroThreadView` (IDs, workspace nulo,
+1–1000. `MaestroMemory.get_thread()` (não o do handler, que devolve `Thread`) retorna
+`MaestroThreadView` (IDs, workspace nulo,
 participantes e corte), **não** `Thread` legado: o contrato ContextResponse não
 fornece título, permissões ou timestamps da thread. Campos ausentes não são
 inventados. Participantes representam a resposta autorizada mais recente.
@@ -385,12 +410,14 @@ quando faltam menos de 60 s para expirar. O link é um bearer: nunca entra em lo
 
 Requisito de configuração do Maestro: `ARTIFACT_LINKS_ENABLED=true` e
 `MAESTRO_ARTIFACT_LINK_KEY` (base64, no mínimo 32 bytes). Sem isso, a capability não traz
-`artifact.link.issue` ou a rota responde 404/403/`UNSUPPORTED_CAPABILITY`. Nesse caso,
-o SDK levanta `MaestroArtifactLinkUnavailable` (código `UNSUPPORTED_CAPABILITY`), grava
-um log `error` com o nome das duas configurações e não invoca o handler: a entrega
-falha (HTTP 422). O SDK nunca entrega ao handler uma parte de mídia sem link ou com
-link falso. O Maestro só emite link para arquivo ligado à thread até o corte do
-contexto; os anexos da entrega se qualificam.
+`artifact.link.issue` (o Maestro assina a operação só com a rota ligada) ou a rota responde
+`UNSUPPORTED_CAPABILITY`. Nesse caso, o SDK levanta `MaestroArtifactLinkUnavailable`
+(código `UNSUPPORTED_CAPABILITY`), grava um log `error` com o nome das duas configurações
+e não invoca o handler: a entrega falha (HTTP 422). O SDK nunca entrega ao handler uma
+parte de mídia com link falso. Um 403/404 é sobre **um** arquivo (removido, fora do corte,
+sem permissão): essa parte fica sem `url` (`ArtifactLinkMissing`, log `warning` com o ID do
+arquivo), o cliente continua aberto e o resto segue. O Maestro só emite link para arquivo
+ligado à thread até o corte do contexto; os anexos da entrega se qualificam.
 
 ## Executor textual E05-08
 
@@ -409,7 +436,9 @@ async def handler(on, send, memory, analytics, settings):
     yield send.text("Uma resposta completa")
     yield send.run_end()
 
-app = create_text_delivery_adapter(maestro_config, handler, private_resolver)
+# agent_config = AgentConfig(thread_management="maestro", maestro=maestro_config, ...):
+# o assistant_name dele chega ao autor dos eventos do agente, como em produção.
+app = create_text_delivery_adapter(agent_config, handler, private_resolver)
 ```
 
 O endpoint começa validando assinatura/bindings do dispatch. O gate faz heartbeat

@@ -8,13 +8,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal
 
 from .artifacts import MaestroArtifactsClient
 from .client import MaestroContextClient, MaestroContextError
-from .converters import history_messages
+from .converters import history_messages, public_actor
 from .links import LinkResolver
 
 
@@ -59,8 +61,33 @@ class MaestroMemory:
         self._client = client
         self._envelope = client.admission.envelope
         self._max_pages, self._max_total_bytes = max_pages, max_total_bytes
-        # One link per artifact for the whole execution (incoming parts and, later, history).
+        # One link per artifact for the whole execution (incoming parts and history).
         self._links = LinkResolver(MaestroArtifactsClient(client).issue_link)
+        self._execution_snapshot: dict[str, Any] | None = None
+
+    @property
+    def envelope(self) -> Mapping[str, Any]:
+        """The admitted dispatch envelope of this execution (read only)."""
+        return MappingProxyType(self._envelope)
+
+    @property
+    def links(self) -> LinkResolver:
+        """The execution's temporary links: one per artifact (incoming parts and history)."""
+        return self._links
+
+    async def execution_snapshot(self) -> dict[str, Any]:
+        """The delivery context of this execution: read once (``snapshot()``), then the same.
+
+        Below the cutoff the context does not change, so one read serves the whole execution
+        (``on``, ``MaestroAgentMemory``). Every call checks the lease, the capability and the
+        cancellation again (``_check_current``): after the execution ends, it fails. The result
+        is shared: read it, never change it.
+        """
+        if self._execution_snapshot is None:
+            self._execution_snapshot = await self.snapshot()
+        else:
+            self._client._check_current()
+        return self._execution_snapshot
 
     def _validate_page(self, page: dict[str, Any]) -> None:
         envelope = self._envelope
@@ -263,7 +290,8 @@ class MaestroMemory:
                             part["artifact_id"],
                             event["event_id"],
                             event["sequence"],
-                            deepcopy(event["actor"]),
+                            # Without the person's e-mail and identity IDs, as production's ThreadArtifact.
+                            public_actor(deepcopy(event["actor"])),
                             part.get("filename"),
                             part.get("mime_type"),
                             part.get("size_bytes"),

@@ -147,7 +147,7 @@ def _production_message(content: list[Any]) -> str:
     return HandlerPipeline._extract_message(None, content)
 
 
-def _thread_at_cutoff(events: list[dict[str, Any]]) -> dict[str, Any]:
+def thread_at_cutoff(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Title, creation time, queue and channel of the thread up to the context cutoff.
 
     ``thread.created`` carries the thread view; each later ``thread.updated`` carries the
@@ -311,7 +311,7 @@ async def _incoming(
             else None
         ),
     )
-    thread = _thread_at_cutoff(snapshot["events"])
+    thread = thread_at_cutoff(snapshot["events"])
     channel = thread["channel"] or DEFAULT_CHANNEL
     if actor["kind"] == "external" and channel == DEFAULT_CHANNEL:
         # A channel contact is never a platform user: no RAG on_behalf (production: channel "whatsapp").
@@ -395,12 +395,15 @@ async def maestro_handler_context(
     checkpoint_state=None,
     options_resolver=None,
     assistant_name: str = "Assistant",
+    published=None,
 ) -> AsyncIterator[MaestroHandlerInput]:
     """Prepara on/memory/analytics/settings; E05-08 fornece send e roda handler.
 
     A assinatura handler(on, send, memory, analytics, settings) continua intacta.
-    ``memory`` é ``MaestroAgentMemory`` (o ``AgentMemory`` de produção); ``assistant_name`` é
-    ``AgentConfig.assistant_name``, o autor que produção grava para o agente.
+    ``memory`` é ``MaestroAgentMemory`` (o ``AgentMemory`` de produção) sobre o snapshot desta
+    execução; ``assistant_name`` é ``AgentConfig.assistant_name``, o autor que produção grava para
+    o agente; ``published`` (o sink do executor) dá as saídas já aceitas, que as leituras
+    seguintes veem como produção.
     Use async with dentro da task que efetivamente consome o generator. Nenhum
     contexto RAG/Maestro é herdado automaticamente por tasks filhas.
     """
@@ -413,7 +416,8 @@ async def maestro_handler_context(
             raise MaestroContextError("CONTEXT_EXPIRED")
         memory._client.bind_cancellation(lambda: cancellation.cancelled)
         with diagnostic_stage("context.snapshot", memory._envelope):
-            snapshot = await memory.snapshot()
+            # One read for the whole execution: the handler's memory reuses it.
+            snapshot = await memory.execution_snapshot()
         from .recipient_options import TurnSettings, prepare_recipient_options
 
         selected_options, assert_options_current = prepare_recipient_options(
@@ -452,7 +456,7 @@ async def maestro_handler_context(
         assert_options_current()
         from .persistence import MaestroAgentMemory
 
-        agent_memory = MaestroAgentMemory(memory, assistant_name=assistant_name)
+        agent_memory = MaestroAgentMemory(memory, assistant_name=assistant_name, published=published)
         previous = _active.get(task)
         tokens = None
         guard_token = None

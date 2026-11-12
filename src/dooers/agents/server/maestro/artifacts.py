@@ -16,6 +16,7 @@ from uuid import UUID
 import httpx
 
 from .client import MaestroContextClient, MaestroContextError
+from .links import ArtifactLinkMissing
 from .security import strict_json
 
 logger = logging.getLogger(__name__)
@@ -74,8 +75,10 @@ class MaestroHydratedArtifact:
     mime_type: str
     data: bytes = field(repr=False)
 
-    def content_part(self, url: str, *, duration: float | None = None):
+    def content_part(self, url: str | None, *, duration: float | None = None):
         """The production part of an uploaded file: the bytes and the temporary link (``url``).
+
+        ``url`` is ``None`` when Maestro has no link for this one file (``ArtifactLinkMissing``).
 
         Same fields as the production upload path (``ref_id`` parts of ``HandlerPipeline``):
         an audio keeps the ``duration`` of the message part; an image has no size.
@@ -177,11 +180,12 @@ class MaestroArtifactsClient:
         """``POST /executions/{id}/artifacts/{artifact_id}/links``: a temporary link, ``{url, expires_at}``.
 
         Maestro issues it only for a file of this thread linked up to the context cutoff (the
-        attachments of the delivery qualify). A capability without ``artifact.link.issue`` or a
-        403/404/``UNSUPPORTED_CAPABILITY`` answer means the route is off: that raises
-        ``MaestroArtifactLinkUnavailable`` and logs which settings to change. A 403/404 also
-        closes the client, as every 403/404 of the execution does. The URL is a bearer link
-        and is never logged.
+        attachments of the delivery qualify). A capability without ``artifact.link.issue`` or an
+        ``UNSUPPORTED_CAPABILITY`` answer means the route is off (Maestro signs the operation only
+        with ``ARTIFACT_LINKS_ENABLED``): that raises ``MaestroArtifactLinkUnavailable`` and logs
+        which settings to change. A 403/404 is about this one file (removed, not linked up to the
+        cutoff, not allowed): that raises ``ArtifactLinkMissing`` and the client stays open. The
+        URL is a bearer link and is never logged.
         """
         client = self._client
         try:
@@ -205,12 +209,11 @@ class MaestroArtifactsClient:
                                 raise MaestroContextError("CONTEXT_LIMIT")
                             raw.extend(chunk)
                         if response.status_code != 200:
-                            if response.status_code in {403, 404}:
-                                # Same cleanup as any 403/404 of the execution (``_status``): no more reads.
-                                client._closed = True
-                                raise MaestroArtifactLinkUnavailable()
                             if _error_code(bytes(raw)) == "UNSUPPORTED_CAPABILITY":
                                 raise MaestroArtifactLinkUnavailable()
+                            if response.status_code in {403, 404}:
+                                # This one file: the other parts and the execution go on.
+                                raise ArtifactLinkMissing()
                             self._status(response.status_code, 200)
                         if (
                             response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json"

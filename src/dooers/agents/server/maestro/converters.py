@@ -12,6 +12,11 @@ from typing import Any
 _AGENT_ONLY_ACTOR_FIELDS = frozenset({"email", "identity_ids"})
 
 
+def public_actor(actor: dict[str, Any]) -> dict[str, Any]:
+    """O autor sem e-mail e identity IDs: o que produção mostra (``ThreadArtifact``, formatos do LLM)."""
+    return {key: value for key, value in actor.items() if key not in _AGENT_ONLY_ACTOR_FIELDS}
+
+
 def history_messages(events: list[dict[str, Any]], recipient_instance_id: str, format: str = "openai") -> list[dict[str, Any]]:
     from .client import MaestroContextError
 
@@ -31,9 +36,8 @@ def history_messages(events: list[dict[str, Any]], recipient_instance_id: str, f
         ]
         # E-mail e identity IDs existem só no contexto do agente; os formatos de produção não os
         # mandam ao LLM, então o prefixo também não.
-        public_actor = {key: value for key, value in actor.items() if key not in _AGENT_ONLY_ACTOR_FIELDS}
         metadata = json.dumps(
-            {"actor": public_actor, "event_id": event["event_id"], "sequence": event["sequence"]},
+            {"actor": public_actor(actor), "event_id": event["event_id"], "sequence": event["sequence"]},
             ensure_ascii=True,
             separators=(",", ":"),
         )

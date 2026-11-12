@@ -14,11 +14,42 @@ from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedRe
 from .callbacks import MaestroCallbackClient, MaestroCallbackError, MaestroHeartbeatGate
 from .client import MaestroContextError
 from .commercial import MaestroCommercialBlocked
-from .config import MaestroConfig
+from .config import MaestroConfig, MaestroConfigurationError
 from .context import MaestroCancellation, MaestroPrivateResolver, maestro_handler_context
 from .diagnostics import diagnostic_stage
 from .memory import MaestroMemory
 from .sink import MaestroEventSink, MaestroSend
+
+#: ``AgentConfig.assistant_name`` default.
+DEFAULT_ASSISTANT_NAME = "Assistant"
+
+
+def maestro_settings(config: Any, assistant_name: str | None = None) -> tuple[MaestroConfig, str]:
+    """The ``MaestroConfig`` and the assistant name of an adapter factory's ``config``.
+
+    ``config`` is a ``MaestroConfig``, or the ``AgentConfig`` of a Maestro-mode agent
+    (``thread_management="maestro"``): then its ``maestro`` and its ``assistant_name``, the author
+    production writes for the agent. An explicit ``assistant_name`` wins; the default is
+    production's ``"Assistant"``.
+    """
+    from dooers.agents.server.config import AgentConfig
+
+    if isinstance(config, AgentConfig):
+        if config.thread_management != "maestro" or config.maestro is None:
+            raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
+        return config.maestro, assistant_name if assistant_name is not None else config.assistant_name
+    return config, assistant_name if assistant_name is not None else DEFAULT_ASSISTANT_NAME
+
+
+def _context_failure(error: MaestroContextError) -> MaestroCallbackError:
+    """The delivery error of a context error: its own code for a missing link route and a too large context.
+
+    ``UNSUPPORTED_CAPABILITY`` (422): no link route. ``CONTEXT_LIMIT`` (413 ``PAYLOAD_TOO_LARGE``;
+    Maestro records ``runtime_rejected_payload_too_large``): the context passed the page or byte
+    limit. Anything else: the authority was lost (``LEASE_STALE``).
+    """
+    code = {"UNSUPPORTED_CAPABILITY": "UNSUPPORTED_CAPABILITY", "CONTEXT_LIMIT": "PAYLOAD_TOO_LARGE"}.get(error.code, "LEASE_STALE")
+    return MaestroCallbackError(code)
 
 
 class MaestroTextExecutor:
@@ -42,7 +73,7 @@ class MaestroTextExecutor:
         checkpoints=None,
         approvals=None,
         options_resolver=None,
-        assistant_name: str = "Assistant",
+        assistant_name: str = DEFAULT_ASSISTANT_NAME,
     ) -> None:
         if not callable(handler) or not callable(private_resolver):
             raise ValueError("MAESTRO_HANDLER_REQUIRED")
@@ -126,6 +157,7 @@ class MaestroTextExecutor:
                 checkpoint_state=checkpoint_state,
                 options_resolver=self.options_resolver,
                 assistant_name=self.assistant_name,
+                published=sink,
             ) as context:
                 outcome, reason = "failed", "handler_error"
                 try:
@@ -191,10 +223,8 @@ class MaestroTextExecutor:
                         "unsupported_capability" if error.code == "UNSUPPORTED_CAPABILITY" else "handler_contract_error",
                     )
                 except MaestroContextError as error:
-                    # A history read without the link route is a configuration error, as before the handler.
-                    raise MaestroCallbackError(
-                        "UNSUPPORTED_CAPABILITY" if error.code == "UNSUPPORTED_CAPABILITY" else "LEASE_STALE"
-                    ) from None
+                    # Same codes as before the handler: no link route, or a context over the limit.
+                    raise _context_failure(error) from None
                 except Exception:
                     outcome, reason = "failed", "handler_error"
                 await stop_heartbeat()
@@ -222,7 +252,7 @@ class MaestroTextExecutor:
         except MaestroAdmissionError:
             raise
         except MaestroContextError as error:
-            raise MaestroCallbackError("UNSUPPORTED_CAPABILITY" if error.code == "UNSUPPORTED_CAPABILITY" else "LEASE_STALE") from None
+            raise _context_failure(error) from None
         except Exception:
             raise MaestroCallbackError() from None
         finally:
@@ -234,16 +264,19 @@ class MaestroTextExecutor:
 
 
 def create_text_delivery_adapter(
-    config: MaestroConfig,
+    config: MaestroConfig | Any,
     handler: Callable[..., Any],
     private_resolver: MaestroPrivateResolver,
     *,
-    assistant_name: str = "Assistant",
+    assistant_name: str | None = None,
 ) -> MaestroDeliveryAdapter:
     """Composição explícita local; capacidades globais continuam sem anúncio C2.
 
-    ``assistant_name`` é ``AgentConfig.assistant_name`` (padrão de produção ``"Assistant"``).
+    ``config`` é o ``MaestroConfig`` ou o ``AgentConfig`` do agente no modo Maestro: com ele, o
+    ``assistant_name`` do ``AgentConfig`` chega ao autor dos eventos do agente
+    (``maestro_settings``).
     """
+    config, assistant_name = maestro_settings(config, assistant_name)
     contracts = MaestroContracts()
     return MaestroDeliveryAdapter(
         config,

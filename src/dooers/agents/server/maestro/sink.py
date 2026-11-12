@@ -221,6 +221,8 @@ class MaestroEventSink:
         self._streams: list[Any] = []
         self._stream_last_sent = 0.0
         self._receipts: dict[int, dict[str, Any]] = {}
+        #: artifact_id -> the URL ``send.image``/``audio``/``document`` received, for each file uploaded.
+        self._uploaded_urls: dict[str, str] = {}
         self._silent: str | None = None
         self._finished = False
         self._failed = False
@@ -229,6 +231,20 @@ class MaestroEventSink:
     @property
     def event_ids(self) -> tuple[str, ...]:
         return tuple(receipt["event"]["event_id"] for receipt in self._receipts.values())
+
+    @property
+    def published_events(self) -> list[dict[str, Any]]:
+        """The events Maestro stored for the accepted outputs (the echoes), in output order.
+
+        Production stores each yielded event before the handler reads again; the handler's
+        memory adds these to the execution snapshot (read-your-writes). Copies.
+        """
+        return [deepcopy(self._receipts[ordinal]["event"]) for ordinal in sorted(self._receipts)]
+
+    @property
+    def published_media_urls(self) -> dict[str, str]:
+        """The URL each uploaded file came from (production keeps it in the stored part)."""
+        return dict(self._uploaded_urls)
 
     @property
     def intents(self) -> tuple[MaestroOutputIntent, ...]:
@@ -533,6 +549,7 @@ class MaestroEventSink:
             if reason is None:
                 raise
             return self._media_link(event, reason)
+        self._uploaded_urls[attachment["artifact_id"]] = data["url"]
         return {**attachment, **extra}
 
     def _media_link(self, event: AgentEvent, reason: str) -> dict[str, Any]:

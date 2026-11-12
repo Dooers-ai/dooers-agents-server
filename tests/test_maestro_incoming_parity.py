@@ -235,7 +235,7 @@ async def test_link_route_off_fails_the_delivery_loudly(monkeypatch, caplog):
     """No link route: the delivery fails and the log names the Maestro settings; the handler never runs."""
 
     def off(self, request, execution_id, artifact_id):
-        raise fake_module._CallbackError(404, "NOT_FOUND")
+        raise fake_module._CallbackError(422, "UNSUPPORTED_CAPABILITY")
 
     monkeypatch.setattr(FakeMaestro, "_artifact_link", off)
     ran = []
@@ -278,16 +278,16 @@ def _attachment_page(page: dict[str, Any]) -> dict[str, Any]:
     return part
 
 
-@pytest.mark.parametrize("route", ["operation_missing", "not_found", "forbidden", "unsupported_capability"])
+@pytest.mark.parametrize("route", ["operation_missing", "unsupported_capability"])
 async def test_link_issue_unavailable_raises_configuration_error(key, bundle, route, caplog):
+    """The route is off: no ``artifact.link.issue`` in the capability, or Maestro answers UNSUPPORTED_CAPABILITY."""
     change = None if route == "operation_missing" else with_links
     async with fixture_server() as server:
         memory, page, _, _ = prepare(key, bundle, server, change=change)
         _attachment_page(page)
-        status = {"not_found": 404, "forbidden": 403, "unsupported_capability": 422}.get(route, 200)
         error = {"error": {"code": "UNSUPPORTED_CAPABILITY", "message": "off", "retryable": False, "request_id": str(uuid4())}}
         server.response = lambda first: error if "/links " in first else page
-        server.status = lambda first: status if "/links " in first else 200
+        server.status = lambda first: 422 if "/links " in first else 200
         with _hydrated(), pytest.raises(MaestroArtifactLinkUnavailable) as raised:
             async with maestro_handler_context(memory, private):
                 pytest.fail("a media part without its link must never reach the handler")
@@ -295,8 +295,24 @@ async def test_link_issue_unavailable_raises_configuration_error(key, bundle, ro
     assert all(setting in str(raised.value) for setting in SETTINGS)
     assert any(all(setting in record.getMessage() for setting in SETTINGS) for record in caplog.records)
     assert any("/links " in first for first, _ in server.requests) is (route != "operation_missing")
-    # 403/404 end the reads of the execution, as every other 403/404 of the client does.
-    assert memory._client._closed is (route in {"not_found", "forbidden"})
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_link_missing_for_one_file_leaves_that_part_without_url(key, bundle, status, caplog):
+    """403/404 for one file (the route works): the part keeps its bytes, has no URL, and the client stays open."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server, change=with_links)
+        part = _attachment_page(page)
+        error = {"error": {"code": "NOT_FOUND", "message": "no", "retryable": False, "request_id": str(uuid4())}}
+        server.response = lambda first: error if "/links " in first else page
+        server.status = lambda first: status if "/links " in first else 200
+        with _hydrated():
+            async with maestro_handler_context(memory, private) as prepared:
+                (received,) = prepared.on.content
+                assert (received.data, received.url) == (b"hello", None)
+                assert not memory._client._closed
+    assert part["artifact_id"] in caplog.text
+    assert not any(all(setting in record.getMessage() for setting in SETTINGS) for record in caplog.records)
 
 
 async def test_link_issue_posts_empty_body_with_execution_capability(key, bundle):

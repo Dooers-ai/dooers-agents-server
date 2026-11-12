@@ -205,13 +205,16 @@ def create_durable_text_delivery_adapter(
     options_resolver=None,
     retry_policy: Literal["unsafe", "journal_only"] = "unsafe",
     terminal_replay: bool = False,
-    assistant_name: str = "Assistant",
+    assistant_name: str | None = None,
 ):
+    """``config`` is the ``MaestroConfig`` or the Maestro-mode ``AgentConfig`` (``executor.maestro_settings``)."""
     from dooers.agents.server.protocol.maestro import MaestroContracts
 
     from .adapter import MaestroDeliveryAdapter
     from .callbacks import MaestroHeartbeatGate
-    from .executor import MaestroTextExecutor
+    from .executor import MaestroTextExecutor, maestro_settings
+
+    config, assistant_name = maestro_settings(config, assistant_name)
 
     if not isinstance(journal, PostgresEffectJournal) or retry_policy not in {"unsafe", "journal_only"}:
         raise ValueError("MAESTRO_DURABLE_JOURNAL_REQUIRED")

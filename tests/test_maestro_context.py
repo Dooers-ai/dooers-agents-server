@@ -307,6 +307,21 @@ async def test_handler_memory_is_the_production_agent_memory(private_key, contra
             assert isinstance(thread, Thread) and thread.id == memory._envelope["thread_id"]
 
 
+async def test_execution_snapshot_is_read_once_and_checks_the_lease_on_each_call(private_key, contracts):
+    """Below the cutoff the context does not change: one read per execution, one lease check per call."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        first = await memory.execution_snapshot()
+        requests = len(server.requests)
+        second = await memory.execution_snapshot()
+        assert second is first and len(server.requests) == requests == 1
+        assert [event["event_id"] for event in first["events"]] == [page["trigger_event"]["event_id"]]
+        memory._client.close()
+        with pytest.raises(MaestroContextError, match="CONTEXT_EXPIRED"):
+            await memory.execution_snapshot()
+        assert len(server.requests) == requests
+
+
 @pytest.mark.parametrize(
     "format", ["openai", "anthropic", "google", "cohere", "voyage", "langchain", "openai_completions", "openai_responses"]
 )

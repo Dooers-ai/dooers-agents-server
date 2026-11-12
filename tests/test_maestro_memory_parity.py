@@ -14,26 +14,34 @@ The agent's name in Maestro ("Nome no Maestro") differs from ``AgentConfig.assis
 
 from __future__ import annotations
 
+import base64
 import inspect
 import json
 import logging
 import re
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
+import dooers.agents.server.maestro.executor as executor_module
+from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import ThreadManagementModeError
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
-from dooers.agents.server.maestro import create_text_delivery_adapter
+from dooers.agents.server.maestro import create_durable_text_delivery_adapter, create_text_delivery_adapter
 from dooers.agents.server.maestro.artifacts import ARTIFACT_LINKS_UNAVAILABLE
-from dooers.agents.server.maestro.links import LinkResolver
+from dooers.agents.server.maestro.client import MaestroContextError
+from dooers.agents.server.maestro.config import MaestroConfigurationError
+from dooers.agents.server.maestro.journal_store import PostgresEffectJournal
+from dooers.agents.server.maestro.links import ArtifactLinkMissing, LinkResolver
 from dooers.agents.server.maestro.memory import MaestroArtifactReference, MaestroMemory
 from dooers.agents.server.maestro.persistence import MaestroAgentMemory, MaestroExecutionPersistence
 from dooers.agents.server.persistence.base import Persistence
@@ -94,36 +102,63 @@ PARTICIPANTS = (_participant(PERSON, role="owner"), _participant(MAESTRO_AGENT))
 class ContextMemory:
     """What ``MaestroExecutionPersistence`` reads of ``MaestroMemory``.
 
-    The envelope, the execution's ``LinkResolver`` and a fresh snapshot of the delivery
-    context on each call. ``list_artifacts`` is the real ``MaestroMemory`` method over it.
+    ``envelope``, ``links`` (the execution's ``LinkResolver``) and ``execution_snapshot()``:
+    the delivery context read once, at the first call (``cutoff``: the number of thread events
+    it holds; default all). Each call counts in ``reads`` (the real one checks the lease there).
+    ``snapshot()`` is a new read (``snapshots``); ``list_artifacts`` is the real
+    ``MaestroMemory`` method over it.
     """
 
     list_artifacts = MaestroMemory.list_artifacts
 
-    def __init__(self, thread: MaestroThread, participants=PARTICIPANTS, *, links: LinkResolver | None = None) -> None:
+    def __init__(
+        self, thread: MaestroThread, participants=PARTICIPANTS, *, links: LinkResolver | None = None, cutoff: int | None = None
+    ) -> None:
         self._envelope = {
             "thread_id": thread.thread_id,
             "organization_id": ORG_ID,
             "workspace_id": WORKSPACE_ID,
             "instance_agent_id": AGENT_ID,
         }
-        self._links = links or _links()
-        self._thread, self._participants = thread, list(participants)
-        self.snapshots = 0
+        self.links = links or _links()
+        self._thread, self._participants, self._cutoff = thread, list(participants), cutoff
+        self._execution: dict[str, Any] | None = None
+        self.snapshots = self.reads = 0
         self.hydrated: list[MaestroArtifactReference] = []
+
+    @property
+    def envelope(self) -> dict[str, Any]:
+        return self._envelope
+
+    def _read(self) -> dict[str, Any]:
+        events = deepcopy(self._thread.events[: self._cutoff])
+        return {"trigger_event": events[-1], "participants": deepcopy(self._participants), "events": events}
 
     async def snapshot(self) -> dict[str, Any]:
         self.snapshots += 1
-        events = deepcopy(self._thread.events)
-        return {"trigger_event": events[-1], "participants": deepcopy(self._participants), "events": events}
+        return self._read()
+
+    async def execution_snapshot(self) -> dict[str, Any]:
+        self.reads += 1
+        if self._execution is None:
+            self._execution = self._read()
+        return self._execution
 
     async def hydrate_artifact(self, reference: MaestroArtifactReference) -> str:
         self.hydrated.append(reference)
         return "hydrated"
 
 
-def _memory(thread: MaestroThread, participants=PARTICIPANTS, **options: Any) -> MaestroAgentMemory:
-    return MaestroAgentMemory(ContextMemory(thread, participants, **options), assistant_name=ASSISTANT_NAME)
+@dataclass
+class Published:
+    """The sink's side of read-your-writes: the echoed events and the URLs of the files it uploaded."""
+
+    published_events: list[dict[str, Any]] = field(default_factory=list)
+    published_media_urls: dict[str, str] = field(default_factory=dict)
+
+
+def _memory(thread: MaestroThread, participants=PARTICIPANTS, *, published: Published | None = None, **options: Any) -> MaestroAgentMemory:
+    return MaestroAgentMemory(ContextMemory(thread, participants, **options), assistant_name=ASSISTANT_NAME, published=published)
 
 
 Reply = Callable[[AgentSend, str], list[AgentEvent]]
@@ -191,6 +226,19 @@ EDIT_TURN = _text_turn(
 )
 LAST_TURN = _text_turn("Resuma a conversa")
 TURNS = (PHOTO_TURN, FILES_TURN, EDIT_TURN, LAST_TURN)
+#: The current turn's outputs, read back in the same execution (read-your-writes).
+WRITES_TURN = _text_turn(
+    "Pode me passar para o suporte?",
+    lambda send, trigger_id: [
+        send.run_start(),
+        send.text("Claro."),
+        send.update_user_event(trigger_id, [_text("Pode me passar para o suporte, por favor?")]),
+        send.update_thread(title="Pedido 42", queue="suporte"),
+        send.add_participant("user-2", user_name="Bia Lima"),
+        send.reasoning("transferindo"),
+        send.text("Pronto, Bia vai te ajudar."),
+    ],
+)
 
 
 async def _production(turns: tuple[Turn, ...]) -> AgentMemory:
@@ -213,6 +261,7 @@ async def _production(turns: tuple[Turn, ...]) -> AgentMemory:
             content=[dict(part) for part in turn.production],
             user=USER,
             thread_id=thread_id,
+            allowed_queues=["suporte"],
         )
         result = await pipeline.setup(context)
         async for _ in pipeline.execute(context, result):
@@ -228,6 +277,18 @@ def _maestro(turns: tuple[Turn, ...], *, agent: dict[str, Any] = MAESTRO_AGENT) 
         trigger = thread.message(PERSON, [dict(part) for part in turn.maestro])
         thread.publish(turn.reply(AgentSend(), trigger["event_id"]), trigger, actor=agent)
     return thread
+
+
+def _in_execution(turns: tuple[Turn, ...], **options: Any) -> MaestroAgentMemory:
+    """The memory of the last turn's execution after it yielded its outputs.
+
+    The context stops at the last person message (the trigger); the outputs after it are the
+    events the sink echoed, as production stored them before the next read.
+    """
+    thread = _maestro(turns)
+    cutoff = max(index for index, event in enumerate(thread.events) if event["actor"]["kind"] == "human") + 1
+    published = Published(published_events=deepcopy(thread.events[cutoff:]))
+    return _memory(thread, cutoff=cutoff, published=published, **options)
 
 
 _URL = re.compile(r"https?://[^\s\"]+")
@@ -264,7 +325,7 @@ async def test_get_history_equals_production(fmt):
 
 
 async def test_history_image_is_multimodal_with_link():
-    memory = _memory(_maestro((PHOTO_TURN, LAST_TURN)))
+    memory = _memory(_maestro((PHOTO_TURN, FILES_TURN, LAST_TURN)))
 
     langchain = await memory.get_history(format="langchain")
     completions = await memory.get_history(format="openai_completions")
@@ -274,6 +335,39 @@ async def test_history_image_is_multimodal_with_link():
     assert langchain[0] == {"role": "user", "content": [_text("Veja esta foto"), image]}
     assert completions[0]["content"][1] == {"type": "image_url", "image_url": {"url": _link(IMAGE)}}
     assert responses[0]["content"][1] == {"type": "input_image", "image_url": _link(IMAGE)}
+    # Each file keeps its own link (the text formats put it in the text).
+    assert completions[2]["content"][1:] == [
+        {"type": "text", "text": f"[document: contrato.pdf] {_link(DOCUMENT)}"},
+        {"type": "text", "text": f"[audio: recado.wav (4.0s)] {_link(AUDIO)}"},
+    ]
+    assert responses[2]["content"][1:] == [
+        {"type": "input_text", "text": f"[document: contrato.pdf] {_link(DOCUMENT)}"},
+        {"type": "input_text", "text": f"[audio: recado.wav (4.0s)] {_link(AUDIO)}"},
+    ]
+
+
+async def test_a_file_without_link_goes_without_url(caplog):
+    """403/404 for one file (removed, not linked up to the cutoff): only that part has no URL."""
+    missing: list[str] = []
+
+    async def issue(artifact_id: str) -> dict[str, Any]:
+        if artifact_id == IMAGE:
+            missing.append(artifact_id)
+            raise ArtifactLinkMissing()
+        return {"url": _link(artifact_id), "expires_at": "2099-01-01T00:00:00Z"}
+
+    memory = _memory(_maestro((PHOTO_TURN, FILES_TURN, LAST_TURN)), links=LinkResolver(issue))
+    caplog.set_level(logging.WARNING)
+
+    first = await memory.get_history(format="langchain")
+    again = await memory.get_history(format="openai_completions")
+
+    # Production's rule for a part without a fetchable URL: the "[image: <name>]" marker.
+    assert first[0] == {"role": "user", "content": "Veja esta foto\n[image: foto.png]"}
+    assert first[2]["content"][1]["url"] == _link(DOCUMENT)
+    assert again[0] == {"role": "user", "content": "Veja esta foto\n[image: foto.png]"}
+    assert missing == [IMAGE]  # the miss is kept for the execution
+    assert IMAGE in caplog.text and "artifact-links" not in caplog.text
 
 
 @pytest.mark.parametrize("fmt", HISTORY_FORMATS)
@@ -388,15 +482,80 @@ async def test_links_are_issued_only_for_the_events_returned():
     assert issued == [images[-1]]
 
 
-async def test_each_read_takes_a_fresh_snapshot():
+async def test_one_snapshot_per_execution_and_a_lease_check_per_read():
+    """The context below the cutoff does not change: every read uses the execution snapshot.
+
+    ``execution_snapshot()`` reads the pages once and checks the lease on every call
+    (``tests/test_maestro_context.py``); here each read goes through it, and nothing else reads.
+    """
     context = ContextMemory(_maestro(TURNS))
     memory = MaestroAgentMemory(context, assistant_name=ASSISTANT_NAME)
 
     await memory.get_history()
     await memory.get_history_raw()
     await memory.get_thread()
+    artifacts, _, _ = await memory.list_artifacts()
 
-    assert context.snapshots == 3
+    # list_artifacts: get_thread, one get_events batch of 50 events, then an empty batch.
+    assert (context.reads, context.snapshots) == (6, 0)
+    assert len(artifacts) == 4
+
+
+@pytest.mark.parametrize("fmt", HISTORY_FORMATS)
+async def test_reads_after_yield_see_the_outputs_like_production(fmt):
+    """Production stores each yielded event before the next read; Maestro adds the sink's echoes."""
+    production = await _production((PHOTO_TURN, WRITES_TURN))
+    memory = _in_execution((PHOTO_TURN, WRITES_TURN))
+
+    for options in ({}, {"limit": 2}, {"filters": {"actor": "user"}}):
+        expected = await production.get_history(format=fmt, **options)
+        assert _normalized(await memory.get_history(format=fmt, **options)) == _normalized(expected), options
+    assert len(await production.get_history(format=fmt)) == 5
+
+
+async def test_raw_events_and_thread_after_yield_equal_production():
+    turns = (_text_turn("Oi", lambda send, _: [send.run_start(), send.text("Olá!"), send.run_end()]), WRITES_TURN)
+    production = await _production(turns)
+    memory = _in_execution(turns)
+
+    raw = await memory.get_history_raw(limit=100)
+    expected = await production.get_history_raw(limit=100)
+    thread, expected_thread = await memory.get_thread(), await production.get_thread()
+
+    assert _normalized([e.model_dump() for e in raw]) == _normalized([e.model_dump() for e in expected])
+    # The trigger has the run_id of the current run (the echo of run_start: run.updated running).
+    trigger = next(e for e in raw if e.content and e.content[0].text.startswith("Pode me passar"))
+    assert trigger.run_id is not None and trigger.run_id == raw[-1].run_id
+
+    # Users without the roles: a Maestro delivery has no Core roles yet (plan 5; README).
+    def people(users):
+        return [(u.user_id, u.user_name, u.user_email, u.identity_ids) for u in users]
+
+    assert (thread.title, thread.queue, people(thread.users)) == (
+        expected_thread.title,
+        expected_thread.queue,
+        people(expected_thread.users),
+    )
+    assert [user.user_id for user in thread.users] == [USER.user_id, AGENT_ID, "user-2"]
+
+
+async def test_own_uploaded_files_keep_their_url_in_the_execution():
+    """A file this execution uploaded is past the cutoff: Maestro has no link for it, production has the URL."""
+    thread = MaestroThread(shared_contracts())
+    trigger = thread.message(PERSON, [_text("Me mande o gráfico")])
+    artifact = str(uuid4())
+    echo = thread.message(MAESTRO_AGENT, [{"type": "attachment", "artifact_id": artifact, "mime_type": "image/png", "filename": "g.png"}])
+    issued: list[str] = []
+    published = Published([echo], {artifact: "https://cdn.example.com/grafico.png"})
+    memory = _memory(thread, cutoff=1, published=published, links=_links(issued))
+
+    raw = await memory.get_history_raw()
+    artifacts, _, _ = await memory.list_artifacts(direction="out")
+
+    assert [event.id for event in raw] == [trigger["event_id"], echo["event_id"]]
+    assert raw[1].content[0].url == "https://cdn.example.com/grafico.png"
+    assert [(a.url, a.ref_id) for a in artifacts] == [("https://cdn.example.com/grafico.png", artifact)]
+    assert issued == []
 
 
 # -- get_thread --
@@ -480,6 +639,9 @@ async def test_maestro_extras_read_the_maestro_context():
 
     assert [(r.artifact_id, r.filename) for r in references] == [(DOCUMENT, "contrato.pdf"), (AUDIO, "recado.wav"), (IMAGE, "foto.png")]
     assert all(isinstance(r, MaestroArtifactReference) for r in references) and (cursor, has_more) == (None, False)
+    # The person's e-mail and identity IDs stay in the agent's context (ThreadArtifact has neither).
+    assert all("email" not in r.actor and "identity_ids" not in r.actor for r in references)
+    assert references[0].actor["principal_id"] == PERSON["principal_id"]
     assert (hydrated, context.hydrated) == ("hydrated", [references[0]])
 
 
@@ -497,28 +659,39 @@ _OTHER_METHODS = sorted(
 async def test_every_other_persistence_method_raises_thread_management_mode_error(name):
     context = ContextMemory(_maestro(TURNS))
     method = getattr(MaestroExecutionPersistence(context, assistant_name=ASSISTANT_NAME), name)
-    required = [
-        p
-        for p in inspect.signature(method).parameters.values()
-        if p.default is inspect.Parameter.empty and p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    ]
+    # Called as a production caller calls it: the Protocol's required arguments.
+    parameters = list(inspect.signature(getattr(Persistence, name)).parameters.values())[1:]
+    arguments = [None for p in parameters if p.default is inspect.Parameter.empty and p.kind is p.POSITIONAL_OR_KEYWORD]
 
     with pytest.raises(ThreadManagementModeError, match="THREAD_MANAGEMENT_MISMATCH"):
-        await method(*[None] * len(required))
-    assert context.snapshots == 0
+        await method(*arguments)
+    assert (context.reads, context.snapshots) == (0, 0)
 
 
-def test_the_write_list_covers_the_persistence_protocol():
+def test_the_class_defines_every_persistence_method():
+    # No Protocol stub (body ``...``, returns None) is inherited by MaestroExecutionPersistence.
     assert {"create_event", "update_event", "delete_event", "create_run", "update_thread", "upsert_thread_participant"} <= set(
         _OTHER_METHODS
     )
+    assert all(name in vars(MaestroExecutionPersistence) for name in [*_OTHER_METHODS, "get_thread", "get_events"])
 
 
 # -- through the executor --
 
 
-async def _deliver_turns(fake: FakeMaestro, handler, turns: list[list[dict[str, Any]]], **adapter_options: Any) -> list[Any]:
-    adapter = create_text_delivery_adapter(fake.config, handler, private_resources, **adapter_options)
+def _agent_config(fake: FakeMaestro, **values: Any) -> AgentConfig:
+    """The AgentConfig of a Maestro-mode agent (the parity suite's legacy config, as harness._config)."""
+    return AgentConfig(
+        database_type="postgres",
+        thread_management=values.pop("thread_management", "maestro"),
+        maestro=fake.config,
+        assistant_name=values.pop("assistant_name", ASSISTANT_NAME),
+        **values,
+    )
+
+
+async def _deliver_turns(fake: FakeMaestro, handler, turns: list[list[dict[str, Any]]], *, config: Any = None) -> list[Any]:
+    adapter = create_text_delivery_adapter(config or fake.config, handler, private_resources)
     thread_id = fake.create_thread(USER, title=None)
     responses = []
     for number, content in enumerate(turns, start=1):
@@ -551,8 +724,9 @@ async def test_executor_gives_the_handler_the_production_memory():
 
     with fake.serving():
         image = fake.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
+        # AgentConfig.assistant_name reaches the adapter (the Maestro name differs).
         responses = await _deliver_turns(
-            fake, handler, [[_text("Veja esta foto"), image], [_text("Resuma a conversa")]], assistant_name=ASSISTANT_NAME
+            fake, handler, [[_text("Veja esta foto"), image], [_text("Resuma a conversa")]], config=_agent_config(fake)
         )
 
     assert [response.json()["state"] for response in responses] == ["responded", "responded"]
@@ -565,15 +739,146 @@ async def test_executor_gives_the_handler_the_production_memory():
     assert isinstance(seen["thread"], Thread) and seen["thread"].id == seen["raw"][0].thread_id
 
 
+def _without_user(events: list[ThreadEvent]) -> list[dict[str, Any]]:
+    # FakeMaestro's person has no e-mail (agent-only data, plan 3 task 7): the user is compared elsewhere.
+    return [event.model_dump(exclude={"user"}) for event in events]
+
+
+async def _read_after_yield(on, send, memory, seen):
+    yield send.run_start()
+    yield send.text("Primeira parte.")
+    yield send.update_user_event(on.context.event_id, [_text("Oi (editado)")])
+    yield send.update_thread(queue="suporte")
+    seen["raw"] = _without_user(await memory.get_history_raw())
+    seen["histories"] = {fmt: await memory.get_history(format=fmt) for fmt in HISTORY_FORMATS}
+    seen["queue"] = (await memory.get_thread()).queue
+    yield send.text("Segunda parte.")
+    yield send.run_end()
+
+
+async def test_executor_reads_after_yield_like_production():
+    fake = FakeMaestro()
+    maestro: dict[str, Any] = {}
+    production: dict[str, Any] = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        async for event in _read_after_yield(on, send, memory, maestro):
+            yield event
+
+    async def production_handler(on, send, memory, analytics, settings):
+        async for event in _read_after_yield(on, send, memory, production):
+            yield event
+
+    with fake.serving():
+        (response,) = await _deliver_turns(fake, handler, [[_text("Oi")]], config=_agent_config(fake))
+    persistence = MemoryPersistence()
+    pipeline = HandlerPipeline(persistence=persistence, assistant_name=ASSISTANT_NAME)
+    context = HandlerContext(
+        handler=production_handler,
+        agent_id=AGENT_ID,
+        organization_id=ORG_ID,
+        workspace_id=WORKSPACE_ID,
+        message="Oi",
+        user=USER,
+        allowed_queues=["suporte"],
+    )
+    async for _ in pipeline.execute(context, await pipeline.setup(context)):
+        pass
+
+    assert response.json()["state"] == "responded"
+    assert _normalized(maestro) == _normalized(production)
+    assert [(e["type"], e["actor"]) for e in maestro["raw"]] == [("message", "user"), ("message", "assistant"), ("thread.update", "system")]
+    assert maestro["raw"][0]["run_id"] == maestro["raw"][1]["run_id"] is not None
+    assert maestro["raw"][0]["content"] == [{"type": "text", "text": "Oi (editado)"}]
+    # The echo of run_start is the run.updated (running) that names the trigger.
+    thread_id = next(iter(fake.threads))
+    start = next(event for event in fake.events[thread_id] if event["type"] == "run.updated")
+    assert (start["payload"]["status"], start["payload"]["trigger_event_id"]) == ("running", fake.events[thread_id][0]["event_id"])
+
+
+async def test_own_uploaded_file_is_read_back_with_its_url(monkeypatch):
+    fake = FakeMaestro()
+    seen: dict[str, Any] = {}
+    issue = FakeMaestro._artifact_link
+    links: list[str] = []
+
+    def counting(self, request, execution_id, artifact_id):
+        links.append(artifact_id)
+        return issue(self, request, execution_id, artifact_id)
+
+    monkeypatch.setattr(FakeMaestro, "_artifact_link", counting)
+    data_url = "data:image/png;base64," + base64.b64encode(b"\x89PNG fixture").decode()
+
+    async def handler(on, send, memory, analytics, settings):
+        yield send.image(data_url, mime_type="image/png")
+        seen["raw"] = await memory.get_history_raw()
+
+    with fake.serving():
+        (response,) = await _deliver_turns(fake, handler, [[_text("Me mande a imagem")]])
+
+    assert response.json()["state"] == "responded"
+    image = seen["raw"][-1].content[0]
+    # Production keeps the URL send.image received; Maestro has no link past the cutoff.
+    assert (image.url, image.ref_id is not None, links) == (data_url, True, [])
+
+
+async def test_messages_after_the_cutoff_stay_out():
+    fake = FakeMaestro()
+    seen: dict[str, Any] = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        seen["history"] = await memory.get_history()
+        yield send.text("Ok.")
+
+    adapter = create_text_delivery_adapter(fake.config, handler, private_resources)
+    with fake.serving():
+        thread_id = fake.create_thread(USER, title=None)
+        first = fake.publish(thread_id, USER, [_text("Primeira")], client_event_id="client-1")
+        (delivery,) = fake.deliveries_for(first)
+        fake.publish(thread_id, USER, [_text("Chegou depois do corte")], client_event_id="client-2")
+        response = await fake.deliver(adapter, delivery)
+
+    assert response.json()["state"] == "responded"
+    assert seen["history"] == [{"role": "user", "content": "Primeira"}]
+
+
+async def test_history_file_without_link_degrades_and_the_handler_replies(monkeypatch, caplog):
+    """A 404 for one old file: that part goes without URL, the client stays open, the reply goes out."""
+    fake = FakeMaestro()
+    seen: dict[str, Any] = {}
+    issue = FakeMaestro._artifact_link
+
+    def missing_after_first_turn(self, request, execution_id, artifact_id):
+        if len(self.deliveries) > 1:
+            raise fake_module._CallbackError(404, "NOT_FOUND")
+        return issue(self, request, execution_id, artifact_id)
+
+    monkeypatch.setattr(FakeMaestro, "_artifact_link", missing_after_first_turn)
+
+    async def handler(on, send, memory, analytics, settings):
+        async for event in _photo_then_summary(send, on, memory, seen):
+            yield event
+
+    caplog.set_level(logging.WARNING)
+    with fake.serving():
+        image = fake.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
+        first, second = await _deliver_turns(fake, handler, [[_text("Veja esta foto"), image], [_text("Resuma a conversa")]])
+
+    assert [first.json()["state"], second.json()["state"]] == ["responded", "responded"]
+    assert seen["histories"]["langchain"][0] == {"role": "user", "content": "Veja esta foto\n[image: foto.png]"}
+    assert seen["raw"][0].content[1].url is None
+    assert image["artifact_id"] in caplog.text and ARTIFACT_LINKS_UNAVAILABLE not in caplog.text
+
+
 async def test_history_without_the_link_route_fails_as_configuration_error(monkeypatch, caplog):
-    """The history never hands the LLM a part without its link: the delivery fails loudly."""
+    """The route is off (Maestro answers UNSUPPORTED_CAPABILITY): the delivery fails loudly."""
     fake = FakeMaestro()
     seen: dict[str, Any] = {}
     issue = FakeMaestro._artifact_link
 
     def off_after_first_turn(self, request, execution_id, artifact_id):
         if len(self.deliveries) > 1:
-            raise fake_module._CallbackError(404, "NOT_FOUND")
+            raise fake_module._CallbackError(422, "UNSUPPORTED_CAPABILITY")
         return issue(self, request, execution_id, artifact_id)
 
     monkeypatch.setattr(FakeMaestro, "_artifact_link", off_after_first_turn)
@@ -591,3 +896,93 @@ async def test_history_without_the_link_route_fails_as_configuration_error(monke
     assert (second.status_code, second.json()["error"]["code"]) == (422, "UNSUPPORTED_CAPABILITY")
     assert "histories" not in seen
     assert ARTIFACT_LINKS_UNAVAILABLE in caplog.text
+
+
+async def test_context_over_the_limit_fails_as_payload_too_large(monkeypatch):
+    """Interim (the tail read comes later): a context past the page limit is its own error, not LEASE_STALE."""
+    monkeypatch.setattr(executor_module, "MaestroMemory", lambda client: MaestroMemory(client, max_pages=1))
+    fake = FakeMaestro()
+    ran: list[Any] = []
+
+    async def handler(on, send, memory, analytics, settings):
+        ran.append(on)
+        yield send.text("never")
+
+    adapter = create_text_delivery_adapter(fake.config, handler, private_resources)
+    with fake.serving():
+        thread_id = fake.create_thread(USER, title=None)
+        for number in range(1, 102):
+            trigger = fake.publish(thread_id, USER, [_text(f"Mensagem {number}")], client_event_id=f"client-{number}")
+        (delivery,) = fake.deliveries_for(trigger)
+        response = await fake.deliver(adapter, delivery)
+
+    assert (response.status_code, response.json()["error"]["code"]) == (413, "PAYLOAD_TOO_LARGE")
+    assert ran == []
+
+
+async def test_context_limit_inside_the_handler_fails_as_payload_too_large():
+    fake = FakeMaestro()
+
+    async def handler(on, send, memory, analytics, settings):
+        raise MaestroContextError("CONTEXT_LIMIT")
+        yield send.text("never")
+
+    with fake.serving():
+        (response,) = await _deliver_turns(fake, handler, [[_text("Oi")]])
+
+    assert (response.status_code, response.json()["error"]["code"]) == (413, "PAYLOAD_TOO_LARGE")
+
+
+# -- AgentConfig.assistant_name reaches both adapters --
+
+
+def _journal(config: Any) -> PostgresEffectJournal:
+    """A journal that never touches PostgreSQL (``tests/test_maestro_forms_readiness.py``)."""
+
+    async def authorize(*_args):
+        raise AssertionError("not used")
+
+    @asynccontextmanager
+    async def transaction():
+        yield SimpleNamespace()
+
+    return PostgresEffectJournal(
+        SimpleNamespace(transaction=transaction),
+        generation=str(uuid4()),
+        organization_id=config.organization_id,
+        workspace_id=config.workspace_id,
+        instance_agent_id=config.instance_agent_id,
+        fingerprint_keys={"1": b"x" * 32},
+        active_key_version="1",
+        authorize=authorize,
+    )
+
+
+async def _never(*_args):
+    raise AssertionError("not used")
+
+
+def test_adapters_take_the_assistant_name_from_agent_config():
+    fake = FakeMaestro()
+    agent_config = _agent_config(fake, assistant_name="Ana Bot")
+    journal = _journal(fake.config)
+
+    text = create_text_delivery_adapter(agent_config, _never, _never)
+    durable = create_durable_text_delivery_adapter(agent_config, _never, _never, journal=journal)
+    explicit = create_text_delivery_adapter(agent_config, _never, _never, assistant_name="Outro")
+    plain = create_text_delivery_adapter(fake.config, _never, _never)
+    plain_durable = create_durable_text_delivery_adapter(fake.config, _never, _never, journal=journal)
+
+    assert [adapter._executor.assistant_name for adapter in (text, durable, explicit, plain, plain_durable)] == [
+        "Ana Bot",
+        "Ana Bot",
+        "Outro",
+        "Assistant",
+        "Assistant",
+    ]
+    assert text.config is durable.config is fake.config
+    # Only a Maestro-mode AgentConfig configures a Maestro adapter.
+    legacy = _agent_config(fake, thread_management="agent")
+    for factory, options in ((create_text_delivery_adapter, {}), (create_durable_text_delivery_adapter, {"journal": journal})):
+        with pytest.raises(MaestroConfigurationError, match="MAESTRO_CONFIG_REQUIRED"):
+            factory(legacy, _never, _never, **options)
