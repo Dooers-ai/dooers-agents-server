@@ -250,19 +250,25 @@ mais antigas só até a escolha ser a que a thread inteira daria:
   thread inteira.
 - Filtros e `limit` valem como em produção (a seleção é feita depois do `fold_events`).
 
-Teto: a janela guarda no máximo `MaestroConfig.max_history_pages` páginas (padrão 20, de
-100 eventos: 2000 eventos; de 1 a 1000). Uma leitura que precisa de eventos mais antigos
-levanta `MaestroHistoryLimitError` (`MAESTRO_HISTORY_LIMIT`, subclasse de `RuntimeError`, não de
-`MaestroContextError`): o handler pode capturá-la; sem captura, a execução termina como
-`failed` (`handler_error`), não como 413 nem como lease perdido. O que a janela já leu
-continua: uma leitura que cabe nela ainda funciona. O teto de 16 MiB do snapshot não vale
-mais para o handler (o limite de 1 MiB por página do Maestro continua). `list_artifacts`
-de `AgentMemory` varre para trás de 50 em 50 eventos, como em produção, até ter
-`cursor + limit + 1` anexos; numa thread longa com poucos anexos ele chega ao teto.
+Teto: a janela guarda no máximo `MaestroConfig.max_history_pages` páginas (padrão 20; de 1 a
+1000). O teto é de **páginas**: uma página tem até 100 eventos e pode ter menos quando chega ao
+limite de 1 MiB do Maestro por página; no padrão, a janela guarda até 2000 eventos. Uma leitura
+que precisa de eventos mais antigos levanta `MaestroHistoryLimitError`
+(`from dooers.agents.server.maestro import MaestroHistoryLimitError`; `MAESTRO_HISTORY_LIMIT`,
+subclasse de `RuntimeError`, não de `MaestroContextError`): o handler pode capturá-la; sem
+captura, a execução termina como `failed` (`handler_error`), não como 413 nem como lease
+perdido. O que a janela já leu continua: uma leitura que cabe nela ainda funciona. Duas leituras
+ao mesmo tempo (`asyncio.gather`) dividem a janela: uma página é lida e juntada de cada vez. O
+teto de 16 MiB do snapshot não vale mais para o handler (o limite de 1 MiB por página do Maestro
+continua). `list_artifacts` de `AgentMemory` varre para trás de 50 em 50 eventos, como em
+produção, até ter `cursor + limit + 1` anexos; numa thread longa com poucos anexos ele chega ao
+teto.
 
 `on` usa a mesma janela: gatilho, participantes, evento de invocação e o primeiro evento
 da thread vêm sem ler a thread inteira. Um formulário de resposta (`form.responded`) ou uma
-retomada procura o evento de origem (`find_event`) para trás.
+retomada procura o evento de origem (`find_event`) para trás. Se o evento não existe, ou é mais
+antigo que a janela, a busca devolve `None` e a entrega falha com `CONTEXT_INVALID` antes do
+handler (não com `MaestroHistoryLimitError`).
 
 `get_thread()`: os participantes vêm do contexto atual; criação, agente dono e canal vêm de
 `thread.created` (primeiro evento da thread); título e fila são a última mudança que a

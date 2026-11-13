@@ -14,6 +14,7 @@ Port of ``context()`` in ``src/modules/executions/callbacks.ts`` (Maestro 5466bd
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
@@ -117,9 +118,13 @@ class ThreadPages:
         self.requests: list[tuple[str, int, str]] = []
         #: Reads of the lease check (the real client checks it on every use of the window).
         self.checks = 0
+        #: Seconds each page takes (lets two reads overlap, as two handler tasks do).
+        self.delay = 0.0
 
     async def fetch(self, cursor: str, limit: int, direction: str) -> dict[str, Any]:
         self.requests.append((cursor, limit, direction))
+        if self.delay:
+            await asyncio.sleep(self.delay)
         trigger = next(event for event in self.events if int(event["sequence"]) == self.cutoff)
 
         def page(items: list[dict[str, Any]], next_cursor: str | None, has_more: bool) -> dict[str, Any]:

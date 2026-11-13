@@ -45,6 +45,7 @@ from .context import (
 )
 from .group import AgentDirectory, MaestroGroupTurn, decide_group_turn
 from .memory import MaestroArtifactReference, MaestroMemory, MaestroThreadView
+from .window import MaestroHistoryLimitError
 
 __all__ += [
     "MaestroCancellation",
@@ -52,6 +53,7 @@ __all__ += [
     "MaestroContextError",
     "MaestroExecutionContext",
     "MaestroHandlerInput",
+    "MaestroHistoryLimitError",
     "MaestroPrivateResolver",
     "MaestroPrivateResources",
     "MaestroPrivateScope",

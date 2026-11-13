@@ -19,6 +19,7 @@ HTTP error: the handler may catch it). What was read stays, so a read that fits 
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from typing import Any, Literal
@@ -71,6 +72,8 @@ class MaestroContextWindow:
         self._origin_read = False
         self._back_pages = 0
         self.pages = 0
+        # Two handler tasks may read at once (``asyncio.gather``): one page is fetched and merged at a time.
+        self._lock = asyncio.Lock()
 
     @property
     def events(self) -> list[dict[str, Any]]:
@@ -85,18 +88,19 @@ class MaestroContextWindow:
     async def load(self) -> dict[str, Any]:
         """The context head (``trigger_event``, ``invocation_event``?, ``participants``), reading the first page once."""
         if self._head is None:
-            self._check_current()
-            page = await self._fetch(self._cursor, self._page_size, "backward")
-            self._take(page)  # a page that does not hold fails before the window has a head
-            self.pages += 1
-            self._back_pages += 1
-            self._head = {
-                "trigger_event": deepcopy(page["trigger_event"]),
-                **({"invocation_event": deepcopy(page["invocation_event"])} if "invocation_event" in page else {}),
-                "participants": deepcopy(page["participants"]),
-            }
-        else:
-            self._check_current()
+            async with self._lock:
+                if self._head is None:  # a concurrent caller may have read it while this one waited
+                    self._check_current()
+                    page = await self._fetch(self._cursor, self._page_size, "backward")
+                    self._take(page)  # a page that does not hold fails before the window has a head
+                    self.pages += 1
+                    self._back_pages += 1
+                    self._head = {
+                        "trigger_event": deepcopy(page["trigger_event"]),
+                        **({"invocation_event": deepcopy(page["invocation_event"])} if "invocation_event" in page else {}),
+                        "participants": deepcopy(page["participants"]),
+                    }
+        self._check_current()
         return self._head
 
     def _take(self, page: dict[str, Any]) -> None:
@@ -113,22 +117,28 @@ class MaestroContextWindow:
     async def read_back(self) -> bool:
         """Read one page of older events; false when the window already starts at the thread's first event.
 
-        With ``max_pages`` pages held, a page more is ``MaestroHistoryLimitError``.
+        With ``max_pages`` pages held, a page more is ``MaestroHistoryLimitError``. A call that waited for
+        another read of the same page finds the window already grown and returns true without fetching:
+        the caller looks at the window again, as after any growth.
         """
         await self.load()
-        if self._next is None:
-            return False
-        if self._back_pages >= self.max_pages:
-            raise MaestroHistoryLimitError(self.max_pages)
-        self._check_current()
-        page = await self._fetch(self._next, self._page_size, "backward")
-        head = self._head or {}
-        if page["trigger_event"] != head["trigger_event"] or page.get("invocation_event") != head.get("invocation_event"):
-            raise _invalid()
-        self.pages += 1
-        self._back_pages += 1
-        self._take(page)
-        return True
+        wanted = self._next
+        async with self._lock:
+            if self._next != wanted:
+                return True
+            if self._next is None:
+                return False
+            if self._back_pages >= self.max_pages:
+                raise MaestroHistoryLimitError(self.max_pages)
+            self._check_current()
+            page = await self._fetch(self._next, self._page_size, "backward")
+            head = self._head or {}
+            if page["trigger_event"] != head["trigger_event"] or page.get("invocation_event") != head.get("invocation_event"):
+                raise _invalid()
+            self._take(page)
+            self.pages += 1
+            self._back_pages += 1
+            return True
 
     async def read_until(self, done: Callable[[], bool]) -> None:
         """Go back page by page until ``done()`` (called on the current window) or the thread's first event."""
@@ -137,29 +147,37 @@ class MaestroContextWindow:
             pass
 
     async def find_event(self, event_id: str) -> dict[str, Any] | None:
-        """The event with this id, reading back until it is found; ``None`` if the thread has no such event."""
+        """The event with this id, reading back until it is found.
+
+        ``None`` if the thread has no such event, or if it is older than the ``max_pages`` pages the
+        window may hold (the caller treats both as "not there", as production does for an id it does not find).
+        """
 
         def found() -> bool:
             return any(event["event_id"] == event_id for event in self._events)
 
-        await self.read_until(found)
+        try:
+            await self.read_until(found)
+        except MaestroHistoryLimitError:
+            return None
         return next((event for event in self._events if event["event_id"] == event_id), None)
 
     async def origin(self) -> dict[str, Any] | None:
         """The first event of the thread (sequence 1), read once: a forward page of one event."""
         await self.load()
         if not self._origin_read:
-            if self.exhausted:
-                self._origin = self._events[0] if self._events else None
-            else:
-                self._check_current()
-                page = await self._fetch(self._cursor, 1, "forward")
-                self.pages += 1
-                items = page["history"]["items"]
-                self._origin = deepcopy(items[0]) if items else None
-            self._origin_read = True
-        else:
-            self._check_current()
+            async with self._lock:
+                if not self._origin_read:
+                    if self.exhausted:
+                        self._origin = self._events[0] if self._events else None
+                    else:
+                        self._check_current()
+                        page = await self._fetch(self._cursor, 1, "forward")
+                        self.pages += 1
+                        items = page["history"]["items"]
+                        self._origin = deepcopy(items[0]) if items else None
+                    self._origin_read = True
+        self._check_current()
         return self._origin
 
     async def thread_events(self) -> list[dict[str, Any]]:

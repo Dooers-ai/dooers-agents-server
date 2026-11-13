@@ -421,6 +421,22 @@ async def test_form_response_to_another_agents_form_is_rejected(key, bundle):
                 pytest.fail("not this agent's form")
 
 
+async def test_form_response_whose_form_is_beyond_the_window_cap_is_rejected_not_a_history_limit(key, bundle):
+    """The form event is older than what the window may hold: the delivery fails as an invalid context, before the handler."""
+    from dooers.agents.server.maestro.memory import MaestroMemory
+
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        _form_response_page(server, page, memory._envelope, author=memory._envelope["instance_agent_id"])
+        ascending, descending = deepcopy(page), deepcopy(page)
+        descending["history"].update(items=[deepcopy(page["trigger_event"])], has_more=True, next_cursor="mcx1.older")
+        server.response = lambda first: descending if "direction=backward" in first else ascending
+        capped = MaestroMemory(memory._client, max_history_pages=1)
+        with pytest.raises(MaestroContextError, match="CONTEXT_INVALID"):
+            async with maestro_handler_context(capped, private):
+                pytest.fail("the form is not in the window")
+
+
 async def test_form_response_invocation_must_be_the_trigger(key, bundle):
     async with fixture_server() as server:
         memory, page, _, _ = prepare(key, bundle, server)
