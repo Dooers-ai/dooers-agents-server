@@ -102,6 +102,12 @@ def __getattr__(name: str):
     modules = {
         "MaestroTextExecutor": ".executor",
         "create_text_delivery_adapter": ".executor",
+        "MaestroAgentApi": ".agent_api",
+        "MaestroAgentApiError": ".agent_api",
+        "MaestroAgentMissing": ".agent_api",
+        "MaestroAgentNotFound": ".agent_api",
+        "MaestroAgentThreadDeleting": ".agent_api",
+        "MaestroAgentScopeError": ".agent_api",
         "MaestroAgentMemory": ".persistence",
         "MaestroExecutionPersistence": ".persistence",
         "MaestroEventSink": ".sink",
@@ -126,3 +132,11 @@ def __getattr__(name: str):
 
 
 __all__ += ["MaestroArtifactsClient", "MaestroHydratedArtifact"]
+__all__ += [
+    "MaestroAgentApi",
+    "MaestroAgentApiError",
+    "MaestroAgentMissing",
+    "MaestroAgentNotFound",
+    "MaestroAgentScopeError",
+    "MaestroAgentThreadDeleting",
+]

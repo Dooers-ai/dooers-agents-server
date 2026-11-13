@@ -294,7 +294,7 @@ class MaestroContextClient:
 
 async def resolve_instance_credential(
     config: MaestroConfig,
-    admission: MaestroAdmission,
+    admission: MaestroAdmission | None,
     contracts: MaestroContracts,
     scopes: tuple[str, ...],
     *,
@@ -330,7 +330,7 @@ async def resolve_instance_credential(
             or claims["workspace_id"] != request.workspace_id
             or not set(request.scopes) <= set(claims["scopes"])
             or not claims["iat"] <= time.time() < min(claims["exp"], credential.expires_at)
-            or credential.token == (capability or admission.execution_capability)
+            or credential.token == (capability or (admission.execution_capability if admission is not None else None))
         ):
             raise ValueError
         return MaestroInstanceCredential(credential.token, min(claims["exp"], credential.expires_at))
