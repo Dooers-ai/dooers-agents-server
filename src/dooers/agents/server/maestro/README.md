@@ -392,9 +392,11 @@ O contexto da entrega traz os dados do Core que o handler de produção lê do
 - `user`: humano vira `User(user_id=principal_id, user_name=display_name, user_email=email,
   identity_ids=identity_ids, system_role, organization_role, workspace_role)`. Os campos
   vêm do actor; o que o actor não tem vem do participante. Nome ou e-mail vazio vira
-  `None`, como em produção. Se o Core descreveu a pessoa (há `system_role`) e não tem o
-  nome dela, o Maestro mostra o nome genérico `"Humano"`; o SDK entrega `user_name=None`,
-  nunca `"Humano"`. O perfil que o agente declarou ao publicar a mensagem (e-mail e
+  `None`, como em produção. O Maestro mostra o nome genérico `"Humano"` para uma pessoa
+  sem nome e não marca isso: o SDK entrega `user_name=None` para o nome `"Humano"` de um
+  humano, com ou sem dados do Core (uma pessoa que se chama de fato "Humano" também fica
+  sem nome). Isso vale também para `Thread.owner`/`users` e para o autor dos eventos de
+  `get_history`. O nome declarado pelo agente e o nome de um contato externo não mudam. O perfil que o agente declarou ao publicar a mensagem (e-mail e
   `identity_ids` no actor) tem precedência; os papéis vêm do participante. Uma pessoa que
   o Core não descreve (Maestro sem dados do Core, ou pessoa desconhecida) fica com os
   padrões do `User` (`"user"`, `"member"`, `"member"`). `connection_type` fica
@@ -650,7 +652,12 @@ mensagem da thread) ou 403 `multi_agent_thread` também só grava um log `warnin
 produção (`pipeline.py`): o ordinal fica livre e o handler continua. O 422 dessa saída (anexo
 recusado) continua a falhar a fase com `handler_contract_error`. `send.add_participant` sem `user_id` (só e-mail ou
 vazio) não gera saída e grava um log `warning`. `update_thread(queue="")` envia `queue: null`
-(o Maestro grava `queue || null`; a produção tira a fila).
+(o Maestro grava `queue || null`; a produção tira a fila). A fila de `update_thread` passa
+por `resolve_thread_queue`, a regra de `pipeline.py` (`thread_update`), com
+`on.context.maestro.allowed_queues`: tira espaços e põe em minúsculas; um slug malformado,
+um slug fora do catálogo (quando há catálogo) e qualquer fila em thread pessoal são
+recusados com um log `warning`, o título ainda vale e a fila não muda. Um `update_thread`
+só com a fila recusada não gera saída.
 
 Texto como na persistência da produção: antes de enviar, o SDK tira `U+0000` e troca cada
 surrogate solitário por `U+FFFD` em todo texto e todo JSON das saídas (valores e chaves) e nos

@@ -196,6 +196,7 @@ class MaestroTextExecutor:
                 published=sink,
                 content_policy=self.content_policy,
             ) as context:
+                sink.bind_queues(context.on.context.maestro.allowed_queues)
                 outcome, reason = "failed", "handler_error"
                 failure: Exception | None = None
                 # Only the delivery budget expiring is handler_timeout; a TimeoutError the handler itself raises

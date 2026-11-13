@@ -615,7 +615,7 @@ async def test_without_the_connection_context_the_pages_are_those_of_an_older_ma
     with fake.serving():
         thread_id, _, response = await _deliver(fake, handler)
     assert response.json()["state"] == "responded"
-    assert seen["queues"] == [] and seen["user"] == User(user_id="user-1", user_name=WEB_CHAT_PERSON_NAME)
+    assert seen["queues"] == [] and seen["user"] == User(user_id="user-1")
     view = fake.agent_view(thread_id)
     assert "workspace" not in view and "thread" not in view
     assert not any(role in _human(view["participants"], "user-1") for role in ROLES)

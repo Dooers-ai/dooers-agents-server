@@ -113,7 +113,7 @@ async def test_incoming_fields_match_production():
     expected["content"][2]["size_bytes"] = 0
     # The roles (and the queue catalog) are Core's: they come in the delivery context and equal production's.
     assert [capture.incoming["context"]["user"][role] for role in ("system_role", "organization_role", "workspace_role")] == [
-        "admin",
+        "user",
         "owner",
         "manager",
     ]

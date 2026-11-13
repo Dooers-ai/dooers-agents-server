@@ -318,7 +318,7 @@ async def _incoming(
         form_data, form_cancelled, form_event_id = await _form_response(origin, window, envelope)
     actor = origin["actor"]
     # The core's queue catalog of the workspace, as production gets it in the handshake; an older Maestro sends none.
-    queues = workspace_queues(snapshot["workspace"]) if "workspace" in snapshot else ([], ())
+    workspace_catalog, allowed_queues = workspace_queues(snapshot["workspace"]) if "workspace" in snapshot else ([], ())
     metadata = MaestroExecutionContext(
         **{
             key: envelope[key]
@@ -343,7 +343,7 @@ async def _incoming(
         },
         origin_event_id=origin["event_id"],
         origin_sequence=origin["sequence"],
-        allowed_queues=queues[1],
+        allowed_queues=allowed_queues,
         actor=deepcopy(actor),
         causation_event_id=origin["causation_event_id"],
         resume=deepcopy(resume),
@@ -379,7 +379,7 @@ async def _incoming(
         thread_title=thread["title"],
         thread_created_at=thread["created_at"],
         queue=thread["queue"],
-        queues=queues[0],
+        queues=workspace_catalog,
     )
     # Set before AgentIncoming is built: a Maestro context binds RAG only in maestro_handler_context.
     context.maestro = metadata

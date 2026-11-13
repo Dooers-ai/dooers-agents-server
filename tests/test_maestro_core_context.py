@@ -204,6 +204,17 @@ async def test_workspace_replaces_the_queues_of_the_operator(key, bundle):
             assert [queue.slug for queue in prepared.on.context.queues] == ["suporte", "vendas"]
 
 
+async def test_operator_queues_are_ignored_even_when_invalid_if_the_page_has_a_workspace(key, bundle):
+    async def invalid(scope):
+        return MaestroPrivateResources(scope, {}, {}, {}, queues=({"slug": "suporte"},))
+
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        _core_page(page)
+        async with maestro_handler_context(memory, invalid) as prepared:
+            assert prepared.on.context.queues == QUEUES
+
+
 async def test_empty_workspace_is_a_personal_scope_and_the_operator_queues_do_not_apply(key, bundle):
     async def resolve(scope):
         return MaestroPrivateResources(scope, {}, {}, {}, queues=(WorkspaceQueueCatalog(slug="operador", name="Operador"),))
@@ -334,10 +345,18 @@ def test_production_user_of_a_core_person_without_a_name_has_no_name():
     assert (user.user_name, user.user_email) == (None, None) and user.workspace_role == "manager"
 
 
-def test_production_user_without_core_fields_keeps_the_defaults_and_the_name():
+def test_production_user_without_core_fields_keeps_the_defaults_and_has_no_placeholder_name():
     user = production_user({"kind": "human", "principal_id": "user-1", "display_name": "Humano"})
     assert (user.system_role, user.organization_role, user.workspace_role) == ("user", "member", "member")
-    assert user.user_name == "Humano"
+    assert user.user_name is None
+
+
+def test_production_user_keeps_a_declared_name_and_a_channel_contact_name():
+    assert production_user({"kind": "human", "principal_id": "user-1", "display_name": "Ana Declarada"}).user_name == "Ana Declarada"
+    assert (
+        production_user({"kind": "external", "external_id": "+5511", "channel": "whatsapp", "display_name": "Cliente"}).user_name
+        == "Cliente"
+    )
 
 
 def test_production_user_reads_the_participant_when_the_actor_has_no_core_fields():
@@ -395,3 +414,53 @@ async def test_get_thread_without_the_thread_view_reads_the_first_event():
     memory = ContextMemory(thread, list(PARTICIPANTS), page_size=2)
     await MaestroExecutionPersistence(memory, assistant_name=ASSISTANT_NAME).get_thread(thread.thread_id)
     assert [direction for _, _, direction in memory.pages.requests] == ["backward", "forward"]
+
+
+# -- send.update_thread checks the queue as production does (pipeline.py thread_update) --
+
+
+def _sink(*, workspace_id: str | None, allowed: tuple[str, ...]):
+    from types import SimpleNamespace
+
+    from dooers.agents.server.maestro.sink import MaestroEventSink
+
+    sink = MaestroEventSink(SimpleNamespace(_envelope={"workspace_id": workspace_id, "thread_id": "thread-1"}))
+    sink.bind_queues(allowed)
+    return sink
+
+
+@pytest.mark.parametrize(
+    ("queue", "allowed", "expected"),
+    [
+        ("  Suporte ", ("suporte", "vendas"), {"title": "T", "queue": "suporte"}),
+        ("inexistente", ("suporte", "vendas"), {"title": "T"}),
+        ("Fila Inválida!", ("suporte",), {"title": "T"}),
+        ("fila-livre", (), {"title": "T", "queue": "fila-livre"}),
+        ("", ("suporte",), {"title": "T", "queue": ""}),
+        ("   ", ("suporte",), {"title": "T", "queue": ""}),
+    ],
+)
+async def test_update_thread_queue_follows_resolve_thread_queue(queue, allowed, expected):
+    sink = _sink(workspace_id="ws-1", allowed=allowed)
+    from dooers.agents.server.handlers.send import AgentEvent
+
+    event = sink._production_thread_update(AgentEvent("thread_update", {"title": "T", "queue": queue}))
+    assert event.data == expected
+
+
+async def test_update_thread_with_only_a_refused_queue_sends_nothing():
+    from dooers.agents.server.handlers.send import AgentEvent
+
+    sink = _sink(workspace_id="ws-1", allowed=("suporte",))
+    assert sink._production_thread_update(AgentEvent("thread_update", {"queue": "inexistente"})) is None
+    # A title-only update and an empty update are untouched.
+    assert sink._production_thread_update(AgentEvent("thread_update", {"title": "T"})).data == {"title": "T"}
+    assert sink._production_thread_update(AgentEvent("thread_update", {})).data == {}
+
+
+async def test_a_personal_thread_takes_no_queue_and_clears_none():
+    from dooers.agents.server.handlers.send import AgentEvent
+
+    sink = _sink(workspace_id=None, allowed=())
+    assert sink._production_thread_update(AgentEvent("thread_update", {"title": "T", "queue": "suporte"})).data == {"title": "T"}
+    assert sink._production_thread_update(AgentEvent("thread_update", {"queue": ""})).data == {"queue": ""}

@@ -165,16 +165,18 @@ def production_user(person: dict[str, Any], core: dict[str, Any] | None = None) 
 
     A person keeps the profile of the agent's context (an empty name or e-mail is ``None``, as production
     builds it from Core) and the three roles of Core's connection context. A person the core did not
-    describe (an older Maestro, or an unknown person) has the ``User`` default roles. For a described person,
-    the placeholder name Maestro keeps when the core has no name is ``None``, never ``"Humano"``. ``core``
+    describe (an older Maestro, or an unknown person) has the ``User`` default roles. The placeholder name
+    Maestro shows for a person without a name is ``None``, never ``"Humano"``: Maestro has no flag for
+    it, so a real person named "Humano" also has no name. ``core``
     is the participant of an actor (see ``_core_person``). A channel contact is its external id
     (production: the WhatsApp number); an agent is its instance id and name, as production lists the agent
     in ``Thread.users``.
     """
     if person["kind"] == "human":
         person = _core_person(person, core)
+        # Maestro has no flag for its placeholder, so the name "Humano" is no name, with or without core fields.
         name = person.get("display_name") or None
-        if name == PLACEHOLDER_NAME and "system_role" in person:
+        if name == PLACEHOLDER_NAME:
             name = None
         return User(
             user_id=person["principal_id"],

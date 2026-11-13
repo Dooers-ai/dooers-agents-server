@@ -382,6 +382,12 @@ SUBJECTS: dict[str, Subject] = {
     "update_user_event": Subject(("events",), _revised_user_event),
     "update_thread_title": Subject(("events", "outputs.threads"), _thread(title="Pedido 42")),
     "update_thread_queue": Subject(("events", "outputs.threads"), _all(_types("message", "thread.update"), _thread(queue="suporte"))),
+    # A refused queue changes nothing but logs a warning; the title still applies (pipeline.py thread_update).
+    "update_thread_queue_unknown": Subject(("events", "outputs.threads"), _all(_types("message"), _thread(title="Pedido 7", queue=None))),
+    "update_thread_queue_malformed": Subject(("events", "outputs.threads"), _all(_types("message"), _thread(title="Pedido 7", queue=None))),
+    "update_thread_queue_normalized": Subject(
+        ("events", "outputs.threads"), _all(_types("message", "thread.update"), _thread(title="Pedido 7", queue="suporte"))
+    ),
     "add_participant": Subject(("events", "outputs.threads"), _participant("user-2")),
     **{
         f"whatsapp_{send_type}": Subject(("events", "outputs.whatsapp_requests"), _whatsapp_sent(send_type)) for send_type in WHATSAPP_SENDS

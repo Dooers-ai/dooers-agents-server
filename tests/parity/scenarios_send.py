@@ -358,6 +358,15 @@ SEND_SCENARIOS: dict[str, Scenario] = {
         handler=_reply(lambda on, send: [send.update_thread(queue="suporte")]),
         incoming=ScenarioInput(queues=QUEUES, observe=frozenset({"threads"})),
     ),
+    # pipeline.py thread_update: the queue goes through ``resolve_thread_queue`` (strip and lower case; a malformed or
+    # unknown slug is refused with a warning, and the title still applies).
+    **{
+        f"update_thread_queue_{kind}": Scenario(
+            handler=_reply(lambda on, send, queue=queue: [send.update_thread(title="Pedido 7", queue=queue)]),
+            incoming=ScenarioInput(queues=QUEUES, observe=frozenset({"threads"})),
+        )
+        for kind, queue in {"unknown": "inexistente", "malformed": "Fila Inválida!", "normalized": "  Suporte "}.items()
+    },
     "add_participant": Scenario(
         handler=_reply(
             lambda on, send: [

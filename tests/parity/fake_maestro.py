@@ -946,7 +946,8 @@ class FakeMaestro:
             **({"display_name": person.user_name} if person.user_name else {}),
             "email": person.user_email or None,
             "identity_ids": list(person.identity_ids),
-            "system_role": person.system_role,
+            # Core's handshake always gives "user" (task 4b): never the person's platform role.
+            "system_role": "user",
             "organization_role": person.organization_role,
             "workspace_role": person.workspace_role,
         }

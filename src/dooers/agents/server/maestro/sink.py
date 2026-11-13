@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
+from dooers.agents.server.thread_queue import resolve_thread_queue
 
 from .callbacks import THREAD_OPERATION_OUTPUTS, MaestroCallbackClient, MaestroCallbackError
 from .client import MaestroContextError
@@ -234,9 +235,38 @@ class MaestroEventSink:
         #: artifact_id -> the URL ``send.image``/``audio``/``document`` received, for each file uploaded.
         self._uploaded_urls: dict[str, str] = {}
         self._silent: str | None = None
+        #: Slugs of the workspace queue catalog (production ``allowed_queues``): see :meth:`bind_queues`.
+        self._allowed_queues: tuple[str, ...] = ()
         self._finished = False
         self._failed = False
         self._runs = RunTracker()
+
+    def bind_queues(self, allowed_queues: tuple[str, ...]) -> None:
+        """The workspace catalog slugs (``MaestroExecutionContext.allowed_queues``) that ``send.update_thread`` checks."""
+        self._allowed_queues = tuple(allowed_queues)
+
+    def _production_thread_update(self, event: AgentEvent) -> AgentEvent | None:
+        """``pipeline.py`` ``thread_update``: the queue goes through ``resolve_thread_queue``.
+
+        Strip and lower case; a malformed slug, a slug outside the catalog (when there is one) and any
+        queue on a personal thread are refused with a warning, the title still applies and the queue
+        stays as it is. ``None`` when nothing is left to send (the update had only the refused queue).
+        """
+        if "queue" not in event.data:
+            return event
+        data = dict(event.data)
+        try:
+            resolved = resolve_thread_queue(
+                data["queue"], workspace_id=self._client._envelope["workspace_id"], allowed=self._allowed_queues
+            )
+            # "" clears the queue: ``_publish`` sends it as ``queue: null`` (``output_for`` drops a ``None``).
+            data["queue"] = "" if resolved is None else resolved
+        except ValueError:
+            logger.warning("[agents] thread_update rejected queue=%s thread=%s", data["queue"], self._client._envelope["thread_id"])
+            del data["queue"]
+            if not data:
+                return None
+        return AgentEvent("thread_update", data)
 
     @property
     def event_ids(self) -> tuple[str, ...]:
@@ -522,6 +552,10 @@ class MaestroEventSink:
         if event.send_type == "run_start" and event.data.get("agent_id") == self._client.config.instance_agent_id:
             # Production passes its own id (pipeline.py); Maestro records the executing agent anyway.
             event = AgentEvent("run_start", {**event.data, "agent_id": None})
+        if event.send_type == "thread_update":
+            event = self._production_thread_update(event)
+            if event is None:
+                return
         ordinal = len(self._intents)
         current_run = self._runs.current
         try:

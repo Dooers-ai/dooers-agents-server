@@ -539,8 +539,8 @@ async def test_raw_events_and_thread_after_yield_equal_production():
     assert trigger.run_id is not None and trigger.run_id == raw[-1].run_id
 
     # Users without the roles: a Maestro delivery has no Core roles yet (plan 5; README). A person the
-    # agent added keeps only the principal in Maestro (participant.add): no name ("Humano"), e-mail or
-    # identity IDs, until Core's connection context reaches the delivery (plan 5).
+    # agent added keeps only the principal in Maestro (participant.add): Maestro names it "Humano", which is no
+    # name (``user_name=None``), and it has no e-mail or identity IDs within the execution (README).
     def people(users):
         return [(u.user_id, u.user_name, u.user_email, u.identity_ids) for u in users]
 
@@ -549,7 +549,7 @@ async def test_raw_events_and_thread_after_yield_equal_production():
     assert (thread.title, thread.queue, people(thread.users)) == (
         expected_thread.title,
         expected_thread.queue,
-        [*people(expected_thread.users)[:-1], ("user-2", "Humano", None, [])],
+        [*people(expected_thread.users)[:-1], ("user-2", None, None, [])],
     )
     assert [user.user_id for user in thread.users] == [USER.user_id, AGENT_ID, "user-2"]
 

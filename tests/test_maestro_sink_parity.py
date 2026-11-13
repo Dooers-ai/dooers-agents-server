@@ -519,7 +519,11 @@ async def test_run_end_failed_does_not_fail_phase(private_key, contracts):
         assert [o["output_id"] for o in (start, text, end)] == ["output:0", "output:1", "output:2"]
 
 
-async def test_update_thread_accepts_queue_keyword(private_key, contracts):
+async def test_update_thread_in_a_personal_thread_keeps_the_title_and_refuses_the_queue(private_key, contracts):
+    """The fixture thread is personal: production (``resolve_thread_queue``) takes no queue there, and the title applies.
+
+    The workspace case (a queue inside and outside the catalog) is the parity scenarios ``update_thread_queue*``.
+    """
     async with setup(private_key, contracts) as fixture:
 
         async def handler(_on, send, *_args):
@@ -528,7 +532,7 @@ async def test_update_thread_accepts_queue_keyword(private_key, contracts):
         response = await execute_fixture(fixture, handler)
         assert response.json()["state"] == "silent"
         (output,) = published(fixture)
-        assert output == {"output_id": "output:0", "type": "thread.update", "payload": {"title": "x", "queue": "suporte"}}
+        assert output == {"output_id": "output:0", "type": "thread.update", "payload": {"title": "x"}}
 
 
 async def test_text_author_is_recorded(private_key, contracts):
