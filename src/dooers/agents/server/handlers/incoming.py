@@ -32,7 +32,8 @@ class AgentIncoming:
         # Legacy mode binds here and drops the token, as production does: the instance keeps
         # only its fields, so asdict/deepcopy/pickle/repr/eq stay the production ones.
         # Maestro mode binds in ``maestro_handler_context``, which keeps the token and resets it.
-        if self.context.maestro is None:
+        # getattr: production read only the fields, so a duck-typed context without ``maestro`` binds too.
+        if getattr(self.context, "maestro", None) is None:
             self.bind_runtime_context()
 
     def bind_runtime_context(self) -> "RAGContextToken | None":

@@ -207,3 +207,19 @@ async def test_incoming_built_by_the_legacy_pipeline_has_the_production_shape():
     assert shape["instance_attributes"] == sorted(PRODUCTION_INCOMING_FIELDS)
     assert shape["context_attributes"] == sorted(PRODUCTION_CONTEXT_FIELDS)
     assert shape["rag_agent_id"] == "agent-legacy"
+
+
+async def test_duck_typed_context_without_maestro_still_binds_like_production():
+    """Production read only the context fields: a stub without ``maestro`` must keep working."""
+    from types import SimpleNamespace
+
+    context = SimpleNamespace(
+        agent_id="agent-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        user=SimpleNamespace(user_id="user-1"),
+        channel="dooers-platform",
+    )
+    AgentIncoming("oi", [TextPart(text="oi")], context)
+    bound = current_execution_context()
+    assert bound is not None and bound.agent_id == "agent-1"
