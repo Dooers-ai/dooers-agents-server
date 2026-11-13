@@ -24,11 +24,20 @@ import pytest
 
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.handlers.memory import AgentMemory
+from dooers.agents.server.maestro import MaestroConfigurationError
 from dooers.agents.server.maestro.agent_api import MaestroAgentApi, MaestroAgentApiError, MaestroAgentScopeError
 from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence, MaestroAgentUnsupported
 from dooers.agents.server.maestro.window import MaestroHistoryLimitError
 from dooers.agents.server.persistence.base import FILTERABLE_FIELDS
-from dooers.agents.server.protocol.models import Run, Thread, ThreadEvent, User, WireS2C_ImagePart, WireS2C_TextPart
+from dooers.agents.server.protocol.models import (
+    Run,
+    Thread,
+    ThreadEvent,
+    User,
+    WireS2C_DocumentPart,
+    WireS2C_ImagePart,
+    WireS2C_TextPart,
+)
 from dooers.agents.server.repository import Repository
 from dooers.agents.server.server import AgentServer
 from dooers.agents.server.thread_queue import is_unqueued_list_filter
@@ -68,6 +77,9 @@ def _ilike(value: str, pattern: str) -> bool:
     return pattern.lower() in (value or "").lower()
 
 
+# NOTE: ``ProductionThreads`` is a hand port of ``PostgresPersistence._build_scope_conditions`` (and the queue, ILIKE title and
+# cursor conditions of ``list_threads``/``count_threads``) of origin/main. It must follow them when they change: the PG-gated
+# suites are the check against the real SQL. The CRUD and memory comparisons below use the real ``Repository`` and ``AgentMemory``.
 class ProductionThreads(MemoryPersistence):
     """``MemoryPersistence`` with the thread list filters of ``PostgresPersistence`` (scope, queue, title, cursor)."""
 
@@ -346,6 +358,10 @@ async def test_declared_differences_are_the_only_ones(world):
         else:
             assert fetched.users == [ANA, User(user_id=AGENT_ID, user_name=ASSISTANT)]
             assert [(e.actor, e.author) for e in events] == [("assistant", ASSISTANT), ("user", "Ana Souza")]
+            # The author of a user event comes from the person: an author the caller passes is not stored.
+            other = await repo.create_event(thread.id, "message", "user", content=[WireS2C_TextPart(text="Oi")], user=ANA, author="Outro")
+            assert other.author == "Outro"  # the object the Repository built
+            assert (await repo.get_event(other.id)).author == "Ana Souza"
 
 
 # -- test_memory_by_external_thread_id --
@@ -881,3 +897,102 @@ async def test_legacy_mode_repository_is_the_same_object_as_before():
 def test_filterable_fields_are_the_columns_the_memory_reads():
     # ``Repository.list_events`` passes these keys; the Maestro read applies the same set (production column filters).
     assert FILTERABLE_FIELDS == {"type", "actor", "user_id", "user_name", "user_email", "run_id"}
+
+
+# -- fix round 1: agent_id, empty ids, list_artifacts --
+
+
+async def test_agent_id_names_this_agent_or_it_is_a_configuration_error(world):
+    repo, fake, db = world.maestro, world.fake, world.maestro_db
+    # What a production caller passes and an AgentServer in Maestro mode uses: the instance agent id (as in an execution,
+    # ``agent_id=envelope["instance_agent_id"]``), in any case; and "" (the Repository default).
+    for agent in (AGENT_ID, AGENT_ID.upper(), ""):
+        thread = await repo.create_thread(agent, ORGANIZATION_ID, WORKSPACE_ID, user=ANA, title=agent or "default")
+        assert [
+            t.id for t in await repo.list_threads({"agent_id": agent, "organization_id": ORGANIZATION_ID, "workspace_id": WORKSPACE_ID})
+        ][:1] == [thread.id]
+        assert await db.count_threads(agent, ORGANIZATION_ID, WORKSPACE_ID, None) >= 1
+        assert await repo.list_runs({"thread_id": thread.id, "agent_id": agent}) == []
+    assert (await repo.get_thread(thread.id)).agent_id == AGENT_ID
+    fake.requests.clear()
+    # Any other agent is a configuration error, never the token agent's data under another name.
+    for other in ("w1", str(uuid4())):
+        with pytest.raises(MaestroAgentScopeError):
+            await repo.create_thread(other, ORGANIZATION_ID, WORKSPACE_ID)
+        with pytest.raises(MaestroAgentScopeError):
+            await repo.list_threads({"agent_id": other, "organization_id": ORGANIZATION_ID, "workspace_id": WORKSPACE_ID})
+        with pytest.raises(MaestroAgentScopeError):
+            await repo.list_threads({"agent_id": other, "scope": "admin"})
+        with pytest.raises(MaestroAgentScopeError):
+            await db.count_threads(other, ORGANIZATION_ID, WORKSPACE_ID, None)
+        with pytest.raises(MaestroAgentScopeError):
+            await repo.list_runs({"agent_id": other})
+        with pytest.raises(MaestroAgentScopeError):
+            await db.create_thread(thread.model_copy(update={"id": str(uuid4()), "agent_id": other}))
+    assert fake.requests == []
+
+
+async def test_an_agent_server_in_maestro_mode_serves_the_agent_id_it_uses_everywhere(fake):
+    server = AgentServer(
+        AgentConfig(database_type="postgres", thread_management="maestro", maestro=fake.config(), assistant_name=ASSISTANT)
+    )
+    server._ensure_initialized = AsyncMock(side_effect=AssertionError("the database is not used for threads"))
+    agent_id = server._config.maestro.instance_agent_id
+    repo = await server.repository()
+    thread = await repo.create_thread(agent_id, ORGANIZATION_ID, WORKSPACE_ID, user=ANA, title="Normal")
+    listed = await repo.list_threads(
+        {"agent_id": agent_id, "organization_id": ORGANIZATION_ID, "workspace_id": WORKSPACE_ID, "user_id": ANA.user_id}
+    )
+    assert [(t.id, t.agent_id) for t in listed] == [(thread.id, agent_id)]
+
+
+async def test_an_empty_thread_id_is_what_production_gives(world):
+    for repo in (world.prod, world.maestro):
+        assert await repo.get_thread("") is None
+        assert await repo.update_thread("", title="x") is None
+        assert await repo.remove_thread("") is None
+        with pytest.raises(ValueError):
+            await repo.list_events({"thread_id": ""})
+    for persistence in (world.prod_db, world.maestro_db):
+        memory = AgentMemory("", persistence)
+        assert await memory.get_thread() is None
+        assert await memory.get_history() == [] and await memory.get_history_raw() == []
+        assert await memory.list_artifacts() == ([], None, False)
+        assert await persistence.get_events("") == []
+        assert await persistence.get_event("") is None
+    assert world.fake.requests == []  # an id nobody has is not sent
+
+
+async def test_list_artifacts_on_a_known_thread_matches_production(world):
+    async def script(repo: Repository) -> dict[str, Any]:
+        thread = await repo.create_thread(AGENT_ID, ORGANIZATION_ID, WORKSPACE_ID, user=ANA)
+        photo = WireS2C_ImagePart(url="https://cdn.example.com/foto.png", mime_type="image/png", filename="foto.png")
+        report = WireS2C_DocumentPart(url="https://cdn.example.com/laudo.pdf", mime_type="application/pdf", filename="laudo.pdf")
+        sent = await repo.create_event(thread.id, "message", "user", content=[WireS2C_TextPart(text="Veja"), photo], user=ANA)
+        answered = await repo.create_event(thread.id, "message", "assistant", content=[report])
+        await repo.create_event(thread.id, "message", "assistant", content=[WireS2C_TextPart(text="Sem arquivo")])
+        labels = {thread.id: "thread-1", sent.id: "event-1", answered.id: "event-2"}
+        memory = AgentMemory(thread.id, repo._persistence)
+        everything, cursor, more = await memory.list_artifacts()
+        outgoing, _, _ = await memory.list_artifacts(direction="out")
+        first, first_cursor, first_more = await memory.list_artifacts(limit=1)
+        second, second_cursor, second_more = await memory.list_artifacts(limit=1, cursor=first_cursor)
+        return {
+            "all": plain(everything, labels),
+            "cursor": (cursor, more),
+            "out": plain(outgoing, labels),
+            "page_1": (plain(first, labels), first_cursor, first_more),
+            "page_2": (plain(second, labels), second_cursor, second_more),
+        }
+
+    production = await script(world.prod)
+    maestro = await script(world.maestro)
+    assert maestro == production
+    assert [a["direction"] for a in production["all"]] == ["out", "in"] and production["page_1"][2] is True
+
+
+async def test_the_server_refuses_a_maestro_mode_without_its_configuration(fake):
+    server = AgentServer(AgentConfig(database_type="postgres", thread_management="maestro", maestro=fake.config()))
+    object.__setattr__(server._config, "maestro", None)
+    with pytest.raises(MaestroConfigurationError, match="MAESTRO_CONFIG_REQUIRED"):
+        await server.repository()

@@ -738,6 +738,10 @@ Regras:
   Outro escopo não vazio, e `""` com um token de workspace, levanta
   `MaestroAgentScopeError` (erro de configuração). Um agente que serve vários workspaces
   falha de forma visível. O escopo `admin` de `list_threads` não filtra organização nem workspace.
+- **Agente.** `agent_id` de `create_thread`, `list_threads`, `count_threads` e `list_runs` nomeia
+  este agente: `""` ou o id da instância do agente (`MaestroConfig.instance_agent_id`, em qualquer
+  caixa). É o mesmo id que o handler recebe em uma execução. Outro `agent_id` levanta
+  `MaestroAgentScopeError`, em todos os escopos: o SDK não devolve os dados deste agente com outro nome.
 - **Filtros de `list_threads`.** O servidor filtra `queue` (`__none__` vira `queue=""`).
   O SDK aplica `user_id`, `user_email`, `identity_ids`, `title_query` e `scope`, e pagina até
   o limite. `count_threads` usa a mesma varredura.
@@ -759,20 +763,35 @@ Diferenças declaradas (produção -> Maestro):
 - `Thread.users` inclui o agente (ele é sempre participante). `Repository.create_thread` de
   produção guarda só o dono. O `Thread` que `create_thread` devolve é o que o `Repository` monta.
 - `Thread.agent_id` e `organization_id` são os do Maestro (o id da instância do agente e o UUID da
-  organização), não o texto que o chamador escolheu.
-- O autor de uma mensagem de usuário vem da pessoa (como o `HandlerPipeline` grava). Uma
-  mensagem do assistente sem autor tem `assistant_name`.
+  organização). O `agent_id` e a organização que o chamador informa devem nomear este agente e esta
+  organização (ver "Agente" e "Escopo"); a caixa do UUID pode mudar.
+- O autor de uma mensagem de usuário vem da pessoa (nome ou e-mail, como o `HandlerPipeline` grava).
+  O `author` que o chamador informa em `create_event` de um usuário não é gravado: a leitura mostra o
+  autor da pessoa. Uma mensagem do assistente sem autor tem `assistant_name`.
 - Uma pessoa chamada "Humano" tem `user_name=None` (regra do nome genérico do Maestro).
 - `create_thread` com uma `external_key` que já existe devolve a thread (o Maestro não duplica);
   produção falha com chave duplicada. `create_event` numa thread que não existe levanta erro.
-- `create_event` publica só `message` (`assistant` como o agente, `user` como o humano de
-  `event.user`; partes de texto, contato e arquivo por URL). Outro tipo, outro ator e uma parte
-  de arquivo sem URL levantam `MaestroAgentUnsupported`. Um arquivo por URL volta como
+- `create_event` publica só `message`: `assistant` como o agente e `user` como o humano de
+  `event.user` (partes de texto, contato e arquivo por URL http ou https). Estas entradas levantam
+  `MaestroAgentUnsupported` (a falha é alta, nada é gravado):
+  - `actor="user"` sem pessoa (`user.user_id` vazio);
+  - `actor="system"` ou `actor="tool"`;
+  - tipo diferente de `message` (`reasoning`, `tool.*`, `form`, `chart`, `thread.update`, ...);
+  - mensagem só com `data` (sem parte de conteúdo);
+  - parte de arquivo sem URL, como um `ref_id` de upload fora do `dispatch`.
+  Nenhum caminho interno do SDK chama `Repository.create_event`: o pipeline, o router e o broadcast
+  usam a persistência local. A decisão está aberta: fechar essas entradas precisa de uma rota de
+  publicação do Maestro para mensagens de sistema ou sem pessoa. Um arquivo por URL volta como
   `media_link`: sem `size_bytes`, `width`, `height` e `ref_id`.
 - Sem rota no Maestro: `update_event`, `create_run`, `update_run` e `upsert_thread_participant`
   levantam `MaestroAgentUnsupported`. `list_runs` sem `thread_id` lê as threads do agente, uma
   rota por thread, até 1000 threads (`MaestroAgentLimitError`).
-- `list_threads` e `count_threads` ignoram `agent_id`: o token já nomeia o agente.
+- `Thread.last_event_at` é o `updated_at` do Maestro, que também anda com `thread.updated`: depois de
+  mudar o título ou a fila, a thread sobe na ordem de `list_threads`. Em produção
+  `Repository.update_thread` muda só `updated_at` e a ordem não muda.
+- O filtro de participação (`user_id`, `user_email`, `identity_ids`) é do SDK: a rota só filtra
+  `queue` e `external_key`. O SDK varre as páginas até o limite. `count_threads` varre todas as
+  threads do agente, sem limite; `list_runs` sem `thread_id` para em 1000 threads.
 - `update_thread` muda título e fila; fila inválida é decisão do servidor (produção não valida).
 
 ## Paridade com a produção (`tests/parity`)

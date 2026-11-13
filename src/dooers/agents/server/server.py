@@ -613,7 +613,10 @@ class AgentServer:
         from dooers.agents.server.maestro.agent_api import MaestroAgentApi
         from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
 
-        assert self._config.maestro is not None  # validated at construction
+        if self._config.maestro is None:
+            from dooers.agents.server.maestro.config import MaestroConfigurationError
+
+            raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
         return MaestroAgentPersistence(
             MaestroAgentApi(self._config.maestro),
             assistant_name=self._config.assistant_name,

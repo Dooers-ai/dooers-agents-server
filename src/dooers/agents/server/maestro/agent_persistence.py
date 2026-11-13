@@ -25,7 +25,9 @@ would show stale content. The window holds at most ``max_history_pages`` pages (
 Writes. ``create_thread`` (owner: the human of the call, F16; scope: ``""`` is personal and another scope is
 ``MaestroAgentScopeError``, F18), ``update_thread`` (title and queue), ``delete_thread``, ``create_event`` (only
 ``message`` events: ``assistant`` as the agent, ``user`` as the human of ``event.user``) and ``delete_event`` (any
-content event). What the agent API has no route for raises ``MaestroAgentUnsupported``: it is never dropped silently.
+content event). What the agent API has no route for raises ``MaestroAgentUnsupported``. One input is not stored and does not
+raise: the ``author`` of a user event (the author is derived from the person, as ``HandlerPipeline`` writes it).
+``agent_id`` of a call names this agent (``""`` or the instance agent id): another agent is ``MaestroAgentScopeError``.
 
 Settings, service secrets, analytics and the worker seed are not thread data: they go to the local persistence of the
 ``AgentServer`` (F21), asked only when used. Guest cleanup is Maestro's (plan 6): ``delete_idle_guest_threads`` is 0.
@@ -335,10 +337,23 @@ class MaestroAgentPersistence(Persistence):
                 return maestro_thread_id
         return self._keys.get(maestro_thread_id, maestro_thread_id)
 
-    async def _reads(self, ref: str) -> _ThreadReads | None:
+    async def _view(self, ref: str) -> dict[str, Any] | None:
+        """``GET /agent/threads/{ref}``, or ``None`` when the agent has no such thread (F31).
+
+        A ref the contract refuses (an empty id) is a thread nobody has: production gives ``None``, never an error.
+        """
         try:
-            view = await self._api.get_thread(ref)
+            return await self._api.get_thread(ref)
         except MaestroAgentMissing:
+            return None
+        except MaestroAgentApiError as error:
+            if error.code == "REQUEST_INVALID":
+                return None
+            raise
+
+    async def _reads(self, ref: str) -> _ThreadReads | None:
+        view = await self._view(ref)
+        if view is None:
             return None
         self._thread(view)
         window = _AgentWindow(self._api, ref, view["participants"], page_size=self._page_size, max_pages=self._max_pages)
@@ -381,8 +396,10 @@ class MaestroAgentPersistence(Persistence):
         """``POST /agent/threads`` with ``external_key = thread.id`` (F8) and the human of the call as owner (F16).
 
         The same key returns the thread that exists (Maestro dedups by key): production would fail on a duplicate id.
-        ``thread.agent_id`` and ``thread.metadata`` are not sent: the thread belongs to the agent of the token.
+        ``thread.agent_id`` must name this agent (``""`` or the instance agent id): ``MaestroAgentScopeError`` otherwise.
+        ``thread.metadata`` is not sent.
         """
+        self._api.check_scope(agent_id=thread.agent_id)
         owner = {"kind": "human", "principal_id": thread.owner.user_id} if thread.owner.user_id else None
         seen = {"", thread.owner.user_id, self._config.instance_agent_id}
         participants = []
@@ -403,15 +420,15 @@ class MaestroAgentPersistence(Persistence):
         )
 
     async def get_thread(self, thread_id: str) -> Thread | None:
-        try:
-            return self._thread(await self._api.get_thread(thread_id), thread_id)
-        except MaestroAgentMissing:
-            return None
+        view = await self._view(thread_id)
+        return None if view is None else self._thread(view, thread_id)
 
     async def update_thread(self, thread: Thread) -> None:
         """Title and queue (what ``Repository.update_thread`` changes); only what differs is sent."""
+        current = await self._view(thread.id)
+        if current is None:
+            return None
         try:
-            current = await self._api.get_thread(thread.id)
             title = thread.title or ""
             queue = thread.queue or None
             changes: dict[str, Any] = {}
@@ -424,8 +441,12 @@ class MaestroAgentPersistence(Persistence):
         except MaestroAgentMissing:
             return None
 
-    def _scope(self, scope: str, organization_id: str, workspace_id: str) -> None:
-        """The token covers one organization and one workspace (F18); ``admin`` has no such filter in production."""
+    def _scope(self, scope: str, agent_id: str, organization_id: str, workspace_id: str) -> None:
+        """The token covers one agent, one organization and one workspace (F18).
+
+        The agent is checked in every scope (it selects data); ``admin`` has no organization or workspace filter in production.
+        """
+        self._api.check_scope(agent_id=agent_id)
         if scope != "admin":
             self._api.check_scope(organization_id=organization_id, workspace_id=workspace_id)
 
@@ -486,12 +507,12 @@ class MaestroAgentPersistence(Persistence):
         queue: str | None = None,
         title_query: str | None = None,
     ) -> list[Thread]:
-        """The agent's threads, newest activity first. ``agent_id`` is not a filter: the token names the agent.
+        """The agent's threads, newest activity first. ``agent_id`` names this agent or it is a ``MaestroAgentScopeError``.
 
         The route filters ``queue`` (``__none__`` is ``queue=""``); the SDK applies the rest and pages until ``limit``.
         ``cursor`` is production's ``last_event_at|id``: only older threads.
         """
-        self._scope(scope, organization_id, workspace_id)
+        self._scope(scope, agent_id, organization_id, workspace_id)
         after = None
         if cursor:
             stamp, _, thread_id = cursor.rpartition("|")
@@ -526,7 +547,7 @@ class MaestroAgentPersistence(Persistence):
         title_query: str | None = None,
     ) -> int:
         """How many threads ``list_threads`` would give with no limit (the same sweep and filters)."""
-        self._scope(scope, organization_id, workspace_id)
+        self._scope(scope, agent_id, organization_id, workspace_id)
         server_queue = "" if is_unqueued_list_filter(queue) else (queue or None)
         return sum(
             [
@@ -550,6 +571,10 @@ class MaestroAgentPersistence(Persistence):
             await self._api.delete_thread(thread_id)
         except MaestroAgentMissing:
             return None
+        except MaestroAgentApiError as error:
+            if error.code == "REQUEST_INVALID":  # an id nobody has (empty): nothing to delete, as production
+                return None
+            raise
 
     async def delete_idle_guest_threads(self, max_idle_seconds: int) -> int:
         """Maestro owns the cleanup of guest threads (plan 6): nothing to do here."""
@@ -652,8 +677,9 @@ class MaestroAgentPersistence(Persistence):
     ) -> list[Run]:
         """The runs, newest start first. Without ``thread_id`` the route (per thread) is read for each thread of the agent.
 
-        ``agent_id`` is not a filter: every thread of the token is the agent's.
+        ``agent_id`` names this agent (``""`` or the instance agent id) or it is a ``MaestroAgentScopeError``.
         """
+        self._api.check_scope(agent_id=agent_id)
         if thread_id:
             runs = await self._thread_runs(thread_id, thread_id)
         else:

@@ -660,3 +660,13 @@ async def test_credential_unavailable_is_retryable_only_when_the_exchange_failed
         await MaestroAgentApi(fake.config()).list_threads()
     assert (error.value.code, error.value.retryable) == ("CREDENTIAL_UNAVAILABLE", False)
     assert fake.requests == []
+
+
+async def test_check_scope_agent_is_this_agent_in_any_case_or_empty(api, fake):
+    api.check_scope(agent_id="")
+    api.check_scope(agent_id=None)
+    api.check_scope(agent_id=fake.agent_id)
+    api.check_scope(agent_id=fake.agent_id.upper())
+    for other in ("w1", str(uuid4())):
+        with pytest.raises(MaestroAgentScopeError):
+            api.check_scope(agent_id=other)

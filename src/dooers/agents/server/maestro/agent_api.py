@@ -153,13 +153,17 @@ class MaestroAgentApi:
 
     # -- scope (F18) --
 
-    def check_scope(self, *, organization_id: str | None = UNSET, workspace_id: str | None = UNSET) -> None:
+    def check_scope(self, *, organization_id: str | None = UNSET, workspace_id: str | None = UNSET, agent_id: str | None = UNSET) -> None:
         """The agent token covers one organization and one workspace; anything else is a configuration error.
 
         ``workspace_id`` ``""`` or ``None`` is the personal scope (``MaestroConfig.workspace_id is None``).
         An argument that is not given is not checked. ``organization_id`` ``""`` or ``None`` is not checked.
+        ``agent_id`` is the agent a production caller names: ``""`` or ``None`` (not given) and the instance agent id of the
+        token (any case) are this agent; any other agent is an error, never the token agent's data under another name.
         Raises ``MaestroAgentScopeError`` (a ``MaestroConfigurationError``).
         """
+        if agent_id is not UNSET and agent_id and agent_id.lower() != self.config.instance_agent_id.lower():
+            raise MaestroAgentScopeError()
         if organization_id is not UNSET and organization_id and organization_id.lower() != self.config.organization_id.lower():
             raise MaestroAgentScopeError()
         if workspace_id is not UNSET:
