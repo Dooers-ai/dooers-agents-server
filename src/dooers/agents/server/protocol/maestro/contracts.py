@@ -18,9 +18,9 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
-SOURCE_MANIFEST_SHA256 = "f28da5f8b573890b3eeb70edf4f7e5cb6f73242b71f9ed3bc49e2ede510e05fa"
-SOURCE_REVISION = "sha256:34bff058bf176177565b0330a8526dd6aa9bf02fcaa3b7722e97a1ed373101cb"
-BUNDLE_MANIFEST_SHA256 = "277b1f90c0d0dcbf67c1e64bedef6f5182578d5e513da331d5b4f35f913c9194"
+SOURCE_MANIFEST_SHA256 = "4e7b108b4235f3134e71c7da45db62595881de941d6c3c6cb7e8b8ba5e318f5b"
+SOURCE_REVISION = "sha256:072784189cb88166fa0e6dc62f48626f6005b1850400d539954325afe25bb9df"
+BUNDLE_MANIFEST_SHA256 = "2b13a7a4a78fb50866b622393dbeb3fc78fb489ab402846cc489a5f420afa3cb"
 
 
 class MaestroContractError(ValueError):
@@ -51,7 +51,7 @@ def _read_verified(directory: Path) -> dict[str, bytes]:
     infos = archive.infolist()
     if len(infos) != len({info.filename for info in infos}):
         _fail("CONTRACT_INVENTORY_DRIFT")
-    if sum(info.file_size for info in infos) > 16 * 1024 * 1024:
+    if sum(info.file_size for info in infos) > 32 * 1024 * 1024:
         _fail("CONTRACT_BUNDLE_TOO_LARGE")
     for info in infos:
         if stat.S_ISLNK(info.external_attr >> 16):

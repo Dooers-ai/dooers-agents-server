@@ -16,11 +16,11 @@ assert "/src/" not in module.__file__
 assert not any("dooers-service-maestro" in path or "/.worktrees/" in path for path in sys.path)
 contracts = MaestroContracts()
 results = contracts.fixture_results()
-assert len(contracts.schema_names) == 161
-assert len(results) == 746
-assert sum(row[2] for row in results) == 329
+assert len(contracts.schema_names) == 184
+assert len(results) == 821
+assert sum(row[2] for row in results) == 368
 assert hashlib.sha256(json.dumps(results, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() == (
-    "69055310d13646739f421132c8ca0875d8b22b89e5cb79979a75dbc5f7b9a9ed"
+    "d4011597ff59266cddb14ab7b908609022783016992cd223f1f82f10d264b06b"
 )
 assert len(sys.argv) == 2, "Pass the reviewed consumer fixture JSON path"
 fixture_bytes = Path(sys.argv[1]).read_bytes()
@@ -30,9 +30,9 @@ for case in json.loads(fixture_bytes)["cases"]:
     valid = contracts.is_valid(case["schema"], case["data"])
     assert valid == case["valid"]
     results.append((case["id"], case["schema"], valid))
-assert len(results) == 780
+assert len(results) == 855
 assert hashlib.sha256(json.dumps(results, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() == (
-    "6c3b3988304bbaf0f81e2dc56a33a1991684818f562697925ba3c863dacb67f3"
+    "404cad9c7c5b1c7903c8b7e48afa5e11089e4f1db6c21f3d14c34a04ab6d74dd"
 )
 assert not any(Path(module.__file__).parent.glob("bundle/**/__pycache__"))
-print(json.dumps({"installed_version": version("dooers-agents-server"), "schemas": 161, "fixtures": 780, "legacy_imports": True}))
+print(json.dumps({"installed_version": version("dooers-agents-server"), "schemas": 184, "fixtures": 855, "legacy_imports": True}))

@@ -1,18 +1,18 @@
 {
   "consumer_manifest_version": 1,
   "task": "E05-01",
-  "source_manifest_sha256": "f28da5f8b573890b3eeb70edf4f7e5cb6f73242b71f9ed3bc49e2ede510e05fa",
-  "source_revision": "sha256:34bff058bf176177565b0330a8526dd6aa9bf02fcaa3b7722e97a1ed373101cb",
-  "bundle_manifest_sha256": "277b1f90c0d0dcbf67c1e64bedef6f5182578d5e513da331d5b4f35f913c9194",
-  "bundle_zip_sha256": "a73d0eb6a78d49836024790924883b7b88626f494e88554bf2cecb3e4af1e8c0",
+  "source_manifest_sha256": "4e7b108b4235f3134e71c7da45db62595881de941d6c3c6cb7e8b8ba5e318f5b",
+  "source_revision": "sha256:072784189cb88166fa0e6dc62f48626f6005b1850400d539954325afe25bb9df",
+  "bundle_manifest_sha256": "2b13a7a4a78fb50866b622393dbeb3fc78fb489ab402846cc489a5f420afa3cb",
+  "bundle_zip_sha256": "e3951f83b8cb1eddba58aa8d56716a50ca4290c2415da6fd33e7b00a3b63607a",
   "consumer_fixture_sha256": "b3531b7d29e372a79acf07ffedad363a05a11367ab620e43d37ac4b066775081",
   "classification": {
-    "canonical": 746,
+    "canonical": 821,
     "consumer": 34,
-    "total": 780,
-    "valid": 336,
-    "invalid": 444,
-    "sha256": "6c3b3988304bbaf0f81e2dc56a33a1991684818f562697925ba3c863dacb67f3"
+    "total": 855,
+    "valid": 375,
+    "invalid": 480,
+    "sha256": "404cad9c7c5b1c7903c8b7e48afa5e11089e4f1db6c21f3d14c34a04ab6d74dd"
   },
   "status": "local_contract_conformance_only",
   "published": false,
