@@ -37,6 +37,23 @@ reads them. The three ``send.*`` scenarios that waited for them match (``update_
 ``update_thread_queue``, ``add_participant``). ``form_response_submit``, ``form_response_cancel`` and
 ``incoming_fields`` still differ, only by a permanent declared difference (the legacy WebSocket acks; the
 size of a URL document).
+
+Measured again on 2026-11-13 (plan 5, task 8). ``tests/parity/harness.py``'s ``_run_maestro_server`` now wires
+``tests/parity/fake_agent_api.py`` into the same ``FakeMaestro`` instance the scenario uses (one combined
+respx route: ``/agent/*`` to ``FakeAgentApi``, everything else to ``FakeMaestro``'s existing delivery
+callback handling), so every ``AgentServer`` ingress scenario's ``MaestroAgentApi`` calls now succeed. A
+``trigger: true`` publication (``AgentServer.dispatch``, the WhatsApp inbound webhook) is delivered for real
+through ``create_text_delivery_adapter``: the harness mirrors the thread and the trigger forward into
+``FakeMaestro`` so the delivery protocol can run, and mirrors the handler's own outputs (plus the delivery's
+own lifecycle, which ``FakeMaestro`` has no notion of) back into ``FakeAgentApi`` as they happen, so a later
+agent-api read (``AgentServer.memory()``/``.repository()``, the dispatch stream's own polling) sees them too.
+``server_dispatch``, ``server_ingest`` and ``memory_by_thread_id`` now match exactly. Three scenarios differ
+only by a permanent declared difference the investigation surfaced (not one the brief anticipated, each
+backed by production's own code or test suite, never by a change to it): ``repository_crud`` (a fresh
+agent-api thread always has the agent as a participant), ``chat_upload`` (an attachment's ``url`` resolves to
+a real temporary link outside a delivery), and every ``whatsapp_<send type>``/``whatsapp_receipt`` (no
+``data.delivery`` outside a delivery — ``MaestroExecutionPersistence._channel_state``'s own docstring states
+it has no thread view over the agent API).
 """
 
 from __future__ import annotations
@@ -45,8 +62,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, replace
 
-from dooers.agents.server.maestro.agent_api import MaestroAgentApiError
-from tests.parity.model import ParityResult
+from tests.parity.model import AGENT_ID, ParityResult
 from tests.parity.scenarios_server import WHATSAPP_SENDS
 
 Outcome = tuple[int, str, str | None]
@@ -67,6 +83,52 @@ def _agent_websocket(result: ParityResult) -> None:
     result.outputs.pop("core_validations", None)
 
 
+def _agent_api_thread_has_agent(result: ParityResult) -> None:
+    def strip(value: object) -> None:
+        if isinstance(value, dict):
+            users = value.get("users")
+            if isinstance(users, list):
+                value["users"] = [user for user in users if not (isinstance(user, dict) and user.get("user_id") == AGENT_ID)]
+            for child in value.values():
+                strip(child)
+        elif isinstance(value, list):
+            for child in value:
+                strip(child)
+
+    strip(result.outputs)
+
+
+def _agent_api_no_delivery_data(result: ParityResult) -> None:
+    for event in result.events:
+        data = event.get("data")
+        if isinstance(data, dict) and "delivery" in data:
+            event["data"] = {key: value for key, value in data.items() if key != "delivery"} or None
+    receipts = result.outputs.get("receipts")
+    if isinstance(receipts, list):
+        for receipt in receipts:
+            if isinstance(receipt, dict) and isinstance(receipt.get("delivery"), list):
+                receipt["delivery"] = [MASK for _ in receipt["delivery"]]
+
+
+def _agent_api_attachment_url(result: ParityResult) -> None:
+    for parts in [result.incoming.get("content", []), *(event["content"] or [] for event in result.events)]:
+        for part in parts:
+            # The wire event keeps ``ref_id`` (a staged upload); the handler's own view has no such field, but
+            # carries the file's raw ``data`` instead (``capture_incoming``) — either marks the same attachment.
+            if part.get("type") in {"image", "audio", "document"} and (
+                part.get("ref_id") is not None or isinstance(part.get("data"), bytes)
+            ):
+                part["url"] = MASK
+                if "ref_id" in part:
+                    # Once dispatched, the stored event's ``ref_id`` is Maestro's own artifact id, no longer the
+                    # staged upload's; legacy keeps the one ``chat_upload`` returned (``normalize``'s id markers
+                    # see that as one shared id in legacy and two unrelated ones in Maestro).
+                    part["ref_id"] = MASK
+    upload = result.outputs.get("chat_upload")
+    if isinstance(upload, dict) and "ref_id" in upload:
+        upload["ref_id"] = MASK
+
+
 #: Declared differences a gap may mask (name -> what differs, and the mask applied to both sides).
 DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
     "media_link_size": (
@@ -78,6 +140,24 @@ DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
         "declared, permanent: the legacy WebSocket acks and Core validation count; in Maestro mode the browser talks to "
         "Maestro (plan 4), not to the agent",
         _agent_websocket,
+    ),
+    "agent_api_thread_has_agent": (
+        "declared, permanent: an agent-api-created thread always has the agent as an active participant "
+        "(Public.AgentThreadCreateRequest/FakeAgentApi, test_maestro_agent_persistence.py's own "
+        "'the same users except the agent'); Repository.create_thread only ever adds the explicit owner/users",
+        _agent_api_thread_has_agent,
+    ),
+    "agent_api_no_delivery_data": (
+        "declared, permanent: reading a thread's events through the agent API outside a delivery has no "
+        "thread view (MaestroExecutionPersistence._channel_state, agent_persistence's _AgentWindow), so an "
+        "assistant message never gets data.delivery there; legacy stores it at persist time",
+        _agent_api_no_delivery_data,
+    ),
+    "agent_api_attachment_url": (
+        "declared, permanent: an attachment read back through the agent API outside a delivery resolves to a "
+        "real temporary link (MaestroAgentApi.link_resolver), and its stored ref_id is Maestro's own artifact id, "
+        "not the staged upload's; legacy's local ref_id keeps url=None and stays the same id throughout",
+        _agent_api_attachment_url,
     ),
 }
 
@@ -116,15 +196,6 @@ def _declared(*names: str, deliveries: tuple[Outcome, ...]) -> Gap:
     return Gap(reason, deliveries=deliveries, masked=names)
 
 
-def _dispatch_over_the_agent_api(detail: str = "") -> Gap:
-    """``AgentServer.dispatch`` runs over the agent API (plan 5, task 6b); this harness serves only the delivery routes."""
-    reason = (
-        "plan 5: AgentServer.dispatch runs over the agent API (compared in test_maestro_dispatch.py and test_maestro_dispatch_run.py); "
-        f"this harness has no agent API server, so the run ends with CREDENTIAL_UNAVAILABLE at the first call{detail}"
-    )
-    return Gap(reason, raises=MaestroAgentApiError, match="CREDENTIAL_UNAVAILABLE")
-
-
 _RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
 #: A phase without a visible reply (message, form or chart) completes silent: Maestro refuses responded for it.
 _PUBLIC_CHAT = Gap("plan 6: the Maestro-mode router acks event.create with THREAD_MANAGEMENT_MISMATCH: no events and no thread")
@@ -135,37 +206,24 @@ GAPS: dict[str, Gap] = {
     "form_response_submit": _declared("agent_websocket", deliveries=_RESPONDED * 2),
     "form_response_cancel": _declared("agent_websocket", deliveries=_RESPONDED * 2),
     "incoming_fields": _declared("media_link_size", deliveries=_RESPONDED * 2),
-    # AgentServer ingress (plan 5) and public chat (plan 6)
-    "server_dispatch": _dispatch_over_the_agent_api(),
-    # ``AgentServer.ingest`` runs over the agent API (plan 5, task 6a): ``tests/test_maestro_ingest.py`` runs the same calls on
-    # production and on Maestro and compares the thread and the events. This harness serves only the delivery routes
-    # (FakeMaestro), so the run ends at the first agent API call with CREDENTIAL_UNAVAILABLE (as ``repository_crud``): the
-    # scenario joins the harness with the agent API server when the WhatsApp tasks need it (plan 5, task 8).
-    "server_ingest": Gap(
-        "plan 5: ingest runs over the agent API (compared in test_maestro_ingest.py); this harness has no agent API server, "
-        "so the run ends with CREDENTIAL_UNAVAILABLE at the first call",
-        raises=MaestroAgentApiError,
-        match="CREDENTIAL_UNAVAILABLE",
-    ),
-    # ``AgentServer.repository()`` runs over the agent API (plan 5, task 5c): ``tests/test_maestro_agent_persistence.py`` runs this
-    # scenario's calls on production and on Maestro and compares them. This harness serves only the delivery routes (FakeMaestro),
-    # so the Maestro run ends at the first agent API call, which has no Core credential: the scenario joins the harness
-    # with the agent API server (``tests/parity/fake_agent_api.py``) when the WhatsApp tasks need it (plan 5, task 8).
-    "repository_crud": Gap(
-        "plan 5: Repository runs over the agent API (compared in test_maestro_agent_persistence.py); this harness has no agent API "
-        "server, so the run ends with CREDENTIAL_UNAVAILABLE at the first call",
-        raises=MaestroAgentApiError,
-        match="CREDENTIAL_UNAVAILABLE",
-    ),
-    "memory_by_thread_id": _dispatch_over_the_agent_api(" (first call of the script; memory is never reached)"),
-    # ``chat_upload`` works in Maestro mode (plan 5, task 6a: local store, production fields and errors); the scenario ends with a
-    # ``dispatch`` of the staged file (task 6b: over the agent API).
-    "chat_upload": _dispatch_over_the_agent_api(" (the last call of the script, after chat_upload)"),
-    **{
-        f"whatsapp_{send_type}": _dispatch_over_the_agent_api(f" (the WhatsApp ingress); send.whatsapp.{send_type} is never reached")
-        for send_type in WHATSAPP_SENDS
-    },
-    "whatsapp_receipt": _dispatch_over_the_agent_api(" (first call of the script); no receipt is applied"),
+    # Plan 5, task 8: the harness wires ``tests/parity/fake_agent_api.py`` into ``_run_maestro_server`` (an
+    # AgentServer ingress scenario's ``MaestroAgentApi`` calls now reach it, and a ``trigger: true`` publication
+    # is delivered for real through ``create_text_delivery_adapter``). ``server_dispatch``, ``server_ingest`` and
+    # ``memory_by_thread_id`` now match exactly. ``repository_crud`` differs only by a permanent declared
+    # difference: a fresh agent-api thread always has the agent as a participant (real Maestro behavior,
+    # already accepted as a divergence in ``test_maestro_agent_persistence.py``'s own
+    # ``test_create_thread_owner_is_the_user``), which ``Repository.create_thread`` never adds without a run.
+    "repository_crud": _declared("agent_api_thread_has_agent", deliveries=()),
+    # ``chat_upload`` matches except for a permanent declared difference: the staged file's ``url`` resolves to a
+    # real temporary link once read back through the agent API outside a delivery (``MaestroAgentApi.link_resolver``);
+    # the local ``ref_id`` legacy stores keeps ``url=None``.
+    "chat_upload": _declared("agent_api_attachment_url", deliveries=_RESPONDED),
+    # Every ``send.whatsapp.*`` matches except a permanent declared difference: ``data.delivery`` is never
+    # populated when the thread is read outside a delivery (``MaestroExecutionPersistence._channel_state`` has no
+    # thread view over the agent API); legacy stores it at persist time.
+    **{f"whatsapp_{send_type}": _declared("agent_api_no_delivery_data", deliveries=_RESPONDED) for send_type in WHATSAPP_SENDS},
+    "whatsapp_receipt": _declared("agent_api_no_delivery_data", deliveries=_RESPONDED),
+    # Public chat (plan 6).
     "public_chat_guest": _PUBLIC_CHAT,
     "public_chat_authenticated": _PUBLIC_CHAT,
 }

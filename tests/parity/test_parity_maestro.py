@@ -125,29 +125,29 @@ async def test_dashboard_turn_runs_the_handler_through_a_maestro_delivery():
     assert result.deliveries == [{"status": 200, "state": "responded", "reason_code": "responded"}]
 
 
-async def test_send_whatsapp_publishes_then_fails_without_the_agent_api_scope(monkeypatch):
+async def test_send_whatsapp_publishes_then_fails_without_the_agent_api_route(monkeypatch):
     """F6/Task 7 correction: ``send.whatsapp.*`` is no longer refused by the sink; the message publishes.
 
-    This harness's Core credential has no ``threads:manage`` scope, so
-    ``MaestroAgentApi.record_channel_delivery`` (the initial delivery status) fails once the message is
-    already stored: the delivery still ends ``failed``, but for that reason, caught by the executor
-    the same way any handler exception is (``handler_error``), not raised past it.
+    Plan 5, task 8 gives ``FakeMaestro``'s credential the ``threads:manage`` scope too (every
+    ``MaestroAgentApi`` call, inside or outside a delivery, shares it), so ``MaestroAgentApi.record_channel_delivery``
+    (the initial delivery status) no longer fails on the credential. The ``text`` scenario still has no agent-api
+    backend (it runs through ``_run_maestro_deliveries``, not ``_run_maestro_server``'s combined route), so the call
+    now fails on the route instead: the delivery still ends ``failed``, caught by the executor the same way any
+    handler exception is (``handler_error``), not raised past it.
     """
 
     async def handler(on, send, memory, analytics, settings):
         yield send.whatsapp.text("Oi", to_e164="+5511999990000", instance_id="instancia-1")
 
     monkeypatch.setitem(SCENARIOS, "text", replace(SCENARIOS["text"], handler=handler))
+    monkeypatch.setitem(
+        harness.EXPECTED_REJECTIONS,
+        "text",
+        (("POST /agent/channel-deliveries", "NOT_FOUND", "no agent-api backend outside _run_maestro_server"),),
+    )
     result = await run_maestro("text")
     assert [event["actor"] for event in result.events] == ["user", "assistant"]
     assert result.deliveries == [{"status": 200, "state": "failed", "reason_code": "handler_error"}]
-
-
-@pytest.mark.parametrize("name", ["server_dispatch", "chat_upload", "whatsapp_text"])
-async def test_agent_server_ingress_reaches_the_agent_api(name):
-    # ``dispatch`` has no Maestro-mode guard since plan 5, task 6b: the script ends at its first agent API call (no Core credential here).
-    with pytest.raises(MaestroAgentApiError, match="CREDENTIAL_UNAVAILABLE"):
-        await run_maestro(name)
 
 
 async def test_public_chat_reaches_the_maestro_mode_router():

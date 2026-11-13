@@ -40,18 +40,23 @@ when the scenario itself fails.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import json
 import os
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import httpx
 import respx
+from aiohttp.base_protocol import BaseProtocol as _AioBaseProtocol
+from aiohttp.streams import StreamReader as _AioStreamReader
+from aiohttp.test_utils import make_mocked_request
 
 import dooers.agents.server.maestro.media_fetch as media_fetch_module
 import dooers.agents.server.observability.otel as otel
@@ -63,6 +68,8 @@ from dooers.agents.server.auth_validation import (
 )
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.maestro import create_text_delivery_adapter
+from dooers.agents.server.maestro.agent_api import MaestroAgentApi
+from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
 from dooers.agents.server.maestro.context import MaestroPrivateResources
 from dooers.agents.server.maestro.legacy_model import to_runs
 from dooers.agents.server.maestro.links import ArtifactLinkMissing, LinkResolver
@@ -71,7 +78,9 @@ from dooers.agents.server.maestro.window import MaestroContextWindow
 from dooers.agents.server.server import AgentServer
 from dooers.tools.whatsapp.transport import build_x_message_sig
 from tests.parity.context_pages import ThreadPages
-from tests.parity.fake_maestro import FakeMaestro
+from tests.parity.fake_agent_api import PREFIX as AGENT_API_PREFIX
+from tests.parity.fake_agent_api import FakeAgentApi
+from tests.parity.fake_maestro import CALLBACK_BASE_URL, FakeMaestro
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import (
     AGENT_ID,
@@ -93,6 +102,7 @@ from tests.parity.model import (
     open_capture,
 )
 from tests.parity.scenarios import SCENARIOS
+from tests.test_maestro_agent_persistence import core_person
 
 __all__ = ["EXPECTED_REJECTIONS", "ContractViolation", "ParityResult", "run_legacy", "run_maestro"]
 
@@ -166,12 +176,50 @@ def _media_resolver(media: Mapping[str, tuple[bytes, str]]) -> Callable[[str, in
     return resolve
 
 
+async def _agent_api_response(fake: FakeAgentApi, request: httpx.Request) -> httpx.Response:
+    """One ``MaestroAgentApi`` call (``/agent/*``) answered by ``FakeAgentApi``, without a real socket.
+
+    ``FakeAgentApi._handle`` is written against ``aiohttp.web.Request``; ``make_mocked_request`` builds one from the
+    same method/path/query/headers/body the SDK's ``httpx.Request`` carries (no translation of the body: ``FakeAgentApi``
+    reads and parses it itself, JSON or multipart). The ``aiohttp.web.Response`` it returns goes back as an
+    ``httpx.Response`` the same way, by status, headers and body bytes.
+    """
+    loop = asyncio.get_event_loop()
+    protocol = _AioBaseProtocol(loop=loop)
+    stream = _AioStreamReader(protocol, limit=64 * 1024 * 1024, loop=loop)
+    stream.feed_data(request.content)
+    stream.feed_eof()
+    raw_path = request.url.raw_path
+    path = raw_path.decode() if isinstance(raw_path, bytes) else str(raw_path)
+    aio_request = make_mocked_request(request.method, path, headers=dict(request.headers), payload=stream)
+    response = await fake._handle(aio_request)  # noqa: SLF001 - the parity harness drives this fake directly
+    headers = {key: value for key, value in response.headers.items() if key.lower() not in ("content-length", "transfer-encoding")}
+    return httpx.Response(response.status, content=response.body, headers=headers)
+
+
+def _maestro_or_agent_api(maestro: FakeMaestro, agent_api: FakeAgentApi) -> Callable[[httpx.Request], Awaitable[httpx.Response]]:
+    """Routes one ``callback_base_url`` request to ``FakeAgentApi`` (``/agent/*``) or to ``FakeMaestro`` (everything else).
+
+    Both share the same ``callback_base_url`` path prefix (``/api/v1``, index 4.3 / Maestro's own agent-api mount), so
+    ``MaestroAgentApi`` (outside a delivery) and the delivery callback protocol (``MaestroDeliveryAdapter``, during a
+    delivery) reach the right fake with no extra configuration.
+    """
+
+    async def route(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith(AGENT_API_PREFIX + "/agent/"):
+            return await _agent_api_response(agent_api, request)
+        return maestro.handle(request)
+
+    return route
+
+
 @contextmanager
 def _offline_environment(
     persistence: MemoryPersistence,
     connect: Connect,
     maestro: FakeMaestro | None = None,
     media: Mapping[str, tuple[bytes, str]] | None = None,
+    agent_api: FakeAgentApi | None = None,
 ) -> Iterator[_FakeServices]:
     media = media or {}
     fakes = _FakeServices(connect)
@@ -193,7 +241,10 @@ def _offline_environment(
         mock.post(f"{CORE_BASE}{DASHBOARD_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
         mock.post(f"{CORE_BASE}{PUBLIC_CHAT_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
         if maestro is not None:
-            stack.enter_context(maestro.serving(mock))
+            if agent_api is not None:
+                mock.route(url__startswith=CALLBACK_BASE_URL + "/").mock(side_effect=_maestro_or_agent_api(maestro, agent_api))
+            else:
+                stack.enter_context(maestro.serving(mock))
         yield fakes
 
 
@@ -480,16 +531,260 @@ async def _run_maestro_deliveries(maestro: FakeMaestro, scenario: Scenario) -> d
     return {}
 
 
-async def _run_maestro_server(maestro: FakeMaestro, scenario: Scenario, fakes: _FakeServices) -> dict[str, Any]:
+def _prepare_agent_api(spec: ScenarioInput) -> FakeAgentApi:
+    """A loopback agent API for this scenario, with the same identities and core people as ``FakeMaestro``.
+
+    ``FakeAgentApi`` keeps its own constants (its own ``AGENT_ID``/``ORGANIZATION_ID``) when nothing else
+    uses it (``tests/test_maestro_*.py``); the parity harness overrides them to the scenario's own ids
+    (``tests.parity.model``) so a thread it creates passes ``MaestroAgentApi._check_thread`` (same org/workspace
+    as ``AgentConfig.maestro``) and its credential's ``agent_id`` claim (``FakeMaestro``'s) matches.
+    """
+    fake = FakeAgentApi(workspace_id=WORKSPACE_ID)
+    fake.agent_id = AGENT_ID
+    fake.organization_id = ORG_ID
+    for person in (spec.user, *spec.core_people):
+        fake.core_people[person.user_id] = core_person(person)
+    return fake
+
+
+def _agent_participant(thread: Any) -> dict[str, Any]:
+    return next(p for p in thread.participants if p["kind"] == "agent")
+
+
+#: Core's view of a human (``FakeAgentApi._core_person``), never part of a stored ``Public.Thread`` participant:
+#: ``FakeMaestro``'s own participants never carry it either (only ``_with_profile`` adds it, for a context/agent-view
+#: projection, not for ``self.threads``).
+_CORE_PROFILE_KEYS = ("email", "identity_ids", "system_role", "organization_role", "workspace_role")
+
+
+def _as_thread_participant(participant: Mapping[str, Any]) -> dict[str, Any]:
+    """``FakeAgentApi``'s participant, mirrored for ``Public.Thread`` (index 4.3): the core's profile left out."""
+    return {key: value for key, value in participant.items() if key not in _CORE_PROFILE_KEYS}
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+async def _deliver_agent_trigger(
+    maestro: FakeMaestro,
+    fake: FakeAgentApi,
+    adapter: Any,
+    thread_id: str,
+    trigger_event: dict[str, Any],
+    delivery_id: str,
+) -> None:
+    """A ``trigger: true`` publication of ``FakeAgentApi`` (dispatch/ingest/WhatsApp inbound), delivered for real.
+
+    Mirrors the thread and its events so far into ``FakeMaestro`` (the only fake that plays the delivery
+    callback protocol: context, outputs, complete), runs the delivery through ``create_text_delivery_adapter``
+    (the same adapter ``_run_maestro_deliveries`` uses), then plays back into ``FakeAgentApi`` what a real
+    Maestro would also write to the thread: the delivery's own lifecycle (``execution.started``,
+    ``execution.completed``/``failed``, ``delivery.updated`` — ``FakeMaestro`` has no notion of these; only
+    ``MaestroDispatchStream``'s agent-api polling needs them) and the handler's own output events (so a later
+    agent-api read, e.g. ``AgentServer.memory()``, sees the reply too).
+    """
+    agent_thread = fake.threads[thread_id]
+    maestro.admit_agent_thread(
+        thread_id,
+        title=agent_thread.title,
+        queue=agent_thread.queue,
+        channel=agent_thread.channel,
+        channel_meta=agent_thread.channel_meta,
+        external_key=agent_thread.external_key,
+        owner_instance_agent_id=fake.agent_id,
+        participants=[_as_thread_participant(p) for p in agent_thread.participants],
+        created_at=agent_thread.created_at,
+        updated_at=agent_thread.updated_at or agent_thread.created_at,
+        version=agent_thread.version,
+    )
+    # A file the trigger references (a staged ``chat_upload``) must be in FakeMaestro's own store too: the
+    # delivery's download/link-issue routes are served there, never by FakeAgentApi.
+    for part in trigger_event["payload"].get("content") or []:
+        if part.get("type") == "attachment":
+            artifact = fake.artifacts[part["artifact_id"]]
+            maestro.admit_agent_artifact(
+                part["artifact_id"], artifact["data"], filename=artifact["filename"], mime_type=artifact["mime_type"], thread_id=thread_id
+            )
+    # Only the trigger itself: any earlier event of this thread (a prior dispatch call and its outputs) was
+    # already mirrored in an earlier call of this function. Same as a thread participant (index 4.3): the
+    # core's profile is never part of a stored actor either.
+    trigger_actor = _as_thread_participant(trigger_event["actor"])
+    mirrored_trigger = maestro.admit_agent_event(thread_id, trigger_event["type"], trigger_actor, copy.deepcopy(trigger_event["payload"]))
+
+    delivery = maestro.admit_agent_delivery(thread_id, delivery_id)
+    execution_id = delivery.execution_id
+    agent_participant_id = _agent_participant(agent_thread)["participant_id"]
+    agent_actor = {
+        "kind": "agent",
+        "participant_id": agent_participant_id,
+        "principal_id": fake.agent_id,
+        "instance_agent_id": fake.agent_id,
+        "display_name": "Agente",
+    }
+
+    started_at = _iso_now()
+    fake.inject_event(
+        thread_id,
+        "execution.started",
+        {
+            "execution_id": execution_id,
+            "delivery_id": delivery_id,
+            "participant_id": agent_participant_id,
+            "phase_id": "initial",
+            "state": "running",
+            "outcome": None,
+            "reason_code": None,
+            "deadline_at": started_at,
+            "completed_at": None,
+        },
+        actor=agent_actor,
+        delivery_id=delivery_id,
+        execution_id=execution_id,
+    )
+
+    def mirror_output(appended_thread_id: str, event: dict[str, Any]) -> None:
+        """A handler output ``FakeMaestro`` just stored, mirrored into ``FakeAgentApi`` as it happens.
+
+        Some of the executor's OWN later calls of this same delivery (``record_channel_delivery`` after a
+        WhatsApp send, an artifact link) already need the event through the agent API, so this cannot wait
+        for the delivery to end: ``FakeMaestro.on_append`` fires it the moment ``_append`` stores the event.
+        """
+        if appended_thread_id != thread_id:
+            return
+        payload = copy.deepcopy(event["payload"])
+        if payload.get("trigger_event_id") == mirrored_trigger["event_id"]:
+            # ``run.updated`` names the trigger by FakeMaestro's own (mirrored) event id; FakeAgentApi's
+            # conversion backfills the triggering message's ``run_id`` by matching this id in its own
+            # thread, so it must be the trigger's id there, not FakeMaestro's copy of it.
+            payload["trigger_event_id"] = trigger_event["event_id"]
+        fake.inject_event(
+            thread_id,
+            event["type"],
+            payload,
+            actor=copy.deepcopy(event["actor"]),
+            delivery_id=delivery_id,
+            execution_id=execution_id,
+            # Same event id as FakeMaestro's own copy: a later SDK call (``record_channel_delivery``, an
+            # artifact link) names this output by the id the sink already learned when it was first written.
+            event_id=event["event_id"],
+            root_event_id=event["event_id"],
+        )
+
+    maestro.on_append = mirror_output
+    try:
+        await maestro.deliver(adapter, delivery)
+    finally:
+        maestro.on_append = None
+    state, reason = delivery.state, delivery.reason_code
+
+    completed_at = _iso_now()
+    fake.inject_event(
+        thread_id,
+        "execution.failed" if state == "failed" else "execution.completed",
+        {
+            "execution_id": execution_id,
+            "delivery_id": delivery_id,
+            "participant_id": agent_participant_id,
+            "phase_id": "initial",
+            "state": "failed" if state == "failed" else "completed",
+            "outcome": state,
+            "reason_code": reason,
+            "deadline_at": started_at,
+            "completed_at": completed_at,
+        },
+        actor=agent_actor,
+        delivery_id=delivery_id,
+        execution_id=execution_id,
+    )
+    fake.inject_event(
+        thread_id,
+        "delivery.updated",
+        {
+            "delivery": {
+                "attempt_count": 1,
+                "completed_at": completed_at,
+                "created_at": started_at,
+                "delivery_id": delivery_id,
+                "execution_id": execution_id,
+                "expires_at": completed_at,
+                "participant_id": agent_participant_id,
+                "phase_id": "initial",
+                "reason_code": reason,
+                "state": state,
+                "trigger_event_id": trigger_event["event_id"],
+                "updated_at": completed_at,
+            }
+        },
+        actor=agent_actor,
+        delivery_id=delivery_id,
+        execution_id=execution_id,
+    )
+
+
+async def _run_maestro_server(maestro: FakeMaestro, fake: FakeAgentApi, scenario: Scenario, fakes: _FakeServices) -> dict[str, Any]:
+    """``AgentServer`` ingress outside a delivery (dispatch/ingest/repository/chat_upload/WhatsApp, plan 5, task 8).
+
+    The server's ``MaestroAgentApi`` calls reach ``FakeAgentApi`` (``_offline_environment``'s combined route).
+    Any publication with ``trigger: true`` it makes (``AgentServer.dispatch``, the WhatsApp inbound webhook) is
+    delivered for real through ``create_text_delivery_adapter``, as the trigger would be in production.
+    """
     spec = scenario.incoming
-    server = AgentServer(_config(spec, thread_management="maestro", maestro=maestro.config))
+    agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+    server = AgentServer(agent_config)
+
+    async def resources(scope: Any) -> MaestroPrivateResources:
+        # ``AgentServer``'s own persistence (F21): a handler output's ``send.whatsapp.*`` reads the service
+        # secrets merged onto it below (``create_dooers_whatsapp_outbound``), the same as the WhatsApp
+        # credentials a mounted agent's own executor reads.
+        return MaestroPrivateResources(scope, server.persistence, {}, {})
+
+    adapter = create_text_delivery_adapter(agent_config, scenario.handler, resources)
+
+    pending: list[asyncio.Task[None]] = []
+
+    def on_trigger(thread_id: str, trigger_event: dict[str, Any], delivery_id: str) -> None:
+        pending.append(asyncio.ensure_future(_deliver_agent_trigger(maestro, fake, adapter, thread_id, trigger_event, delivery_id)))
+
+    fake.on_trigger = on_trigger
     try:
         await server.ensure_initialized()
         if spec.service_secrets:
             await server.persistence.merge_service_secrets(spec.agent_id, dict(spec.service_secrets))
-        return await _FLOWS[spec.flow](server, scenario, fakes)
+        outputs = await _FLOWS[spec.flow](server, scenario, fakes)
+        if pending:
+            await asyncio.gather(*pending)
+        return outputs
     finally:
         await server.close()
+
+
+async def _agent_api_read_back(
+    fake: FakeAgentApi, maestro_config: Any, observe: frozenset[str]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Events, threads and runs read back the same way ``AgentServer.repository()``/``.memory()`` would.
+
+    ``AgentServer`` ingress scenarios (plan 5, task 8) have no reason to trust a separate, test-only
+    conversion of the thread: ``MaestroAgentPersistence`` is the production ``Persistence`` of a Maestro-mode
+    agent outside a delivery, so the comparison goes through the same code the scenario itself exercised.
+    """
+    api = MaestroAgentApi(maestro_config)
+    read = MaestroAgentPersistence(api, assistant_name=ASSISTANT_NAME, local=MemoryPersistence())
+    events: list[dict[str, Any]] = []
+    out: dict[str, Any] = {}
+    # The SDK shows a Maestro thread under its external key when it has one (``MaestroAgentPersistence._caller_key``),
+    # never under FakeAgentApi's own internal id: the same ref ``AgentServer.ingest``/``.dispatch`` already returned.
+    for thread in list(fake.threads.values()):
+        ref = thread.external_key or thread.id
+        events.extend(event.model_dump() for event in await read.get_events(ref, limit=10_000))
+        if "threads" in observe:
+            view = await read.get_thread(ref)
+            out.setdefault("threads", []).append(view.model_dump() if view is not None else None)
+        if "runs" in observe:
+            out.setdefault("runs", []).extend(run.model_dump() for run in await read.list_runs(thread_id=ref, limit=10_000))
+    for name in observe:
+        out.setdefault(name, [])
+    return events, out
 
 
 class _AgentReader:
@@ -549,21 +844,28 @@ async def run_maestro(name: str) -> ParityResult:
     spec = scenario.incoming
     maestro = FakeMaestro(assistant_name=ASSISTANT_NAME, core_people=[spec.user, *spec.core_people], queues=spec.queues)
     persistence = MemoryPersistence()
-    with _offline_environment(persistence, spec.connect or DASHBOARD_CONNECT, maestro, spec.media) as fakes:
+    server_mode = not _delivered_by_maestro(spec)
+    fake_agent_api = _prepare_agent_api(spec) if server_mode else None
+    with _offline_environment(persistence, spec.connect or DASHBOARD_CONNECT, maestro, spec.media, agent_api=fake_agent_api) as fakes:
         capture, token = open_capture(scenario.history_formats)
         try:
-            if _delivered_by_maestro(spec):
-                outputs = await _run_maestro_deliveries(maestro, scenario)
+            if server_mode:
+                assert fake_agent_api is not None
+                outputs = await _run_maestro_server(maestro, fake_agent_api, scenario, fakes)
             else:
-                outputs = await _run_maestro_server(maestro, scenario, fakes)
+                outputs = await _run_maestro_deliveries(maestro, scenario)
         except Exception:
             # A refused SDK request outranks the scenario's own failure (a gap never hides it).
             _check_rejections(name, maestro)
             raise
         finally:
             close_capture(token)
-    _check_rejections(name, maestro)
-    events, observed = await _maestro_read_back(maestro, spec.observe)
+        _check_rejections(name, maestro)
+        if fake_agent_api is not None:
+            agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+            events, observed = await _agent_api_read_back(fake_agent_api, agent_config.maestro, spec.observe)
+        else:
+            events, observed = await _maestro_read_back(maestro, spec.observe)
     outputs.update(observed)
     if fakes.whatsapp_requests:
         outputs["whatsapp_requests"] = fakes.whatsapp_requests

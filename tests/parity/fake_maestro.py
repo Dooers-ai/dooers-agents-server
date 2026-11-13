@@ -61,7 +61,7 @@ import functools
 import hashlib
 import json
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -240,6 +240,10 @@ class FakeMaestro:
         self.rejections: list[tuple[str, str]] = []
         #: event_id -> e-mail and identity IDs declared by the publishing agent (agent context only).
         self.declared_profiles: dict[str, dict[str, Any]] = {}
+        #: Test hook (plan 5, task 8): called with ``(thread_id, event)`` right after ``_append`` stores it, so the
+        #: harness can mirror a delivery's own writes into ``FakeAgentApi`` as they happen (a handler output a later
+        #: call of the SAME delivery already needs, e.g. ``record_channel_delivery`` after a WhatsApp send).
+        self.on_append: Callable[[str, dict[str, Any]], None] | None = None
 
     @staticmethod
     def _core_credential(key: rsa.RSAPrivateKey) -> tuple[str, int]:
@@ -254,7 +258,9 @@ class FakeMaestro:
             iat=now - 1,
             exp=now + 240,  # the contract caps a core credential at 300 s
             jti=str(uuid4()),
-            scopes=["processing:write", "responses:write", "deliveries:read", "context:read"],
+            # "threads:manage" lets this same credential also answer MaestroAgentApi calls (plan 5, task 8):
+            # AgentServer ingress (dispatch/ingest/repository/chat_upload/whatsapp) outside a delivery.
+            scopes=["processing:write", "responses:write", "deliveries:read", "context:read", "threads:manage"],
         )
         token = sign(key, {"typ": "maestro-access+jwt", "alg": "RS256", "kid": "core-fixture"}, claims)
         return token, claims["exp"]
@@ -329,6 +335,86 @@ class FakeMaestro:
         view = {**deepcopy(thread), "permissions": dict(_NO_PERMISSIONS), "last_sequence": "1", "cursor": f"thread.{thread_id}.1"}
         self._append(thread_id, self._person_actor(person), {"thread": view}, event_type="thread.created")
         return thread_id
+
+    def admit_agent_thread(
+        self,
+        thread_id: str,
+        *,
+        title: str,
+        queue: str | None,
+        channel: str,
+        channel_meta: dict[str, Any] | None,
+        external_key: str | None,
+        owner_instance_agent_id: str | None,
+        participants: list[dict[str, Any]],
+        created_at: str,
+        updated_at: str,
+        version: int,
+    ) -> None:
+        """A thread the agent API created (plan 5, task 8), admitted here so a real delivery can run for it.
+
+        The harness builds ``participants`` from ``FakeAgentApi``'s own thread (same field shapes: an agent-api
+        thread's participants already carry ``participant_id``/``kind``/``principal_id`` or ``external_id``/
+        ``display_name``/``role``/``state``, the same union ``Public.Thread`` accepts). Does nothing if this thread
+        is already admitted (the harness calls this once per delivery, before ``admit_agent_delivery``).
+        """
+        if thread_id in self.threads:
+            return
+        thread = {
+            "organization_id": ORGANIZATION_ID,
+            "scope_kind": "workspace" if WORKSPACE_ID else "personal",
+            "workspace_id": WORKSPACE_ID,
+            "thread_id": thread_id,
+            "mode": "maestro",
+            "title": title or "",
+            "state": "active",
+            "version": version,
+            "participants": deepcopy(participants),
+            "permissions": dict.fromkeys(_NO_PERMISSIONS, True) | {"supervise": False},
+            "capabilities": [],
+            "last_sequence": "0",
+            "cursor": f"thread.{thread_id}.0",
+            "supervision_policy": "strict",
+            "policy_version": 1,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "queue": queue,
+            "channel": channel,
+            "channel_meta": deepcopy(channel_meta),
+            "external_key": external_key,
+            "owner_instance_agent_id": owner_instance_agent_id,
+        }
+        self.threads[thread_id] = self.contracts.validate("Public.Thread", thread)
+        self.events[thread_id] = []
+
+    def admit_agent_event(self, thread_id: str, event_type: str, actor: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """One event of an already-admitted agent-api thread, mirrored here verbatim (same actor/payload)."""
+        return self._append(thread_id, actor, payload, event_type=event_type)
+
+    def admit_agent_artifact(self, artifact_id: str, data: bytes, *, filename: str, mime_type: str, thread_id: str) -> None:
+        """A file the agent API already holds for ``artifact_id`` (plan 5, task 8: a staged ``chat_upload``).
+
+        Admitted ``linked`` (not ``ready_unbound``): the agent-api publish that referenced it already
+        happened; this only lets the delivery's own ``artifact.link.issue``/download find it, same as
+        ``_link_attachments`` does for a web chat upload. Idempotent: an artifact already admitted here
+        (by a previous delivery of the same thread) is left as it is.
+        """
+        if artifact_id in self.artifacts:
+            return
+        self.artifacts[artifact_id] = {
+            "artifact_id": artifact_id,
+            "filename": filename,
+            "mime_type": canonical_mime_type(mime_type, filename),
+            "size_bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "state": "linked",
+            "created_at": _now(),
+            "data": bytes(data),
+            "uploaded_by": INSTANCE_AGENT_ID,
+            "execution_id": None,
+            "thread_id": thread_id,
+            "linked_sequence": "0",
+        }
 
     def publish(self, thread_id: str, human: User, content: list[dict[str, Any]], *, client_event_id: str) -> dict[str, Any]:
         """A person's message in the web chat (``Public.MessageCreateRequest``: text, attachment, contact)."""
@@ -470,6 +556,52 @@ class FakeMaestro:
         delivery = Delivery(delivery_id, execution_id, thread_id, deepcopy(event), envelope, headers)
         self.deliveries[delivery_id] = delivery
         return [delivery]
+
+    def admit_agent_delivery(self, thread_id: str, delivery_id: str) -> Delivery:
+        """A delivery for the trigger the agent API published on this thread (plan 5, task 8: ``AgentServer`` ingress).
+
+        Unlike ``deliveries_for`` (the web chat, where the actor is always a Core human), the trigger of an agent-api
+        publication may be an ``external`` contact (WhatsApp) too. The trigger is the thread's last event (the harness
+        mirrors it here right before calling this), and the recipient is the thread's one active agent participant.
+        """
+        event = self.events[thread_id][-1]
+        agent = self._participant(thread_id, kind="agent", principal_id=INSTANCE_AGENT_ID)
+        execution_id = str(uuid4())
+        bound = {
+            "organization_id": ORGANIZATION_ID,
+            "workspace_id": WORKSPACE_ID,
+            "thread_id": thread_id,
+            "delivery_id": delivery_id,
+            "execution_id": execution_id,
+            "phase_id": "initial",
+            "recipient_participant_id": agent["participant_id"],
+            "instance_agent_id": agent["instance_agent_id"],
+            "runtime_id": RUNTIME_ID,
+            "lease_fence": "1",
+        }
+
+        def bind(data: dict[str, Any]) -> None:
+            for section in ("envelope", "dispatch_claims", "capability_claims"):
+                data[section].update(bound)
+            data["envelope"].update(
+                callback_base_url=CALLBACK_BASE_URL,
+                context_cursor=f"ctx.{delivery_id}",
+                context_cutoff_sequence=event["sequence"],
+                trigger_event_id=event["event_id"],
+                trigger_sequence=event["sequence"],
+                root_event_id=event["root_event_id"],
+                attempt_number=1,
+                phase_retry_number=0,
+                causal_depth=0,
+            )
+            data["capability_claims"].update(sub=agent["instance_agent_id"], jti=str(uuid4()))
+            data["capability_claims"]["operations"] = [*data["capability_claims"]["operations"], "artifact.link.issue"]
+            data["dispatch_claims"]["jti"] = str(uuid4())
+
+        envelope, headers = signed_request(self._key, self.config, change=bind)
+        delivery = Delivery(delivery_id, execution_id, thread_id, deepcopy(event), envelope, headers)
+        self.deliveries[delivery_id] = delivery
+        return delivery
 
     async def deliver(self, adapter: MaestroDeliveryAdapter, delivery: Delivery) -> httpx.Response:
         """POST the signed dispatch to the SDK adapter, as the Maestro dispatcher does."""
@@ -1011,6 +1143,8 @@ class FakeMaestro:
         thread.update(last_sequence=sequence, cursor=f"thread.{thread_id}.{sequence}", updated_at=event["created_at"])
         self.contracts.validate("Public.Thread", thread)
         self.events[thread_id].append(event)
+        if self.on_append is not None:
+            self.on_append(thread_id, deepcopy(event))
         return deepcopy(event)
 
     def _check_attachments(self, content: list[dict[str, Any]], uploader: str) -> None:
