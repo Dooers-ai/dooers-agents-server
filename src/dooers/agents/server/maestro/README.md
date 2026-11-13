@@ -22,11 +22,11 @@ conservar entradas legadas no mesmo processo, use outra instância configurada
 `agent` e mantenha seus endpoints separados. Configuração Maestro presente em
 modo `agent` não muda os fluxos legados nem monta endpoint automaticamente.
 
-No servidor Maestro, `dispatch` retorna `ThreadManagementModeError` antes de
-inicializar/acessar persistência.
+No servidor Maestro, `dispatch`, `ingest` e `chat_upload` funcionam pela API do agente, sem
+inicializar nem acessar a persistência local (ver "ingest e chat_upload pela API do agente"
+e "dispatch pela API do agente").
 `repository()` e `memory(thread_id)` funcionam: leem e gravam pela API do agente
-(ver "Repository e memory(thread_id) pela API do agente"). `ingest` e `chat_upload`
-também funcionam (ver "ingest e chat_upload pela API do agente").
+(ver "Repository e memory(thread_id) pela API do agente").
 O guard de `HandlerPipeline.setup` é uma defesa complementar. O router WS rejeita
 thread list/subscribe/unsubscribe/delete/participants.add, event create/list,
 thread artifacts e feedback antes de ler/escrever histórico. Settings, analytics,
@@ -850,7 +850,8 @@ Diferenças declaradas (produção -> Maestro):
   e sem enriquecimento pelos metadados de visitante (plano 6).
 - Levantam `MaestroAgentUnsupported`, antes de qualquer chamada ao Maestro e antes de consumir um
   `ref_id`: canal sem contato externo no Maestro (só `whatsapp` e `dooers-public-chat`), pessoa sem
-  `user_id` (sem `from_e164` num canal), e URL que não é `http`, `https` nem `data:`. Uma URL
+  `user_id` (sem `from_e164` num canal), parte de mídia sem arquivo e sem URL (`ref_id`, bytes e
+  URL ausentes: não há o que publicar) e URL que não é `http`, `https` nem `data:`. Uma URL
   `data:` que não decodifica levanta o mesmo erro, também antes de qualquer chamada (depois de
   ler os arquivos; eles voltam ao `UploadStore`). Um arquivo de `ref_id` ou de bytes que o Maestro
   recusa (tipo fora da política, tamanho) levanta `MaestroAgentApiError` `REQUEST_INVALID` nas
@@ -869,6 +870,87 @@ Diferenças declaradas (produção -> Maestro):
 - `chat_upload` no modo Maestro lê `persist_chat_attachments` pela persistência local (`self.settings`)
   e conecta o banco local em toda chamada, como produção. Sem banco acessível, cada chamada registra
   o erro e pode esperar o tempo de conexão; o upload continua a funcionar.
+
+## dispatch pela API do agente
+
+No modo Maestro, `AgentServer.dispatch(handler, agent_id, message, ...)` publica a mensagem e
+segue o resultado. O handler roda no executor do Maestro, quando o Maestro entrega a mensagem a
+este agente. Assinatura e retorno são os de produção (`DispatchStream` com `thread_id`,
+`event_id`, `is_new_thread`, `__aiter__` e `collect()`). O código está em `maestro/dispatch.py` e
+`maestro/dispatch_registry.py`. Testes: `tests/test_maestro_dispatch.py` (publicação e fim do
+stream, com o ciclo da entrega escrito pelo teste) e `tests/test_maestro_dispatch_run.py`
+(executor real, registro do handler e `collect()` comparado com produção).
+
+**Publicação.** Igual ao `ingest` (mesma `MaestroIngress.publish`), com `trigger=True` e com o ator
+`user`: a thread é a `external_key` = `thread_id` do chamador (sem `thread_id`, um UUID), com
+`title`, `channel` e `channel_meta`. Com `channel == "dooers-platform"`, o ator é o humano
+declarado de `user`; com `whatsapp` ou `dooers-public-chat`, é o contato externo. Partes com
+`ref_id`, bytes ou URL seguem as regras do `ingest` (arquivo é artefato; o MIME da parte é o que o
+upload devolve; uma chamada que falha devolve os arquivos ao `UploadStore`). `agent_id` é `""` ou o id
+da instância, em qualquer caixa; outro id levanta `MaestroAgentScopeError` antes de qualquer
+chamada. `queues` é aceito como em produção (o catálogo de filas vem do Core na entrega).
+`thread_id`, `event_id` e `is_new_thread` valem antes da leitura do stream. `event_id` é o
+`client_event_id` do evento de entrada.
+
+**Handler (F5): só em um processo.** Produção roda o handler recebido, no processo da chamada. No
+Maestro, quem roda é o executor do processo que recebe a entrega. Por isso:
+
+- O `dispatch` registra o handler neste processo, com o `event_id` como chave (antes de publicar:
+  uma entrega imediata o encontra). Se a entrega chega a este processo, o executor roda o handler
+  da chamada, e não o handler montado em `create_text_delivery_adapter`, e guarda os eventos que
+  o handler produz (F14).
+- Se o handler da chamada não é o handler que este processo monta para o mesmo agente, o evento de
+  entrada leva a marca `data["dooers_dispatch_handler"]` com o nome do handler
+  (`modulo:nome`; um handler sem nome estável, como lambda, closure ou `partial`, tem um nome só
+  dele). Sem handler montado neste processo, a marca também vai (o executor pode estar em outro
+  processo). Com o handler montado, a marca não existe e `data` fica como em produção.
+- Uma entrega que chega a **outro processo** com a marca, sem entrada no registro dele e com um
+  handler montado de outro nome, **falha de forma visível**: a execução termina `failed`
+  (`handler_error`), o texto do erro é uma mensagem do agente na thread, o log de erro o repete e o
+  stream levanta `HandlerError`. O SDK nunca roda um handler diferente em silêncio. Se o nome é o do
+  handler montado lá, ele roda.
+- Custo: um handler próprio no `dispatch` precisa de um só processo (o que chama `dispatch` é o que
+  recebe a entrega). Em deploy com várias instâncias, chame `dispatch` com o handler montado (sem
+  marca) ou mantenha o `dispatch` e o executor no mesmo processo.
+- O registro é do processo, limitado a 1024 entradas e a 1 hora; a entrada sai quando o stream acaba.
+
+**Stream.** Lê `GET /agent/threads/{id}/events` (a página mais nova primeiro, só até a sequência já
+vista) a cada 250 ms e entrega os eventos da entrega criada pela chamada (`delivery_id`):
+
+- Termina em `execution.completed` ou `execution.canceled`. `execution.failed` levanta
+  `HandlerError`. Uma entrega que chega a um estado final sem execução (`delivery.updated`:
+  `responded`, `silent`, `canceled`) termina o stream sem erro; `failed` e `expired` (o handler não
+  rodou) levantam `HandlerError`. Uma entrega `waiting_input` mantém o stream aberto.
+- Não tem prazo próprio: o Maestro limita a execução (prazo da execução) e a entrega (validade). Quem
+  quer um limite cancela a tarefa que lê o stream. Um erro de leitura com nova tentativa
+  possível (`retryable`) repete até 8 vezes seguidas; thread apagada ou outro erro sobe sem alteração.
+- Cada `__aiter__` lê de novo a partir do evento de entrada (o stream pode ser lido outra vez).
+- **No processo da chamada** (entrega neste processo): os `AgentEvent` do próprio handler, os que o
+  Maestro aceitou, na ordem. Uma exceção do handler vira `HandlerError(str(erro), original=erro)`,
+  como produção.
+- **Em outro processo**: os eventos do Maestro convertidos (`agent_event_from` com as correções do
+  C32): as chaves que o `AgentSend` sempre grava (`author=None`, `phones=[]`, `series=[]`, ...), o
+  `update_thread` só com o que mudou (título e fila que a thread tinha antes), `participant_add` com o
+  usuário completo, `run_start` do próprio agente como `agent_id=None` e arquivo como evento
+  `image`/`audio`/`document` com o link temporário do Maestro como URL.
+
+Diferenças declaradas (produção -> Maestro):
+
+- O handler roda quando o Maestro entrega a mensagem, mesmo que ninguém leia o stream. Produção
+  só roda o handler enquanto o stream é lido.
+- Fora do processo da chamada, a URL de um arquivo do handler é o link temporário (a URL que o
+  handler enviou não é guardada); `run_start(agent_id=<o próprio agente>)` volta como `agent_id=None`; o
+  relato de falha do executor (o texto do erro como mensagem e o fim do run com `failed`) chega
+  como eventos antes do `HandlerError`, e o erro não tem `original`. Sem run aberto, a mensagem do
+  `HandlerError` junta o motivo e a última mensagem da execução.
+- Os papéis da pessoa (`system_role`, `organization_role`, `workspace_role`), o nome e o e-mail
+  vêm do Core, não do `User` do chamador (produção usa o `User`). O e-mail e os `identity_ids`
+  declarados na chamada chegam ao agente, mas o Core vale quando sabe a pessoa
+  (`test_the_roles_of_the_person_come_from_the_core_not_from_the_caller`).
+- O span do `dispatch` (quando o OTEL está ligado) abre na chamada e fecha ao fim do stream, como
+  em produção.
+- Sem analytics `message.c2s`/`s2c`, sem broadcast por WebSocket (o Maestro é a autoridade).
+- O evento de entrada pode levar `data["dooers_dispatch_handler"]` (acima).
 
 ## Paridade com a produção (`tests/parity`)
 
@@ -912,8 +994,10 @@ Diferenças declaradas:
 - URL de mídia com esquema diferente de `http`/`https` falha a execução (ver acima).
 
 Lacunas abertas (`tests/parity/known_gaps.py`): a entrada pelo `AgentServer` (`dispatch`,
-`ingest`, `chat_upload`) e o WhatsApp ficam para o plano 5. `repository()` e `memory(thread_id)`
-já funcionam; o cenário `repository_crud` fica como lacuna até este harness servir a API do agente.
+`ingest`, `chat_upload`) e o WhatsApp funcionam pela API do agente e são comparados em
+`tests/test_maestro_ingest.py`, `tests/test_maestro_dispatch.py` e `tests/test_maestro_dispatch_run.py`;
+os cenários de script ficam como lacuna até este harness servir a API do agente (plano 5, tarefa 8).
+`repository()` e `memory(thread_id)` já funcionam; o cenário `repository_crud` segue a mesma regra.
 O chat público fica para o plano 6. Cada lacuna diz o plano que a fecha. Três cenários
 (`form_response_submit`, `form_response_cancel`, `incoming_fields`) diferem só por uma
 diferença declarada permanente (os acks do WebSocket legado; o tamanho de um documento por

@@ -31,6 +31,7 @@ from dooers.tools.whatsapp.runtime import (
 
 from .client import MaestroContextError
 from .diagnostics import diagnostic_stage
+from .dispatch_registry import MARKER_KEY
 from .legacy_model import production_user
 from .memory import MaestroMemory
 from .window import MaestroContextWindow
@@ -119,6 +120,10 @@ class MaestroExecutionContext:
     causal_budget_remaining: int | None = None
     #: Slugs of the workspace queue catalog (production ``allowed_queues``); empty: no catalog.
     allowed_queues: tuple[str, ...] = ()
+    #: ``client_event_id`` of the trigger event (the SDK event id of an agent publication: ``DispatchStream.event_id``), if it has one.
+    trigger_client_event_id: str | None = None
+    #: Fingerprint of the handler a ``dispatch`` call used, when the trigger event carries one (``dispatch_registry``).
+    dispatch_handler: str | None = None
 
     @property
     def original_trigger_event_id(self) -> str:
@@ -274,6 +279,10 @@ async def _form_response(origin: dict[str, Any], window: MaestroContextWindow, e
     return deepcopy(payload["values"]), payload["cancelled"], payload["form_event_id"]
 
 
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 async def _incoming(
     memory: MaestroMemory, snapshot: dict[str, Any], cancellation: MaestroCancellation, private_resume=None, checkpoint_state=None
 ) -> AgentIncoming:
@@ -344,6 +353,8 @@ async def _incoming(
         origin_event_id=origin["event_id"],
         origin_sequence=origin["sequence"],
         allowed_queues=allowed_queues,
+        trigger_client_event_id=_text(trigger["payload"].get("client_event_id")),
+        dispatch_handler=_text((trigger["payload"].get("data") or {}).get(MARKER_KEY)),
         actor=deepcopy(actor),
         causation_event_id=origin["causation_event_id"],
         resume=deepcopy(resume),

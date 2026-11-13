@@ -137,8 +137,9 @@ async def test_send_function_refused_by_the_sink_leaves_only_the_user_message(mo
 
 
 @pytest.mark.parametrize("name", ["server_dispatch", "chat_upload", "whatsapp_text"])
-async def test_agent_server_ingress_reaches_the_maestro_mode_guard(name):
-    with pytest.raises(ThreadManagementModeError, match="THREAD_MANAGEMENT_MISMATCH"):
+async def test_agent_server_ingress_reaches_the_agent_api(name):
+    # ``dispatch`` has no Maestro-mode guard since plan 5, task 6b: the script ends at its first agent API call (no Core credential here).
+    with pytest.raises(MaestroAgentApiError, match="CREDENTIAL_UNAVAILABLE"):
         await run_maestro(name)
 
 

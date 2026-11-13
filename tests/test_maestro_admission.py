@@ -360,19 +360,16 @@ async def test_semantic_json_order_unicode_and_integral_numbers(private_key):
     assert (await request(adapter, wire, headers)).status_code == 200
 
 
-@pytest.mark.parametrize("method", ["dispatch"])
-async def test_legacy_entries_reject_before_persistence(private_key, method):
-    # ``ingest`` and ``chat_upload`` are served in Maestro mode since plan 5, task 6a (``tests/test_maestro_ingest.py``);
-    # ``dispatch`` is served in task 6b.
+async def test_dispatch_is_served_by_the_agent_api_not_the_database(private_key):
+    # ``ingest`` and ``chat_upload`` are served in Maestro mode since plan 5, task 6a (``tests/test_maestro_ingest.py``) and
+    # ``dispatch`` since task 6b (``tests/test_maestro_dispatch.py``): none of them touches the agent database or the legacy pipeline.
+    from dooers.agents.server.maestro.agent_api import MaestroAgentScopeError
+
     server = AgentServer(AgentConfig(database_type="postgres", thread_management="maestro", maestro=config_for(private_key)))
     server._ensure_initialized = AsyncMock(side_effect=AssertionError("DB must not initialize"))
-    kwargs = {
-        "dispatch": {"handler": None, "agent_id": "a", "message": "persisted"},
-        "ingest": {"agent_id": "a", "message": "persisted"},
-        "chat_upload": {"agent_id": "a", "data": b"secret", "filename": "a", "mime_type": "text/plain"},
-    }[method]
-    with pytest.raises(ThreadManagementModeError, match="^THREAD_MANAGEMENT_MISMATCH$"):
-        await getattr(server, method)(**kwargs)
+    # The scope is checked before any request: another agent is refused without a call (no network, no database).
+    with pytest.raises(MaestroAgentScopeError):
+        await server.dispatch(None, "another-agent", "persisted")
     server._ensure_initialized.assert_not_called()
 
 

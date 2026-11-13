@@ -486,6 +486,24 @@ class AgentServer:
         channel_meta: dict[str, Any] | None = None,
         queues: list[WorkspaceQueueCatalog] | None = None,
     ) -> DispatchStream:
+        if self._config.thread_management == "maestro":
+            from dooers.agents.server.maestro.dispatch import dispatch_in_maestro
+
+            return await dispatch_in_maestro(
+                self._maestro_ingress(),
+                handler,
+                agent_id,
+                message,
+                user=user,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                thread_title=thread_title,
+                content=content,
+                channel=channel,
+                channel_meta=channel_meta,
+                queues=queues,
+            )
         self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
 

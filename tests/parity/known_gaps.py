@@ -25,6 +25,9 @@ execution scenario matches, except the ones below that need Core's connection co
 Task 6a (2026-11-13): ``AgentServer.ingest`` and ``chat_upload`` no longer raise in Maestro mode (``server_ingest`` ends at
 the first agent API call; ``chat_upload`` ends at its ``dispatch``).
 
+Task 6b (2026-11-13): ``AgentServer.dispatch`` no longer raises in Maestro mode: it publishes over the agent API and follows the thread
+(``tests/test_maestro_dispatch.py``, ``tests/test_maestro_dispatch_run.py``). The scripts that call it end at the first agent API call.
+
 Task 5c (2026-11-13): ``AgentServer.repository()`` and ``memory(thread_id)`` no longer raise in Maestro mode; ``repository_crud``
 ends at the first agent API call (see its entry).
 
@@ -42,7 +45,6 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, replace
 
-from dooers.agents.server.exceptions import ThreadManagementModeError
 from dooers.agents.server.maestro.agent_api import MaestroAgentApiError
 from tests.parity.model import ParityResult
 from tests.parity.scenarios_server import WHATSAPP_SENDS
@@ -114,9 +116,13 @@ def _declared(*names: str, deliveries: tuple[Outcome, ...]) -> Gap:
     return Gap(reason, deliveries=deliveries, masked=names)
 
 
-def _server_blocked(call: str, detail: str = "") -> Gap:
-    reason = f"plan 5: AgentServer.{call} raises THREAD_MANAGEMENT_MISMATCH in Maestro mode{detail}"
-    return Gap(reason, raises=ThreadManagementModeError, match="THREAD_MANAGEMENT_MISMATCH")
+def _dispatch_over_the_agent_api(detail: str = "") -> Gap:
+    """``AgentServer.dispatch`` runs over the agent API (plan 5, task 6b); this harness serves only the delivery routes."""
+    reason = (
+        "plan 5: AgentServer.dispatch runs over the agent API (compared in test_maestro_dispatch.py and test_maestro_dispatch_run.py); "
+        f"this harness has no agent API server, so the run ends with CREDENTIAL_UNAVAILABLE at the first call{detail}"
+    )
+    return Gap(reason, raises=MaestroAgentApiError, match="CREDENTIAL_UNAVAILABLE")
 
 
 _RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
@@ -130,7 +136,7 @@ GAPS: dict[str, Gap] = {
     "form_response_cancel": _declared("agent_websocket", deliveries=_RESPONDED * 2),
     "incoming_fields": _declared("media_link_size", deliveries=_RESPONDED * 2),
     # AgentServer ingress (plan 5) and public chat (plan 6)
-    "server_dispatch": _server_blocked("dispatch"),
+    "server_dispatch": _dispatch_over_the_agent_api(),
     # ``AgentServer.ingest`` runs over the agent API (plan 5, task 6a): ``tests/test_maestro_ingest.py`` runs the same calls on
     # production and on Maestro and compares the thread and the events. This harness serves only the delivery routes
     # (FakeMaestro), so the run ends at the first agent API call with CREDENTIAL_UNAVAILABLE (as ``repository_crud``): the
@@ -151,15 +157,15 @@ GAPS: dict[str, Gap] = {
         raises=MaestroAgentApiError,
         match="CREDENTIAL_UNAVAILABLE",
     ),
-    "memory_by_thread_id": _server_blocked("dispatch", " (first call of the script; memory is never reached)"),
+    "memory_by_thread_id": _dispatch_over_the_agent_api(" (first call of the script; memory is never reached)"),
     # ``chat_upload`` works in Maestro mode (plan 5, task 6a: local store, production fields and errors); the scenario ends with a
-    # ``dispatch`` of the staged file (task 6b).
-    "chat_upload": _server_blocked("dispatch", " (the last call of the script, after chat_upload)"),
+    # ``dispatch`` of the staged file (task 6b: over the agent API).
+    "chat_upload": _dispatch_over_the_agent_api(" (the last call of the script, after chat_upload)"),
     **{
-        f"whatsapp_{send_type}": _server_blocked("dispatch", f" (the WhatsApp ingress); send.whatsapp.{send_type} is never reached")
+        f"whatsapp_{send_type}": _dispatch_over_the_agent_api(f" (the WhatsApp ingress); send.whatsapp.{send_type} is never reached")
         for send_type in WHATSAPP_SENDS
     },
-    "whatsapp_receipt": _server_blocked("dispatch", " (first call of the script); no receipt is applied"),
+    "whatsapp_receipt": _dispatch_over_the_agent_api(" (first call of the script); no receipt is applied"),
     "public_chat_guest": _PUBLIC_CHAT,
     "public_chat_authenticated": _PUBLIC_CHAT,
 }

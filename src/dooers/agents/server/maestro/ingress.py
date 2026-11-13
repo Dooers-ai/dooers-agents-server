@@ -31,7 +31,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -94,6 +94,8 @@ class MaestroPublished:
     event: ThreadEvent
     #: ``Public.AgentEventCreateResponse``: ``event``, ``cursor`` and, with ``trigger``, ``delivery_id``.
     response: dict[str, Any]
+    #: The thread as it was when the message was published (``Public.AgentThread``): title and queue before the handler changes them.
+    thread: dict[str, Any] = field(default_factory=dict)
 
 
 class MaestroIngress:
@@ -114,6 +116,11 @@ class MaestroIngress:
         """The id of this agent in every production call that names it (``""`` and any case of it are the same agent)."""
         return self._api.config.instance_agent_id
 
+    @property
+    def api(self) -> MaestroAgentApi:
+        """The agent API this ingress publishes with (``dispatch`` follows the thread with it)."""
+        return self._api
+
     async def publish(
         self,
         *,
@@ -132,8 +139,13 @@ class MaestroIngress:
         author: str | None,
         data: dict[str, Any] | None,
         trigger: bool,
+        event_id: str | None = None,
     ) -> MaestroPublished:
-        """Find or create the thread, record the person and publish the message. See the module."""
+        """Find or create the thread, record the person and publish the message. See the module.
+
+        ``event_id`` is the SDK event id (the ``client_event_id`` and the idempotency key); ``dispatch`` chooses it before the call, to
+        register its handler under it. Without one the call makes a UUID.
+        """
         self._api.check_scope(organization_id=organization_id, workspace_id=workspace_id, agent_id=agent_id)
         caller_thread = thread_id or str(uuid.uuid4())
         context = HandlerContext(
@@ -160,7 +172,7 @@ class MaestroIngress:
             if actor == "user":
                 who = self._person(context)
                 _check_content(content)
-            event, storage_parts, handler_parts = await self._event(context, store)
+            event, storage_parts, handler_parts = await self._event(context, store, event_id)
             who = self._person(context)
             prepared = [await self._prepare(s, h) for s, h in zip(storage_parts, handler_parts, strict=True)]
             view = await self._find(caller_thread)
@@ -190,11 +202,13 @@ class MaestroIngress:
             if store is not None:
                 store.restore()
             raise
-        return MaestroPublished(caller_thread, maestro_thread, is_new, event, response)
+        return MaestroPublished(caller_thread, maestro_thread, is_new, event, response, deepcopy(view))
 
     # -- the production event --
 
-    async def _event(self, context: HandlerContext, store: _RecordingStore | None) -> tuple[ThreadEvent, list[Any], list[Any]]:
+    async def _event(
+        self, context: HandlerContext, store: _RecordingStore | None, event_id: str | None = None
+    ) -> tuple[ThreadEvent, list[Any], list[Any]]:
         """``HandlerPipeline.setup`` up to the ``ThreadEvent``: its content parts and the event, nothing written."""
         if context.content:
             pipeline = HandlerPipeline(persistence=self._persistence, upload_store=store, agent_config=self._config)  # type: ignore[arg-type]
@@ -210,7 +224,7 @@ class MaestroIngress:
         elif author is None and context.persist_actor == "assistant":
             author = self._config.assistant_name
         event = ThreadEvent(
-            id=str(uuid.uuid4()),
+            id=event_id or str(uuid.uuid4()),
             thread_id=context.thread_id,  # type: ignore[arg-type]
             run_id=None,
             type=context.event_type,  # type: ignore[arg-type]

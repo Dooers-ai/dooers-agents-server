@@ -36,6 +36,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -146,6 +147,10 @@ class FakeAgentApi:
         self.fail_next: dict[str, str] = {}
         self.token_scopes = ["threads:manage"]
         self.link_route_enabled = True
+        #: Test hook: ``(thread_id, trigger_event, delivery_id)`` called when a publication with ``trigger`` creates its delivery.
+        self.on_trigger: Callable[[str, dict[str, Any], str], None] | None = None
+        #: The deliveries the publications with ``trigger`` created: delivery id -> ``{thread_id, trigger_event_id}``.
+        self.agent_deliveries: dict[str, dict[str, str]] = {}
         #: principal id -> what the core knows about that human (``display_name``, ``email``, ``identity_ids`` and the roles).
         self.core_people: dict[str, dict[str, Any]] = {}
         self._sequence = 0
@@ -645,7 +650,11 @@ class FakeAgentApi:
             )
             response: dict[str, Any] = {"event": event, "cursor": f"mev1.{len(thread.events)}"}
             if body["trigger"]:
-                response["delivery_id"] = str(uuid4())
+                delivery_id = str(uuid4())
+                self.agent_deliveries[delivery_id] = {"thread_id": thread.id, "trigger_event_id": event["event_id"]}
+                response["delivery_id"] = delivery_id
+                if self.on_trigger is not None:
+                    self.on_trigger(thread.id, deepcopy(event), delivery_id)
             return response, 201
 
         value, status, _ = self._receipt(body["idempotency_key"], {"ref": thread.id, **body}, build)
@@ -815,13 +824,16 @@ class FakeAgentApi:
 
     # -- test setup --
 
-    def inject_event(self, thread_id: str, type_: str, payload: dict[str, Any], *, actor: dict[str, Any] | None = None) -> dict[str, Any]:
+    def inject_event(
+        self, thread_id: str, type_: str, payload: dict[str, Any], *, actor: dict[str, Any] | None = None, **links: Any
+    ) -> dict[str, Any]:
         """Test setup: an event that another writer made (a handler output, ``run.updated``, ``message.updated``).
 
         It has no ``client_event_id`` and no ``published_by_instance_agent_id``: the agent API did not publish it.
+        ``links`` are top-level event fields (``delivery_id``, ``execution_id``, ``output_id``).
         """
         thread = self.threads[thread_id]
-        return self._append(thread, type_, actor or self._actor(thread, {"kind": "self"}), payload)
+        return self._append(thread, type_, actor or self._actor(thread, {"kind": "self"}), payload, **links)
 
     def delete_thread_state(self, thread_id: str) -> None:
         """The thread is in deletion: every read of it answers ``THREAD_DELETING``."""

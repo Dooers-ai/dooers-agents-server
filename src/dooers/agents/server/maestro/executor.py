@@ -21,6 +21,7 @@ from .commercial import MaestroCommercialBlocked
 from .config import MaestroConfig, MaestroConfigurationError
 from .context import MaestroCancellation, MaestroPrivateResolver, maestro_handler_context
 from .diagnostics import diagnostic_stage
+from .dispatch_registry import DISPATCHES, DispatchEntry, DispatchHandlerUnavailable, handler_fingerprint, recorded
 from .memory import MaestroMemory
 from .sink import MaestroEventSink, MaestroSend
 
@@ -112,6 +113,9 @@ class MaestroTextExecutor:
         if not callable(handler) or not callable(private_resolver):
             raise ValueError("MAESTRO_HANDLER_REQUIRED")
         self.config, self.handler, self.private_resolver = config, handler, private_resolver
+        # ``AgentServer.dispatch`` in this process compares its handler with this one (``dispatch_registry``).
+        self._fingerprint = handler_fingerprint(handler)
+        DISPATCHES.mount(config.instance_agent_id, handler)
         #: ``AgentConfig.assistant_name``: the author production writes for the agent's events.
         self.assistant_name = assistant_name
         #: ``AgentConfig.allowed_content_types``: a disallowed message gets production's denial run, not the handler.
@@ -211,11 +215,17 @@ class MaestroTextExecutor:
                     budget_timer = asyncio.timeout(budget)
                     async with budget_timer:
                         with bind_effects(journal_execution) if journal_execution else nullcontext():
+                            # A ``dispatch`` call of this process: its handler runs and the events it yields are recorded (F5, F14).
+                            maestro = context.on.context.maestro
+                            entry = DISPATCHES.claim(maestro.trigger_client_event_id, admission.envelope["execution_id"])
                             if context.content_policy_denial:
                                 result = self._denial_events(context)
                             else:
+                                handler = self._handler_for(entry, maestro.dispatch_handler)
                                 # The production AgentMemory over the delivery context (MaestroAgentMemory).
-                                result = self.handler(context.on, MaestroSend(sink), context.memory, context.analytics, context.settings)
+                                result = handler(context.on, MaestroSend(sink), context.memory, context.analytics, context.settings)
+                            if entry is not None and hasattr(result, "__aiter__"):
+                                result = recorded(entry, admission.envelope["execution_id"], result)
                             if hasattr(result, "__aiter__"):
                                 suspension_requested = False
                                 try:
@@ -318,6 +328,18 @@ class MaestroTextExecutor:
             client.close()
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
+
+    def _handler_for(self, entry: DispatchEntry | None, marker: str | None) -> Callable[..., Any]:
+        """The handler of a delivery: the one of the ``dispatch`` call of this process, else the mounted one (F5).
+
+        A trigger event that carries the fingerprint of a handler this process neither has an entry for nor mounts was dispatched
+        for another process: running the mounted handler would answer with the wrong one, so the execution fails (visibly).
+        """
+        if entry is not None:
+            return entry.handler
+        if marker is not None and marker != self._fingerprint:
+            raise DispatchHandlerUnavailable(marker)
+        return self.handler
 
     async def _denial_events(self, context):
         """``pipeline.py`` for a disallowed content type: the run, the denial as the assistant, the run ends failed."""

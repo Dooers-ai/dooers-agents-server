@@ -346,7 +346,9 @@ class FakeMaestro:
         self._link_attachments(event)
         return event
 
-    def agent_publish(self, thread_id: str, human: User, content: list[dict[str, Any]], *, client_event_id: str) -> dict[str, Any]:
+    def agent_publish(
+        self, thread_id: str, human: User, content: list[dict[str, Any]], *, client_event_id: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """The agent publishes a person's message for itself (production ``AgentServer.dispatch``).
 
         ``POST /agent/threads/:id/events`` with ``actor: {kind: "human", principal_id,
@@ -367,7 +369,10 @@ class FakeMaestro:
         self.core_people.setdefault(human.user_id, human)
         self._check_attachments(content, INSTANCE_AGENT_ID)
         actor = {**self._person_actor(person), **({"display_name": human.user_name} if human.user_name else {})}
-        event = self._append(thread_id, actor, {"client_event_id": client_event_id, "content": deepcopy(content), "mentions": []})
+        payload: dict[str, Any] = {"client_event_id": client_event_id, "content": deepcopy(content), "mentions": []}
+        if data:
+            payload["data"] = deepcopy(data)  # the caller's data of the publication (``dispatch`` marks its handler here)
+        event = self._append(thread_id, actor, payload)
         profile = {
             **({"email": human.user_email} if human.user_email else {}),
             **({"identity_ids": list(human.identity_ids)} if human.identity_ids else {}),
