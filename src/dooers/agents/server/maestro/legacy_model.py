@@ -160,6 +160,37 @@ def _core_person(person: dict[str, Any], core: dict[str, Any] | None) -> dict[st
     return merged
 
 
+def _external_user(person: dict[str, Any], core: dict[str, Any] | None) -> User:
+    """The production ``User`` of a channel contact or a public-chat visitor's actor.
+
+    A WhatsApp contact's participant (Maestro today) carries nothing beyond the channel contact
+    identity, so without ``core``, or with one that names no one, ``User`` keeps the actor's own
+    declared name, as production always did: ``user_name = person.get("display_name") or None``.
+
+    A public-chat visitor's participant (``core``, plan 6 Task 3b/4b's ``ContextResponse.participants``
+    external variant) carries the core's own e-mail, identity IDs, the three roles, ``connection_type``
+    (``guest`` | ``public_authenticated``) and ``guest_profile`` (the visitor's own pre-chat
+    name/e-mail/phone, declared, not verified by the core). When ``core`` names the person, its own
+    name/e-mail win, else the guest's declared ``guest_profile`` ones, else the actor's own
+    ``display_name`` (kept for a WhatsApp-like core with no name of its own), else ``None`` — never a
+    placeholder.
+    """
+    guest_profile = (core or {}).get("guest_profile") or {}
+    name = (core or {}).get("display_name") or guest_profile.get("name") or person.get("display_name") or None
+    if core is None:
+        return User(user_id=person["external_id"], user_name=name)
+    email = core.get("email") or guest_profile.get("email") or None
+    connection_type = core.get("connection_type") or None
+    return User(
+        user_id=person["external_id"],
+        user_name=name,
+        user_email=email,
+        identity_ids=list(core.get("identity_ids") or []),
+        **{role: core[role] for role in _ROLES if core.get(role)},
+        **({"connection_type": connection_type} if connection_type else {}),
+    )
+
+
 def production_user(person: dict[str, Any], core: dict[str, Any] | None = None) -> User:
     """The production ``User`` of a Maestro actor or participant.
 
@@ -167,10 +198,9 @@ def production_user(person: dict[str, Any], core: dict[str, Any] | None = None) 
     builds it from Core) and the three roles of Core's connection context. A person the core did not
     describe (an older Maestro, or an unknown person) has the ``User`` default roles. The placeholder name
     Maestro shows for a person without a name is ``None``, never ``"Humano"``: Maestro has no flag for
-    it, so a real person named "Humano" also has no name. ``core``
-    is the participant of an actor (see ``_core_person``). A channel contact is its external id
-    (production: the WhatsApp number); an agent is its instance id and name, as production lists the agent
-    in ``Thread.users``.
+    it, so a real person named "Humano" also has no name. ``core`` is the participant of an actor: see
+    ``_core_person`` for a human, ``_external_user`` for a channel contact or a public-chat visitor. An
+    agent is its instance id and name, as production lists the agent in ``Thread.users``.
     """
     if person["kind"] == "human":
         person = _core_person(person, core)
@@ -186,10 +216,48 @@ def production_user(person: dict[str, Any], core: dict[str, Any] | None = None) 
             **{role: person[role] for role in _ROLES if person.get(role)},
         )
     if person["kind"] == "external":
-        return User(user_id=person["external_id"], user_name=person.get("display_name") or None)
+        return _external_user(person, core)
     if person["kind"] == "agent":
         return User(user_id=person["instance_agent_id"], user_name=person.get("display_name") or None)
     return User(user_id="")
+
+
+#: Production's default channel (web chat; a thread with no channel) — ``context.DEFAULT_CHANNEL``'s
+#: own literal, duplicated here to avoid an import cycle (``context.py`` already imports this module).
+DOOERS_PLATFORM_CHANNEL = "dooers-platform"
+
+#: Production's channel for a public-chat visitor thread (the wire's own short name is ``public_chat``;
+#: ``context._EXTERNAL_CHANNEL`` maps it to this one).
+PUBLIC_CHAT_CHANNEL = "dooers-public-chat"
+
+
+def assistant_delivery_data(channel: str | None, channel_meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Maestro-mode equivalent of production's ``HandlerPipeline._assistant_delivery_data``.
+
+    Production stamps ``data["delivery"]`` on every assistant-authored ``message.created`` it persists
+    (origin/main ``handlers/pipeline.py``, around line 1230): ``None`` on an empty channel or on
+    ``"dooers-platform"`` (plain web chat); otherwise ``{"channel": channel, ...}`` plus channel-specific
+    fields. Only the ``"dooers-public-chat"`` fields (``public_chat_label``, from ``channel_meta``) are
+    wired here — plan 6, Task 5's job.
+
+    Extension point for plan 5 Task 7 (WhatsApp): production also adds ``to_e164``/``instance_id`` for
+    ``channel == "whatsapp"`` (from ``channel_meta["whatsapp"]``, falling back to the user id) and later
+    folds ``channel_delivery.updated`` into ``data["delivery"]["status"]`` (production's
+    ``_record_whatsapp_delivery``). Add a ``channel == "whatsapp"`` branch *inside this function*
+    (do not duplicate it elsewhere) for the base fields, and fold the status update where a converted
+    event's ``data`` is read back (``_message``, below) the same way production folds it onto the
+    stored row — do not re-derive ``data["delivery"]`` from scratch there.
+    """
+    channel = (channel or "").strip()
+    if not channel or channel == DOOERS_PLATFORM_CHANNEL:
+        return None
+    delivery: dict[str, Any] = {"channel": channel}
+    if channel == PUBLIC_CHAT_CHANNEL:
+        meta = channel_meta if isinstance(channel_meta, dict) else {}
+        label = str(meta.get("public_chat_label") or "").strip()
+        if label:
+            delivery["public_chat_label"] = label
+    return {"delivery": delivery}
 
 
 def _stored(user: User) -> User:
@@ -265,6 +333,8 @@ async def _message(
     multi_agent: bool,
     links: LinkResolver,
     assistant_name: str,
+    channel: str | None = None,
+    channel_meta: dict[str, Any] | None = None,
 ) -> ThreadEvent:
     payload, actor = event["payload"], event["actor"]
     content = [await _part(part, links, agent=actor["kind"] == "agent") for part in payload["content"]]
@@ -285,17 +355,25 @@ async def _message(
     else:
         person = production_user(actor)
         legacy_actor, author, user = "user", _author_display(person), _stored(person)
+    # F7: production's ``_assistant_delivery_data(context)`` on every assistant message (own agent, or
+    # another agent alone in the thread, since both render as ``assistant`` here); never on a person's
+    # or another agent's (multi_agent) message.
+    delivery = assistant_delivery_data(channel, channel_meta) if legacy_actor == "assistant" else None
     template = payload.get("template")
     data = None
     if template is not None:
-        # pipeline.py stores send.template as ``data.template`` = {name, language, components}.
+        # pipeline.py stores send.template as ``data.template`` = {name, language, components}, plus
+        # the same delivery data every other assistant message gets.
         data = {
+            **(delivery or {}),
             "template": {
                 "name": str(template.get("template_name") or "").strip(),
                 "language": str(template.get("template_language") or "").strip(),
                 "components": deepcopy(template.get("template_components") or []),
-            }
+            },
         }
+    elif delivery is not None:
+        data = delivery
     return _base(event, type="message", actor=legacy_actor, author=author, user=user, content=content or None, data=data)
 
 
@@ -379,6 +457,8 @@ async def to_thread_event(
     multi_agent: bool,
     links: LinkResolver,
     assistant_name: str = DEFAULT_ASSISTANT_NAME,
+    channel: str | None = None,
+    channel_meta: dict[str, Any] | None = None,
 ) -> ThreadEvent | None:
     """The production ``ThreadEvent`` of one folded Maestro event, or ``None`` without an equivalent.
 
@@ -392,6 +472,10 @@ async def to_thread_event(
     ``assistant_name`` is ``AgentConfig.assistant_name``: production writes it as the author of
     its agent's events (and as the agent's ``user_name`` of a queue change), whatever name the
     agent has in Maestro.
+    ``channel``/``channel_meta`` are the thread's own, at read time (``context.thread_from_view``/
+    ``thread_at_cutoff``): only ``message.created`` uses them, to add ``data.delivery`` to an
+    assistant message (``assistant_delivery_data``, F7). Without them (the default, ``None``), no
+    delivery is added, as before this field existed.
 
     Actors: the own agent is ``assistant``; a person or channel contact is ``user``;
     ``tool_result.created`` is ``tool``; a queue change is ``system``. Another agent's
@@ -409,6 +493,8 @@ async def to_thread_event(
             multi_agent=multi_agent,
             links=links,
             assistant_name=assistant_name,
+            channel=channel,
+            channel_meta=channel_meta,
         )
     if kind == "form.responded":
         return _form_response(event)

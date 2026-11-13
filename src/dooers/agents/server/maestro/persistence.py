@@ -157,13 +157,35 @@ class MaestroExecutionPersistence(Persistence):
         origin = await window.origin()
         return origin["payload"]["thread"].get("queue") if origin is not None and origin["type"] == "thread.created" else None
 
-    def _conversion(self, participants: list[dict[str, Any]]) -> dict[str, Any]:
+    async def _channel_state(self, window: MaestroContextWindow, events: list[dict[str, Any]]) -> tuple[str | None, dict[str, Any] | None]:
+        """The thread's current ``channel``/``channel_meta``, when the delivery context sent a ``thread`` view.
+
+        F7: ``get_events`` passes these to ``to_thread_event`` so an assistant message gets
+        ``data.delivery`` (``legacy_model.assistant_delivery_data``), as production stamps it at
+        persist time from its own live ``context.channel``/``channel_meta``. Without a ``thread``
+        view — an older Maestro, or a window with no thread view at all (``agent_persistence``'s
+        ``_AgentWindow``, over the agent API's reads) — there is no channel to report without an
+        extra read of the thread's first event; ``get_thread`` pays that read once per execution
+        (not per page), but ``get_events``/``_select`` run far more often, so this stays cheap
+        instead: no delivery data for those reads, as before this field existed.
+        """
+        head = await window.load()
+        if "thread" not in head:
+            return None, None
+        state = thread_at_cutoff(events[len(window.events) :], base=thread_from_view(head["thread"]))
+        return state["channel"], state["channel_meta"]
+
+    def _conversion(
+        self, participants: list[dict[str, Any]], channel: str | None = None, channel_meta: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         agents = [participant for participant in participants if participant["kind"] == "agent"]
         return {
             "recipient_instance_id": self._memory.envelope["instance_agent_id"],
             "agent_names": {agent["instance_agent_id"]: agent["display_name"] for agent in agents},
             "multi_agent": sum(agent["state"] == "active" for agent in agents) > 1,
             "assistant_name": self._assistant_name,
+            "channel": channel,
+            "channel_meta": channel_meta,
         }
 
     async def get_thread(self, thread_id: str) -> Thread | None:
@@ -238,7 +260,8 @@ class MaestroExecutionPersistence(Persistence):
             if selected is not None or window.exhausted:
                 break
             await window.read_back()
-        conversion = self._conversion(participants)
+        channel, channel_meta = await self._channel_state(window, events)
+        conversion = self._conversion(participants, channel, channel_meta)
         links = _ExecutionLinks(self._memory.links, uploaded)
         return await _all(to_thread_event(event, links=links, **conversion) for event in selected or [])
 
@@ -265,7 +288,8 @@ class MaestroExecutionPersistence(Persistence):
             # Without ``after_event_id`` the first ``limit`` events of an ascending read are at the thread's start.
             if order == "asc" and not after_event_id:
                 return None
-        conversion = self._conversion(participants)
+        channel, channel_meta = await self._channel_state(window, events)
+        conversion = self._conversion(participants, channel, channel_meta)
         # The whole window is folded first: an edit or removal can target an event of any page.
         rows = []
         for event in fold_events(events, queue=await self._queue_before(window, events)):

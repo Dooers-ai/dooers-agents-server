@@ -153,6 +153,12 @@ def current_maestro_context() -> MaestroExecutionContext | None:
 #: ``on.context.channel`` of a thread without a channel (web chat), as in production.
 DEFAULT_CHANNEL = "dooers-platform"
 
+#: ``actor["channel"]`` (the wire's own short name) to production's ``Thread.channel``: a public-chat
+#: visitor's wire channel is ``"public_chat"``, but production's thread channel is
+#: ``"dooers-public-chat"`` (plan 6 Task 5 brief, correction 1) — WhatsApp's wire name already is
+#: production's own, so it maps to itself.
+_EXTERNAL_CHANNEL = {"whatsapp": "whatsapp", "public_chat": "dooers-public-chat"}
+
 
 def _production_message(content: list[Any]) -> str:
     """``on.message`` by production's own rule, ``HandlerPipeline._extract_message`` (it does not use ``self``)."""
@@ -242,8 +248,11 @@ def _user(actor: dict[str, Any], participants: list[dict[str, Any]]) -> User:
         participant = next((p for p in participants if p["participant_id"] == actor["participant_id"]), None)
         return production_user(actor, participant)
     if actor["kind"] == "external":
-        # As production does with a WhatsApp contact: the user id is the contact (e.g. +55...).
-        return User(user_id=actor["external_id"], user_name=actor.get("display_name") or None)
+        # A WhatsApp contact (production: the number) or a public-chat visitor: the user id is the
+        # contact. A public-chat visitor's participant carries the core's merge fields (Task 3b/4b) —
+        # legacy_model._external_user does the same core-wins, guest_profile-falls-back merge humans get.
+        participant = next((p for p in participants if p.get("participant_id") == actor.get("participant_id")), None)
+        return production_user(actor, participant)
     return User(user_id="")
 
 
@@ -376,8 +385,10 @@ async def _incoming(
     thread = thread_from_view(snapshot["thread"]) if "thread" in snapshot else thread_at_cutoff(await window.thread_events())
     channel = thread["channel"] or DEFAULT_CHANNEL
     if actor["kind"] == "external" and channel == DEFAULT_CHANNEL:
-        # A channel contact is never a platform user: no RAG on_behalf (production: channel "whatsapp").
-        channel = actor["channel"]
+        # A channel contact is never a platform user: no RAG on_behalf (production requires channel
+        # "dooers-platform" for on_behalf=True — tools/rag/runtime.py). Map the wire's own channel name
+        # to production's (public chat: "public_chat" on the wire, "dooers-public-chat" in production).
+        channel = _EXTERNAL_CHANNEL.get(actor["channel"], actor["channel"])
     context = AgentContext(
         thread_id=envelope["thread_id"],
         agent_id=envelope["instance_agent_id"],
