@@ -527,7 +527,6 @@ class AgentServer:
             await persistence.upsert_thread_participant(result.thread.id, resolved_user)
 
         from dooers.agents.server.observability.otel import start_tracker
-
         tracker = start_tracker(
             thread_id=result.thread.id,
             event_id=result.user_event.id,

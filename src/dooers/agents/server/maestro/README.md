@@ -848,12 +848,27 @@ Diferenças declaradas (produção -> Maestro):
   criou a thread vazia.
 - Sem evento de analytics `thread.created`, sem broadcast por WebSocket (o Maestro é a autoridade)
   e sem enriquecimento pelos metadados de visitante (plano 6).
-- Levantam `MaestroAgentUnsupported`, antes de gravar: canal sem contato externo no Maestro (só
-  `whatsapp` e `dooers-public-chat`), pessoa sem `user_id` (sem `from_e164` num canal), parte sem
-  arquivo e sem URL, e URL que não é `http` nem `https` e não pôde ser baixada. Um arquivo de
-  `ref_id` ou de bytes que o Maestro recusa (tipo fora da política, tamanho) levanta
-  `MaestroAgentApiError` (sem URL para cair em `media_link`).
-- Um `ingest` que falha depois do envio de um arquivo deixa o artefato na thread.
+- Levantam `MaestroAgentUnsupported`, antes de qualquer chamada ao Maestro e antes de consumir um
+  `ref_id`: canal sem contato externo no Maestro (só `whatsapp` e `dooers-public-chat`), pessoa sem
+  `user_id` (sem `from_e164` num canal), e URL que não é `http`, `https` nem `data:`. Uma URL
+  `data:` que não decodifica levanta o mesmo erro, também antes de qualquer chamada (depois de
+  ler os arquivos; eles voltam ao `UploadStore`). Um arquivo de `ref_id` ou de bytes que o Maestro
+  recusa (tipo fora da política, tamanho) levanta `MaestroAgentApiError` `REQUEST_INVALID` nas
+  mesmas condições (sem URL para cair em `media_link`). Os testes afirmam que nenhuma requisição
+  foi feita.
+- Um `ref_id` é de uso único, mas uma chamada que falha devolve ao `UploadStore` os arquivos que
+  consumiu (`UploadStore.restore`, só no modo Maestro): se o erro vem de `create_thread`,
+  `add_participant`, `upload_artifact` ou `publish_event`, o chamador repete a chamada com o mesmo
+  `ref_id`. O erro de validação de produção (F13) também devolve o arquivo. Produção consome o
+  `ref_id` e o perde quando a chamada falha.
+- `ingest` não é idempotente em falhas ambíguas: cada chamada cria um novo id de evento. Se a
+  resposta se perde depois de o Maestro gravar, repetir a chamada publica uma segunda mensagem e
+  envia os arquivos de novo (artefatos órfãos). Produção também não tem `client_event_id` no
+  `ingest`: não é uma diferença. Um `ingest` que falha depois do envio de um arquivo deixa o
+  artefato na thread.
+- `chat_upload` no modo Maestro lê `persist_chat_attachments` pela persistência local (`self.settings`)
+  e conecta o banco local em toda chamada, como produção. Sem banco acessível, cada chamada registra
+  o erro e pode esperar o tempo de conexão; o upload continua a funcionar.
 
 ## Paridade com a produção (`tests/parity`)
 

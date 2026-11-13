@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 logger = logging.getLogger("agents")
 
@@ -54,6 +54,10 @@ class UploadStore:
 
     def consume(self, ref_id: str) -> UploadEntry | None:
         return self._store.pop(ref_id, None)
+
+    def restore(self, ref_id: str, entry: UploadEntry) -> None:
+        """Put back an entry ``consume`` took (a caller whose use of it failed). The ttl starts again."""
+        self._store[ref_id] = replace(entry, created_at=time.time())
 
     def _prune_expired(self) -> None:
         now = time.time()

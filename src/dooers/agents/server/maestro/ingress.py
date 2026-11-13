@@ -48,7 +48,7 @@ from dooers.agents.server.protocol.models import (
     WireS2C_TextPart,
     WorkspaceQueueCatalog,
 )
-from dooers.agents.server.upload_store import UploadStore
+from dooers.agents.server.upload_store import UploadEntry, UploadStore
 
 from .agent_api import MaestroAgentApi, MaestroAgentApiError, MaestroAgentMissing
 from .agent_persistence import MaestroAgentUnsupported
@@ -153,37 +153,51 @@ class MaestroIngress:
             persist_author=author,
             queues=list(queues or []),
         )
-        event, storage_parts, handler_parts = await self._event(context)
-        who = self._person(context)
-        view = await self._find(caller_thread)
-        is_new = view is None
-        if view is None:
-            view = await self._api.create_thread(
-                external_key=caller_thread,
-                title=context.thread_title,
-                channel=context.channel,
-                channel_meta=context.channel_meta,
-                participants=[who["participant"]] if who["kind"] == "external" else [],
-                owner=who["participant"] if who["kind"] == "human" else None,
+        # Nothing is consumed or written until the Maestro limits of the call are checked (the person, the parts); the F13
+        # ``ValidationError`` of a non-user actor stays the first error of the event, as in production.
+        store = _RecordingStore(await self._upload_store()) if content else None
+        try:
+            if actor == "user":
+                who = self._person(context)
+                _check_content(content)
+            event, storage_parts, handler_parts = await self._event(context, store)
+            who = self._person(context)
+            prepared = [await self._prepare(s, h) for s, h in zip(storage_parts, handler_parts, strict=True)]
+            view = await self._find(caller_thread)
+            is_new = view is None
+            if view is None:
+                view = await self._api.create_thread(
+                    external_key=caller_thread,
+                    title=context.thread_title,
+                    channel=context.channel,
+                    channel_meta=context.channel_meta,
+                    participants=[who["participant"]] if who["kind"] == "external" else [],
+                    owner=who["participant"] if who["kind"] == "human" else None,
+                )
+            elif not _has_member(view, who["participant"]):
+                await self._add(view["thread_id"], who["participant"])
+            maestro_thread = view["thread_id"]
+            parts = [await self._materialize(maestro_thread, item) for item in prepared]
+            payload: dict[str, Any] = {"content": parts}
+            if event.data:
+                payload["data"] = deepcopy(event.data)
+            response = await self._api.publish_event(
+                maestro_thread, actor=who["actor"], payload=payload, trigger=trigger, idempotency_key=event.id
             )
-        elif not _has_member(view, who["participant"]):
-            await self._add(view["thread_id"], who["participant"])
-        maestro_thread = view["thread_id"]
-        parts = [await self._part(maestro_thread, s, h) for s, h in zip(storage_parts, handler_parts, strict=True)]
-        payload: dict[str, Any] = {"content": parts}
-        if event.data:
-            payload["data"] = deepcopy(event.data)
-        response = await self._api.publish_event(
-            maestro_thread, actor=who["actor"], payload=payload, trigger=trigger, idempotency_key=event.id
-        )
+        except BaseException:
+            # A staged file is single use in production, but its next step there is a local write. Here a failure can come from
+            # any remote call: the files the call consumed go back, so the caller can repeat it with the same ``ref_id``.
+            if store is not None:
+                store.restore()
+            raise
         return MaestroPublished(caller_thread, maestro_thread, is_new, event, response)
 
     # -- the production event --
 
-    async def _event(self, context: HandlerContext) -> tuple[ThreadEvent, list[Any], list[Any]]:
+    async def _event(self, context: HandlerContext, store: _RecordingStore | None) -> tuple[ThreadEvent, list[Any], list[Any]]:
         """``HandlerPipeline.setup`` up to the ``ThreadEvent``: its content parts and the event, nothing written."""
         if context.content:
-            pipeline = HandlerPipeline(persistence=self._persistence, upload_store=await self._upload_store(), agent_config=self._config)
+            pipeline = HandlerPipeline(persistence=self._persistence, upload_store=store, agent_config=self._config)  # type: ignore[arg-type]
             handler_parts, storage_parts = await pipeline._resolve_content_parts_async(
                 context.content, agent_id=context.agent_id, thread_id=context.thread_id
             )
@@ -259,10 +273,11 @@ class MaestroIngress:
 
     # -- the content --
 
-    async def _part(self, maestro_thread: str, storage: Any, handler: Any) -> dict[str, Any]:
+    async def _prepare(self, storage: Any, handler: Any) -> _Prepared:
+        """One part as Maestro takes it, before anything is written: the limits of the file and the fetch of a URL."""
         kind = storage.type
         if kind == "text":
-            return {"type": "text", "text": storage.text}
+            return _Prepared(part={"type": "text", "text": storage.text})
         if kind == "contact":
             assert isinstance(storage, WireS2C_ContactPart)
             contact: dict[str, Any] = {"type": "contact", "display_name": storage.display_name}
@@ -270,36 +285,37 @@ class MaestroIngress:
                 contact["vcard"] = storage.vcard
             if storage.phones:
                 contact["phones"] = deepcopy(storage.phones)
-            return contact
+            return _Prepared(part=contact)
+        config = self._api.config
         data = getattr(handler, "data", b"")
         if data:
             filename = _artifact_filename(storage.filename or getattr(handler, "filename", None) or "file")
             mime = getattr(handler, "mime_type", None) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-            # A file the caller staged (``ref_id``) or gave as bytes has no URL to fall back to: a refusal is the caller's error.
-            return await self._attachment(maestro_thread, kind, storage, data, filename, mime)
+            # A file the caller staged (``ref_id``) or gave as bytes has no URL to fall back to: a refusal is the caller's error
+            # (``upload_artifact`` would refuse it too, after the thread is made).
+            if len(data) > config.max_artifact_bytes or not artifact_type_allowed(config, mime, filename):
+                raise MaestroAgentApiError("REQUEST_INVALID")
+            return _Prepared(upload=_Upload(kind, storage, data, filename, mime))
         url = storage.url
         if not url:
             raise MaestroAgentUnsupported(f"ingest: a {kind!r} part without a file and without a URL cannot be published")
-        return await self._url_part(maestro_thread, kind, storage, url)
+        return await self._prepare_url(kind, storage, url)
 
-    async def _attachment(self, maestro_thread: str, kind: str, storage: Any, data: bytes, filename: str, mime: str) -> dict[str, Any]:
-        artifact = await self._api.upload_artifact(maestro_thread, data, filename, mime)
-        part: dict[str, Any] = {
-            "type": "attachment",
-            "artifact_id": artifact["artifact_id"],
-            # The MIME type Maestro stores is the one the part carries (and the family the thread shows).
-            "mime_type": artifact["mime_type"],
-            "filename": artifact["filename"],
-            "size_bytes": artifact["size_bytes"],
-        }
-        if kind == "audio" and storage.duration is not None:
-            part["duration"] = storage.duration
-        return part
-
-    async def _url_part(self, maestro_thread: str, kind: str, storage: Any, url: str) -> dict[str, Any]:
-        """A media URL: fetched and uploaded; when it cannot be, the part is a ``media_link`` (production keeps the URL)."""
+    async def _prepare_url(self, kind: str, storage: Any, url: str) -> _Prepared:
+        """A media URL: fetched now, uploaded later; a ``media_link`` when it cannot be (production keeps the URL)."""
         config = self._api.config
         limits = {"max_bytes": config.max_artifact_bytes, "hint_mime": storage.mime_type, "hint_filename": storage.filename}
+        link: dict[str, Any] | None = None
+        if urlsplit(url).scheme.lower() in {"http", "https"}:
+            link = {"type": "media_link", "kind": kind, "url": url}
+            if storage.mime_type and _MIME.fullmatch(storage.mime_type):
+                link["mime_type"] = storage.mime_type
+            if storage.filename:
+                link["filename"] = _artifact_filename(storage.filename)
+            for name in ("alt", "duration"):
+                value = getattr(storage, name, None)
+                if value is not None:
+                    link[name] = value
         reason: str | None = None
         try:
             fetched = (
@@ -309,29 +325,99 @@ class MaestroIngress:
             reason = error.reason
         else:
             filename = _artifact_filename(fetched.filename)
-            if not artifact_type_allowed(config, fetched.mime_type, filename):
-                reason = "policy"
-            else:
-                try:
-                    return await self._attachment(maestro_thread, kind, storage, fetched.data, filename, fetched.mime_type)
-                except MaestroAgentApiError as error:
-                    if error.code not in _TOLERATED_UPLOAD_ERRORS:
-                        raise
-                    reason = f"upload_{error.code.lower()}"
+            if artifact_type_allowed(config, fetched.mime_type, filename):
+                return _Prepared(upload=_Upload(kind, storage, fetched.data, filename, fetched.mime_type, from_url=True), fallback=link)
+            reason = "policy"
         # Only the reason: the URL may carry a token (the log rule of the sink).
         logger.warning("maestro ingest: media URL not uploaded (reason=%s); publishing media_link", reason)
-        if urlsplit(url).scheme.lower() not in {"http", "https"}:
+        if link is None:
             raise MaestroAgentUnsupported(f"ingest: a {kind!r} URL that is not http or https and cannot be fetched cannot be published")
-        link: dict[str, Any] = {"type": "media_link", "kind": kind, "url": url}
-        if storage.mime_type and _MIME.fullmatch(storage.mime_type):
-            link["mime_type"] = storage.mime_type
-        if storage.filename:
-            link["filename"] = _artifact_filename(storage.filename)
-        for name in ("alt", "duration"):
-            value = getattr(storage, name, None)
-            if value is not None:
-                link[name] = value
-        return link
+        return _Prepared(part=link)
+
+    async def _materialize(self, maestro_thread: str, item: _Prepared) -> dict[str, Any]:
+        """The part of one prepared item: the upload of its file (the first writes of a call that has a thread)."""
+        if item.upload is None:
+            assert item.part is not None
+            return item.part
+        up = item.upload
+        try:
+            artifact = await self._api.upload_artifact(maestro_thread, up.data, up.filename, up.mime)
+        except MaestroAgentApiError as error:
+            if not up.from_url or error.code not in _TOLERATED_UPLOAD_ERRORS:
+                raise
+            if item.fallback is None:
+                raise MaestroAgentUnsupported(
+                    f"ingest: a {up.kind!r} URL that is not http or https and cannot be uploaded cannot be published"
+                ) from None
+            logger.warning("maestro ingest: media URL not uploaded (reason=upload_%s); publishing media_link", error.code.lower())
+            return item.fallback
+        part: dict[str, Any] = {
+            "type": "attachment",
+            "artifact_id": artifact["artifact_id"],
+            # The MIME type Maestro stores is the one the part carries (and the family the thread shows).
+            "mime_type": artifact["mime_type"],
+            "filename": artifact["filename"],
+            "size_bytes": artifact["size_bytes"],
+        }
+        if up.kind == "audio" and up.storage.duration is not None:
+            part["duration"] = up.storage.duration
+        return part
+
+
+@dataclass
+class _Upload:
+    kind: str
+    storage: Any
+    data: bytes
+    filename: str
+    mime: str
+    #: The file came from a URL (it may fall back to a ``media_link``); a staged file or bytes cannot.
+    from_url: bool = False
+
+
+@dataclass
+class _Prepared:
+    part: dict[str, Any] | None = None
+    upload: _Upload | None = None
+    fallback: dict[str, Any] | None = None
+
+
+class _RecordingStore:
+    """The ``UploadStore`` of a call, remembering which staged files the call took, so a failure can give them back."""
+
+    def __init__(self, store: UploadStore) -> None:
+        self._store = store
+        self._taken: dict[str, UploadEntry] = {}
+        self._made: set[str] = set()
+
+    def store(self, data: bytes, filename: str, mime_type: str) -> str:
+        ref_id = self._store.store(data, filename, mime_type)
+        self._made.add(ref_id)  # an inline file of this call: the caller does not know its id
+        return ref_id
+
+    def consume(self, ref_id: str) -> UploadEntry | None:
+        entry = self._store.consume(ref_id)
+        if entry is not None and ref_id not in self._made:
+            self._taken[ref_id] = entry
+        return entry
+
+    def restore(self) -> None:
+        for ref_id, entry in self._taken.items():
+            self._store.restore(ref_id, entry)
+        self._taken.clear()
+
+
+def _check_content(content: list[Any] | None) -> None:
+    """The Maestro limits of the parts that need no file read: a URL part that can only be a ``media_link`` has a web scheme."""
+    for part in content or []:
+        data = part.model_dump() if hasattr(part, "model_dump") else part
+        if not isinstance(data, Mapping) or data.get("type") not in {"image", "audio", "document"}:
+            continue
+        url = data.get("url")
+        if data.get("ref_id") or data.get("data") or data.get("data_base64") or not isinstance(url, str) or not url.strip():
+            continue
+        if not is_data_url(url.strip()) and urlsplit(url.strip()).scheme.lower() not in {"http", "https"}:
+            raise MaestroAgentUnsupported(f"ingest: a {data['type']!r} URL that is not http, https or data cannot be published")
 
 
 def _is_uuid(value: str) -> bool:

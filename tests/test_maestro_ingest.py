@@ -37,7 +37,7 @@ import dooers.agents.server.server as server_module
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.features.settings.models import SettingsSchema
 from dooers.agents.server.handlers.pipeline import UploadReferenceError
-from dooers.agents.server.maestro.agent_api import MaestroAgentScopeError
+from dooers.agents.server.maestro.agent_api import MaestroAgentApi, MaestroAgentApiError, MaestroAgentScopeError
 from dooers.agents.server.maestro.agent_persistence import MaestroAgentUnsupported
 from dooers.agents.server.maestro.media_fetch import FetchedMedia, MediaFetchError
 from dooers.agents.server.protocol.models import User
@@ -483,12 +483,91 @@ async def test_ingest_media_url_that_cannot_be_uploaded_becomes_a_media_link(wor
     assert events[0].content[0].url == PHOTO_URL and events[0].content[0].ref_id is None
 
 
-async def test_ingest_media_url_with_another_scheme_that_cannot_be_fetched_is_unsupported(world):
-    content = [{"type": "image", "url": "ftp://files.example.com/foto.png", "filename": "foto.png"}]
+@pytest.mark.parametrize(
+    "url",
+    ["ftp://files.example.com/foto.png", "data:image/png;base64,@@@@", "file:///etc/passwd"],
+)
+async def test_ingest_media_url_that_can_only_fail_is_unsupported_before_any_write(world, url):
+    """A URL that is neither http(s) nor a data URL that decodes cannot be a ``media_link``: nothing reaches Maestro."""
+    content = [{"type": "image", "url": url, "filename": "foto.png"}]
     with media_served():
         with pytest.raises(MaestroAgentUnsupported):
             await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-ftp", actor="user", content=content, **COMMON)
-    assert world.posts("/events") == []
+    assert world.fake.requests == [] and world.fake.threads == {}
+
+
+async def test_ingest_file_outside_the_maestro_policy_is_refused_before_any_write_and_keeps_the_file(world):
+    upload = await world.maestro.chat_upload(
+        data=b"MZ\x90\x00", filename="programa.exe", mime_type="application/x-msdownload", agent_id=AGENT_ID
+    )
+    content = [{"type": "document", "ref_id": upload["ref_id"], "filename": "programa.exe", "mime_type": "application/x-msdownload"}]
+    with pytest.raises(MaestroAgentApiError, match="REQUEST_INVALID"):
+        await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-exe", actor="user", content=content, **COMMON)
+    assert world.fake.requests == [] and upload["ref_id"] in world.maestro.upload_store._store
+
+
+# -- a failed ingest does not lose the staged file --
+
+
+async def stage(world, name: str = "foto.png") -> tuple[str, list[dict[str, Any]]]:
+    upload = await world.maestro.chat_upload(data=PNG, filename=name, mime_type="image/png", agent_id=AGENT_ID)
+    return upload["ref_id"], [{"type": "image", "ref_id": upload["ref_id"], "filename": name, "mime_type": "image/png"}]
+
+
+def fail_once(monkeypatch, name: str) -> None:
+    original = getattr(MaestroAgentApi, name)
+    calls: list[int] = []
+
+    async def wrapper(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if not calls:
+            calls.append(1)
+            raise MaestroAgentApiError("DEPENDENCY_UNAVAILABLE", status=503, retryable=True)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(MaestroAgentApi, name, wrapper)
+
+
+@pytest.mark.parametrize("failing_call", ["create_thread", "upload_artifact", "publish_event"])
+async def test_failed_ingest_gives_the_staged_file_back_and_the_retry_ends_with_one_message(world, monkeypatch, failing_call):
+    ref_id, content = await stage(world)
+    fail_once(monkeypatch, failing_call)
+    with pytest.raises(MaestroAgentApiError, match="DEPENDENCY_UNAVAILABLE"):
+        await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-retry", actor="user", content=content, **COMMON)
+    assert ref_id in world.maestro.upload_store._store  # the same ref_id is still usable
+    assert await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-retry", actor="user", content=content, **COMMON) == "t-retry"
+    messages = [e for e in world.maestro_thread("t-retry").events if e["type"] == "message.created"]
+    assert len(messages) == 1 and messages[0]["payload"]["content"][0]["type"] == "attachment"
+    assert len([t for t in world.fake.threads.values() if t.external_key == "t-retry"]) == 1
+    assert world.maestro.upload_store.consume(ref_id) is None  # used by the retry, single use again
+
+
+async def test_failed_add_participant_gives_the_staged_file_back(world, monkeypatch):
+    await world.maestro.ingest(AGENT_ID, "Oi", user=ANA, thread_id="t-member", actor="user", **COMMON)
+    ref_id, content = await stage(world)
+    fail_once(monkeypatch, "add_participant")
+    with pytest.raises(MaestroAgentApiError):
+        await world.maestro.ingest(AGENT_ID, "", user=BIA, thread_id="t-member", actor="user", content=content, **COMMON)
+    assert ref_id in world.maestro.upload_store._store
+    await world.maestro.ingest(AGENT_ID, "", user=BIA, thread_id="t-member", actor="user", content=content, **COMMON)
+    assert len([e for e in world.maestro_thread("t-member").events if e["type"] == "message.created"]) == 2
+
+
+async def test_ingest_of_an_unknown_channel_does_not_consume_the_staged_file(world):
+    ref_id, content = await stage(world)
+    with pytest.raises(MaestroAgentUnsupported):
+        await world.maestro.ingest(AGENT_ID, "", user=CONTACT, thread_id=KEY, actor="user", channel="slack", content=content, **COMMON)
+    assert world.fake.requests == [] and ref_id in world.maestro.upload_store._store
+    await world.maestro.ingest(
+        AGENT_ID, "", user=CONTACT, thread_id=KEY, actor="user", channel="whatsapp", channel_meta=META, content=content, **COMMON
+    )
+    assert world.maestro_thread(KEY).events[-1]["payload"]["content"][0]["type"] == "attachment"
+
+
+async def test_ingest_with_the_production_validation_error_keeps_the_staged_file(world):
+    ref_id, content = await stage(world)
+    with pytest.raises(ValidationError):
+        await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-f13", actor="assistant", content=content, **COMMON)
+    assert world.fake.requests == [] and ref_id in world.maestro.upload_store._store
 
 
 # -- chat_upload --
