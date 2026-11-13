@@ -826,6 +826,33 @@ def test_to_thread_maps_the_view_to_the_production_thread(contracts):
     assert to_thread(view, last_event_at=last).last_event_at == last
 
 
+@pytest.mark.parametrize("order", [(0, 1, 2, 3), (3, 2, 1, 0), (1, 3, 0, 2), (2, 0, 3, 1)])
+def test_to_thread_orders_users_as_production_whatever_order_maestro_returns(contracts, order):
+    """Maestro lists the context participants by a random UUID; production lists [owner, agent, added...]."""
+    view = _thread_view(str(uuid4()))
+    owner, agent, _removed = view["participants"]
+
+    def added(user_id: str, sequence: str) -> dict[str, Any]:
+        return {
+            **owner,
+            "principal_id": user_id,
+            "participant_id": str(uuid4()),
+            "display_name": "Humano",
+            "role": "member",
+            "joined_sequence": sequence,
+        }
+
+    # A sequence is a decimal string: "12" comes after "7" (a text sort would not).
+    arranged = [owner, agent, added("user-3", "7"), added("user-4", "12")]
+    view["participants"] = [arranged[index] for index in order]
+    contracts.validate("Public.Thread", view)
+
+    thread = to_thread(view, recipient_instance_id=AGENT_ID, assistant_name=ASSISTANT_NAME)
+
+    assert [user.user_id for user in thread.users] == [PERSON["principal_id"], AGENT_ID, "user-3", "user-4"]
+    assert thread.owner.user_id == PERSON["principal_id"]
+
+
 def test_to_thread_lists_the_reading_agent_with_the_assistant_name(contracts):
     view = _thread_view(str(uuid4()))
     view["participants"][1]["display_name"] = "Nome no Maestro"

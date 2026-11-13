@@ -384,6 +384,21 @@ async def to_thread_event(
     return _agent_event(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name)
 
 
+def _in_join_order(participants: list[dict]) -> list[dict]:
+    """The participants as production lists them: in the order they joined the thread.
+
+    The Maestro context returns them ordered by a random participant UUID, so the order of the view
+    means nothing. ``joined_sequence`` (a decimal string) says who joined first; at the same
+    sequence the owner comes first, then the agent, then the rest, and the participant id breaks the
+    last tie. The result is ``[owner, agent, added...]``, as production's ``Thread.users``.
+    """
+
+    def rank(participant: dict) -> int:
+        return 0 if participant.get("role") == "owner" else 1 if participant["kind"] == "agent" else 2
+
+    return sorted(participants, key=lambda p: (int(p.get("joined_sequence") or 0), rank(p), p.get("participant_id") or ""))
+
+
 def to_thread(
     view: dict,
     *,
@@ -395,13 +410,13 @@ def to_thread(
 
     ``agent_id`` is the agent that created the thread, else the first agent participant.
     ``owner`` is the person with the ``owner`` role, else the first channel contact (a
-    production channel thread belongs to the contact). ``users`` are the active participants,
-    the agent included, as production lists them: the reading agent
+    production channel thread belongs to the contact). ``users`` are the active participants
+    in the order they joined (``_in_join_order``), the agent included, as production lists them: the reading agent
     (``recipient_instance_id``) under ``assistant_name``, as ``thread_access.agent_participant``
     lists it; without one, every agent under its Maestro name. The view has no time of the
     last event: ``last_event_at`` is the caller's, else ``updated_at``.
     """
-    participants = view["participants"]
+    participants = _in_join_order(view["participants"])
     active = [participant for participant in participants if participant["state"] == "active"]
     agents = [p for p in active if p["kind"] == "agent"] or [p for p in participants if p["kind"] == "agent"]
     owner = next((p for p in participants if p["kind"] == "human" and p["role"] == "owner"), None) or next(
