@@ -322,6 +322,25 @@ SEND_SCENARIOS: dict[str, Scenario] = {
         ),
         incoming=ScenarioInput(),
     ),
+    # AgentConfig.allowed_content_types: production answers a disallowed message with a denial run; the handler never runs.
+    # The run is not observed: a run of the agent's own id reads back from Maestro as agent_id None (legacy_model.py).
+    "content_policy_denied": Scenario(
+        handler=_reply(lambda on, send: [send.text("O handler não deveria rodar.")]),
+        incoming=ScenarioInput(config={"allowed_content_types": ("image",)}),
+    ),
+    "content_policy_denied_message": Scenario(
+        handler=_reply(lambda on, send: [send.text("O handler não deveria rodar.")]),
+        incoming=ScenarioInput(
+            config={
+                "allowed_content_types": "image, document",
+                "content_policy_denial_message": "Só aceito {allowed}, mas chegou {offenders}.",
+            },
+        ),
+    ),
+    "content_policy_allowed": Scenario(
+        handler=_reply(lambda on, send: [send.text("Mensagem de texto aceita.")]),
+        incoming=ScenarioInput(config={"allowed_content_types": ("text",)}),
+    ),
     "run_failed": Scenario(handler=_run_failed, incoming=ScenarioInput(observe=frozenset({"runs"}))),
     "run_other_agent": Scenario(handler=_run_other_agent, incoming=ScenarioInput(observe=frozenset({"runs"}))),
     "update_user_event": Scenario(

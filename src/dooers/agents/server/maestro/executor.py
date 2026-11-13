@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
+from dooers.agents.server.features.analytics.models import AnalyticsEvent
+from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts
 
 from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedResult, MaestroCurrentLease, MaestroDeliveryAdapter
@@ -20,8 +24,37 @@ from .diagnostics import diagnostic_stage
 from .memory import MaestroMemory
 from .sink import MaestroEventSink, MaestroSend
 
+logger = logging.getLogger(__name__)
+
 #: ``AgentConfig.assistant_name`` default.
 DEFAULT_ASSISTANT_NAME = "Assistant"
+#: Upper bound for the analytics call that reports a handler failure (it never delays the completion more).
+_FAILURE_ANALYTICS_SECONDS = 5.0
+#: Context errors that mean the execution authority is gone; any other context error in the handler is its failure.
+_LOST_AUTHORITY = frozenset({"ACCESS_REVOKED", "CONTEXT_EXPIRED"})
+#: Context errors with their own delivery error code, as before the handler (``_context_failure``).
+_OWN_CODE = frozenset({"UNSUPPORTED_CAPABILITY", "CONTEXT_LIMIT"})
+
+
+@dataclass(frozen=True)
+class MaestroContentPolicy:
+    """``AgentConfig.allowed_content_types`` and ``content_policy_denial_message`` (``handlers/content_policy.py``)."""
+
+    allowed: frozenset[str] | None
+    denial_message: str | None
+
+
+def maestro_content_policy(config: Any) -> MaestroContentPolicy | None:
+    """The content policy of a Maestro-mode ``AgentConfig`` (as ``AgentServer`` reads it); none for a ``MaestroConfig``."""
+    from dooers.agents.server.config import AgentConfig
+    from dooers.agents.server.handlers.content_policy import normalize_allowed_content_types
+
+    if not isinstance(config, AgentConfig):
+        return None
+    allowed = normalize_allowed_content_types(config.allowed_content_types)
+    if allowed is None:
+        return None
+    return MaestroContentPolicy(allowed, (config.content_policy_denial_message or "").strip() or None)
 
 
 def maestro_settings(config: Any, assistant_name: str | None = None) -> tuple[MaestroConfig, str]:
@@ -74,12 +107,15 @@ class MaestroTextExecutor:
         approvals=None,
         options_resolver=None,
         assistant_name: str = DEFAULT_ASSISTANT_NAME,
+        content_policy: MaestroContentPolicy | None = None,
     ) -> None:
         if not callable(handler) or not callable(private_resolver):
             raise ValueError("MAESTRO_HANDLER_REQUIRED")
         self.config, self.handler, self.private_resolver = config, handler, private_resolver
         #: ``AgentConfig.assistant_name``: the author production writes for the agent's events.
         self.assistant_name = assistant_name
+        #: ``AgentConfig.allowed_content_types``: a disallowed message gets production's denial run, not the handler.
+        self.content_policy = content_policy
         self._contracts = contracts or default_contracts()
         self.journal, self.retry_policy, self.checkpoints, self.approvals = journal, retry_policy, checkpoints, approvals
         if options_resolver is not None and (not callable(options_resolver) or inspect.iscoroutinefunction(options_resolver)):
@@ -158,16 +194,21 @@ class MaestroTextExecutor:
                 options_resolver=self.options_resolver,
                 assistant_name=self.assistant_name,
                 published=sink,
+                content_policy=self.content_policy,
             ) as context:
                 outcome, reason = "failed", "handler_error"
+                failure: Exception | None = None
                 try:
                     budget = admission.remaining_seconds() - self.config.completion_budget_seconds - self.config.safety_margin_seconds
                     if budget <= 0:
                         raise TimeoutError
                     async with asyncio.timeout(budget):
                         with bind_effects(journal_execution) if journal_execution else nullcontext():
-                            # The production AgentMemory over the delivery context (MaestroAgentMemory).
-                            result = self.handler(context.on, MaestroSend(sink), context.memory, context.analytics, context.settings)
+                            if context.content_policy_denial:
+                                result = self._denial_events(context)
+                            else:
+                                # The production AgentMemory over the delivery context (MaestroAgentMemory).
+                                result = self.handler(context.on, MaestroSend(sink), context.memory, context.analytics, context.settings)
                             if hasattr(result, "__aiter__"):
                                 suspension_requested = False
                                 try:
@@ -223,10 +264,16 @@ class MaestroTextExecutor:
                         "unsupported_capability" if error.code == "UNSUPPORTED_CAPABILITY" else "handler_contract_error",
                     )
                 except MaestroContextError as error:
-                    # Same codes as before the handler: no link route, or a context over the limit.
-                    raise _context_failure(error) from None
-                except Exception:
-                    outcome, reason = "failed", "handler_error"
+                    if error.code in _LOST_AUTHORITY | _OWN_CODE:
+                        # Lost authority; or the same codes as before the handler: no link route, a context over the limit.
+                        raise _context_failure(error) from None
+                    # A read that failed (unavailable, invalid) is the handler's failure, as in production: one
+                    # terminal state, no retry of a handler that may have published outputs.
+                    outcome, reason, failure = "failed", "handler_error", error
+                except Exception as error:
+                    outcome, reason, failure = "failed", "handler_error", error
+                if failure is not None:
+                    await self._report_failure(failure, sink, context, admission)
                 await stop_heartbeat()
                 sink.close()
                 if sink.suspended is not None:
@@ -262,6 +309,33 @@ class MaestroTextExecutor:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
+    async def _denial_events(self, context):
+        """``pipeline.py`` for a disallowed content type: the run, the denial as the assistant, the run ends failed."""
+        send = AgentSend()
+        yield send.run_start(agent_id=context.on.context.agent_id)
+        yield send.text(context.content_policy_denial, author=self.assistant_name)
+        yield send.run_end(status="failed", error="content_policy")
+
+    async def _report_failure(self, error: Exception, sink: MaestroEventSink, context, admission: MaestroAdmission) -> None:
+        """The production error path (``pipeline.py``) for an exception of the handler, best effort.
+
+        Logs the traceback, tracks ``error.occurred``, writes the error text as a message of the current run and ends
+        that run as failed. Maestro has no ``system`` actor: the message is the agent's. A step that fails (too large,
+        a refusal, lost authority) never hides the failure: ``complete`` still reports it.
+        """
+        logger.error("[agents] handler error: %s", error, exc_info=error)
+        track = getattr(context.analytics, "track", None)
+        if callable(track):
+            try:
+                budget = admission.remaining_seconds() - self.config.completion_budget_seconds - self.config.safety_margin_seconds
+                async with asyncio.timeout(max(0.0, min(_FAILURE_ANALYTICS_SECONDS, budget))):
+                    tracked = track(AnalyticsEvent.ERROR_OCCURRED.value, {"error": str(error), "type": type(error).__name__})
+                    if inspect.isawaitable(tracked):
+                        await tracked
+            except Exception as analytics_error:
+                logger.warning("maestro handler failure: analytics track failed (%s)", type(analytics_error).__name__)
+        await sink.report_handler_failure(str(error) or type(error).__name__)
+
 
 def create_text_delivery_adapter(
     config: MaestroConfig | Any,
@@ -276,10 +350,18 @@ def create_text_delivery_adapter(
     ``assistant_name`` do ``AgentConfig`` chega ao autor dos eventos do agente
     (``maestro_settings``).
     """
+    content_policy = maestro_content_policy(config)
     config, assistant_name = maestro_settings(config, assistant_name)
     contracts = default_contracts()
     return MaestroDeliveryAdapter(
         config,
         lease_gate=MaestroHeartbeatGate(config, contracts=contracts),
-        executor=MaestroTextExecutor(config, handler, private_resolver, contracts=contracts, assistant_name=assistant_name),
+        executor=MaestroTextExecutor(
+            config,
+            handler,
+            private_resolver,
+            contracts=contracts,
+            assistant_name=assistant_name,
+            content_policy=content_policy,
+        ),
     )

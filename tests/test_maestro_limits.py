@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from dooers.agents.server.handlers.send import AgentSend
@@ -121,10 +123,8 @@ async def test_text_just_over_the_limit_with_json_escapes_is_counted_in_bytes_no
     "event",
     [
         AgentSend().text(5),  # not a string
-        AgentSend().contact(display_name="Ana", vcard="\ud800"),  # lone surrogate: not UTF-8
-        AgentSend().template("t", "pt_BR", template_components=[{"type": "body", "text": "\ud800"}]),
     ],
-    ids=["text_not_str", "contact_surrogate", "template_surrogate"],
+    ids=["text_not_str"],
 )
 async def test_malformed_message_is_a_contract_error_not_a_handler_error(private_key, contracts, event):
     async with setup(private_key, contracts) as fixture:
@@ -139,6 +139,19 @@ async def test_malformed_message_is_a_contract_error_not_a_handler_error(private
         response = await execute_fixture(fixture, handler)
         assert response.json()["state"] == "failed"
         assert fixture.completions[-1]["reason_code"] == "handler_contract_error"
+
+
+@pytest.mark.parametrize("shape", ["contact", "template"])
+async def test_lone_surrogate_in_a_message_is_replaced_like_production(private_key, contracts, shape):
+    async with setup(private_key, contracts) as fixture:
+        event = (
+            AgentSend().contact(display_name="Ana", vcard="a\ud800b")
+            if shape == "contact"
+            else AgentSend().template("t", "pt_BR", template_components=[{"type": "body", "text": "a\ud800b"}])
+        )
+        await _accept(fixture, contracts, event)
+        (output,) = [semantic for semantic, _result in fixture.outputs.values()]
+        assert "a\ufffdb" in json.dumps(output, ensure_ascii=False)
 
 
 async def test_message_update_is_checked_locally_like_a_message(private_key, contracts):

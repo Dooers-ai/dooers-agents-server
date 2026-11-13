@@ -101,7 +101,7 @@ class MaestroExecutionContext:
     context_cutoff_sequence: str
     origin_event_id: str
     origin_sequence: str
-    actor: dict[str, Any]
+    actor: dict[str, Any] = field(repr=False)  # carries the person's e-mail and identity ids
     causation_event_id: str | None
     root_event_id: str
     causal_depth: int
@@ -127,6 +127,9 @@ class MaestroHandlerInput:
     memory: MaestroAgentMemory
     analytics: Any = field(repr=False)
     settings: Any = field(repr=False)
+    #: The production content-policy denial text for this message (``AgentConfig.allowed_content_types``): the
+    #: executor answers with it and does not run the handler. ``None``: no policy, or an allowed message.
+    content_policy_denial: str | None = field(default=None, repr=False)
 
 
 _active: WeakKeyDictionary[asyncio.Task, MaestroExecutionContext] = WeakKeyDictionary()
@@ -385,6 +388,12 @@ async def _incoming(
     )
 
 
+def is_not_a_message(snapshot: dict[str, Any], envelope: dict[str, Any]) -> bool:
+    """True when the delivery is not a ``message``: a resume, or a ``form.responded`` (production ``form.response``)."""
+    origin = snapshot.get("invocation_event") or snapshot["trigger_event"]
+    return bool(envelope.get("resume")) or origin["type"] == "form.responded"
+
+
 @asynccontextmanager
 async def maestro_handler_context(
     memory: MaestroMemory,
@@ -396,6 +405,7 @@ async def maestro_handler_context(
     options_resolver=None,
     assistant_name: str = "Assistant",
     published=None,
+    content_policy=None,
 ) -> AsyncIterator[MaestroHandlerInput]:
     """Prepara on/memory/analytics/settings; E05-08 fornece send e roda handler.
 
@@ -404,6 +414,8 @@ async def maestro_handler_context(
     execução (``MaestroMemory.window()``: lida do fim da thread); ``assistant_name`` é
     ``AgentConfig.assistant_name``, o autor que produção grava para o agente; ``published`` (o sink
     do executor) dá as saídas já aceitas, que as leituras seguintes veem como produção.
+    ``content_policy`` (``MaestroContentPolicy``) é o ``allowed_content_types`` do ``AgentConfig``: para uma mensagem
+    (não uma resposta de form nem uma retomada) com tipo não permitido, ``content_policy_denial`` leva o texto de negação.
     Use async with dentro da task que efetivamente consome o generator. Nenhum
     contexto RAG/Maestro é herdado automaticamente por tasks filhas.
     """
@@ -469,7 +481,14 @@ async def maestro_handler_context(
             guard_token = bind_handler_scope_guard(lambda: active and asyncio.current_task() is task and not cancellation.cancelled)
             _active[task] = incoming.context.maestro
             settings = TurnSettings(resources.settings, selected_options) if selected_options else resources.settings
-            yield MaestroHandlerInput(incoming, agent_memory, resources.analytics, settings)
+            denial = None
+            if content_policy is not None and not is_not_a_message(snapshot, memory._envelope):
+                from dooers.agents.server.handlers.content_policy import format_allowed_content_policy_denial
+
+                denial = format_allowed_content_policy_denial(
+                    parts=incoming.content, allowed=content_policy.allowed, message_template=content_policy.denial_message
+                )
+            yield MaestroHandlerInput(incoming, agent_memory, resources.analytics, settings, denial)
         finally:
             active = False
             try:

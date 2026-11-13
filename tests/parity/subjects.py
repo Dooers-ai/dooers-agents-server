@@ -365,6 +365,18 @@ SUBJECTS: dict[str, Subject] = {
         f"form_{builder}": Subject(("events",), _all(_types("message", "form"), _single_form(*elements)))
         for builder, elements in _FORM_BUILDER_ELEMENTS.items()
     },
+    "content_policy_denied": Subject(
+        ("events",),
+        _all(
+            _TWO_MESSAGES,
+            _last_author("Assistente"),
+            _last_part("text", text="This agent does not accept this attachment type in chat (text). Allowed: image."),
+        ),
+    ),
+    "content_policy_denied_message": Subject(
+        ("events",), _all(_TWO_MESSAGES, _last_part("text", text="Só aceito document, image, mas chegou text."))
+    ),
+    "content_policy_allowed": Subject(("events",), _all(_TWO_MESSAGES, _last_part("text", text="Mensagem de texto aceita."))),
     "run_failed": Subject(("events", "outputs.runs"), _run("failed", None, "Serviço de pedidos indisponível")),
     "run_other_agent": Subject(("events", "outputs.runs"), _run("succeeded", OTHER_AGENT_ID, None)),
     "update_user_event": Subject(("events",), _revised_user_event),

@@ -562,7 +562,20 @@ Só o retorno normal do handler sem mensagem produz `silent/implicit_empty`.
 pelo criador. Silêncio depois de mensagem ou mensagem depois de silêncio é erro;
 saída parcial já confirmada é preservada, com `failed` quando a falha pode ser
 confirmada. Exceção e timeout usam códigos fechados (`handler_error`,
-`handler_timeout`), sem expor a exception. `run_start/run_end` enviam progresso por
+`handler_timeout`) na fase. Uma exceção do handler segue o caminho de erro da produção
+(`pipeline.py`), em ordem de melhor esforço: o SDK grava um log `error` com o traceback,
+chama `analytics.track("error.occurred", {"error", "type"})` (se a porta tem `track`),
+grava o texto da exceção como mensagem do run atual (`str(e)`; o nome da classe se o texto
+é vazio) e encerra esse run com `failed` e o mesmo texto em `error`. O Maestro não tem ator
+`system`: a mensagem é do agente. Um passo que o Maestro recusa (por exemplo, texto acima do
+limite) é registrado em um log `warning` e a fase termina do mesmo jeito. Diferenças da
+produção: `run_id` não vai ao analytics (`AgentAnalytics.track` não o aceita) e os eventos
+automáticos `message.c2s`, `message.s2c`, `tool.called` e `thread.created` não existem no modo
+Maestro. Um `MaestroContextError` do handler com código `CONTEXT_UNAVAILABLE` ou `CONTEXT_INVALID`
+e um `MaestroHistoryLimitError` seguem o mesmo caminho (`failed/handler_error`, sem nova
+tentativa). Só `ACCESS_REVOKED` e `CONTEXT_EXPIRED` indicam autoridade perdida (`LEASE_STALE`);
+`UNSUPPORTED_CAPABILITY` e `CONTEXT_LIMIT` mantêm o código próprio de antes do handler.
+`run_start/run_end` enviam progresso por
 heartbeat e gravam uma saída `run.update` cada um (o `run_end` sem run atual não grava
 nada, como na produção). `run_end(failed)` é o status do run, não falha a fase.
 
@@ -623,9 +636,26 @@ membros), o sink grava um log `warning`, não consome o ordinal e o handler cont
 cliente fica aberto. Os conflitos da execução (409 `LEASE_STALE`, `EXECUTION_TERMINAL`,
 `IDEMPOTENCY_CONFLICT`), 401, 429 `RATE_LIMITED`, 5xx e falha de transporte continuam a
 parar a execução. O mesmo vale para a saída `run.update` (`run_start`/`run_end`)
-recusada com 403 `FORBIDDEN` `multi_agent_thread` (só esse caso). `send.add_participant` sem `user_id` (só e-mail ou
+recusada com 403 `FORBIDDEN` `multi_agent_thread` (só esse caso). A saída `message.update`
+(`send.update_user_event`) recusada com 404 `NOT_FOUND` (o evento não existe ou não é uma
+mensagem da thread) ou 403 `multi_agent_thread` também só grava um log `warning`, como a
+produção (`pipeline.py`): o ordinal fica livre e o handler continua. O 422 dessa saída (anexo
+recusado) continua a falhar a fase com `handler_contract_error`. `send.add_participant` sem `user_id` (só e-mail ou
 vazio) não gera saída e grava um log `warning`. `update_thread(queue="")` envia `queue: null`
 (o Maestro grava `queue || null`; a produção tira a fila).
+
+Texto como na persistência da produção: antes de enviar, o SDK tira `U+0000` e troca cada
+surrogate solitário por `U+FFFD` em todo texto e todo JSON das saídas (valores e chaves) e nos
+deltas de `open_text`. O Maestro recusa as duas coisas, e a produção também as limpa
+(`persistence.sanitize.without_nul`). Um 422 do Maestro numa saída vira
+`handler_contract_error`; só um 422 `UNSUPPORTED_CAPABILITY` mantém `unsupported_capability`.
+
+`AgentConfig.allowed_content_types` e `content_policy_denial_message` valem no modo Maestro
+como em produção (`pipeline.py`): para uma mensagem com tipo não permitido (resposta de form
+e retomada ficam de fora), o handler não roda. O SDK grava `run_start`, o texto de negação
+(autor `assistant_name`) e `run_end(failed, error="content_policy")`. A fase termina
+`responded`. Isso vale para a fábrica com o `AgentConfig` do agente, também a durável; com
+um `MaestroConfig` puro não há política.
 
 Recibo de saída: `message.create` e os eventos de conteúdo (`reasoning`, `tool_*`, `chart`,
 `form`) exigem o valor pedido; diferença fecha o cliente e deixa o resultado incerto. Em

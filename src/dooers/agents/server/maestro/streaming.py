@@ -8,6 +8,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from .callbacks import MaestroCallbackError
+from .outputs import clean_text
 
 if TYPE_CHECKING:
     from .sink import MaestroEventSink
@@ -47,6 +48,9 @@ class MaestroTextStream:
         self._active()
         if not isinstance(text, str) or not text:
             raise MaestroCallbackError("INVALID_REQUEST")
+        text = clean_text(text)  # as the final message: no NUL, no lone surrogate
+        if not text:
+            return
         try:
             size = len(text.encode("utf-8"))
         except UnicodeError:

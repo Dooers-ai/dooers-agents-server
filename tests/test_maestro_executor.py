@@ -342,8 +342,10 @@ async def test_outcome_is_confirmed_only_after_callback(private_key, contracts, 
             if kind == "run_and_text"
             else 2
             if kind in {"text", "run_failed", "run_only", "tool_only"}
+            else 2
+            if kind == "partial_error"  # the text, then the error message of production's error path
             else 1
-            if kind in {"partial_error", "silent_after_text"}
+            if kind in {"error", "silent_after_text"}
             else 0
         )
         assert all("outputs" not in value for value in fixture.completions)

@@ -14,12 +14,14 @@ Este módulo é puro: não faz E/S e não conhece ``output_id`` nem ``lease_fenc
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 from dooers.agents.server.handlers.send import AgentEvent
+from dooers.agents.server.persistence.sanitize import without_nul
 
 #: Saídas por fase (``output:0`` até ``output:997``): o teto do servidor do Maestro
 #: (``execution_outputs`` por entrega e fase). Produção não tem teto por execução.
@@ -29,6 +31,29 @@ MAX_PHASE_OUTPUTS = 998
 #: Outputs that make a phase ``responded``: a visible reply (Maestro M07-005/006). Any other output
 #: (run, reasoning, tool, thread, participant, message edit) leaves the phase ``silent``.
 VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.create"})
+
+
+_LONE_SURROGATES = re.compile("[\ud800-\udfff]")
+
+
+def clean_text(text: str) -> str:
+    """Production's ``without_nul`` and a ``U+FFFD`` for each lone surrogate (not valid UTF-8, refused by Maestro)."""
+    return _LONE_SURROGATES.sub("\ufffd", without_nul(text))
+
+
+def clean_json(value: Any) -> Any:
+    """``value`` as production stores it: no NUL and no lone surrogate in any string, key or value.
+
+    Production strips NUL in persistence (``persistence.sanitize``); Postgres rejects it, and Maestro refuses
+    the output instead of cleaning it. A copy; other types stay as they are.
+    """
+    if isinstance(value, str):
+        return clean_text(value)
+    if isinstance(value, list):
+        return [clean_json(item) for item in value]
+    if isinstance(value, dict):
+        return {clean_text(key) if isinstance(key, str) else key: clean_json(item) for key, item in value.items()}
+    return value
 
 
 def message_content_bytes(payload: dict) -> int:

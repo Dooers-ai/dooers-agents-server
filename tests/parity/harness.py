@@ -460,8 +460,9 @@ async def _run_maestro_deliveries(maestro: FakeMaestro, scenario: Scenario) -> d
         # The operator's queue catalog (``MaestroPrivateResources.queues``) until Core sends it (plan 5).
         return MaestroPrivateResources(scope, MemoryPersistence(), {}, {}, queues=spec.queues)
 
-    # Configured as the legacy side (``_config``): the same AgentConfig.assistant_name.
-    adapter = create_text_delivery_adapter(maestro.config, scenario.handler, resources, assistant_name=ASSISTANT_NAME)
+    # Configured as the legacy side (``_config``): the same AgentConfig (assistant name, content policy).
+    agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+    adapter = create_text_delivery_adapter(agent_config, scenario.handler, resources)
     thread_id = maestro.create_thread(spec.user, title=spec.thread_title)
     for number, turn in enumerate(spec.turns, start=1):
         if turn.event_type == "form.response":

@@ -88,6 +88,8 @@ def _output_refusal(output_type: object, status: int, code: str | None, reason: 
     """Motivo de uma recusa de saída que não é perda de autoridade; ``None`` para as outras falhas."""
     if (status, code, reason) in OUTPUT_RULE_REFUSALS:
         return reason
+    if output_type == "message.update" and (status, code) == (404, "NOT_FOUND"):
+        return "not_found"  # send.update_user_event on an event that is not a message of this thread
     if output_type in THREAD_OPERATION_OUTPUTS and (
         status in {403, 404, 422}
         or (status == 409 and code is not None and code not in _EXECUTION_CONFLICTS)
@@ -239,6 +241,10 @@ class MaestroCallbackClient(MaestroContextClient):
                                             error_code = error
                                     except Exception:
                                         pass
+                                    if action == "outputs" and response.status_code == 422 and error != "UNSUPPORTED_CAPABILITY":
+                                        # Maestro refused the content (``VALIDATION_FAILED``): a contract error of the
+                                        # handler's output, not a missing capability.
+                                        error_code = "INVALID_REQUEST"
                                     rule_refusal = (
                                         _output_refusal(value.get("type"), response.status_code, error, reason_code)
                                         if action == "outputs"

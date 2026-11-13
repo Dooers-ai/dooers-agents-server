@@ -212,8 +212,9 @@ def create_durable_text_delivery_adapter(
 
     from .adapter import MaestroDeliveryAdapter
     from .callbacks import MaestroHeartbeatGate
-    from .executor import MaestroTextExecutor, maestro_settings
+    from .executor import MaestroTextExecutor, maestro_content_policy, maestro_settings
 
+    content_policy = maestro_content_policy(config)
     config, assistant_name = maestro_settings(config, assistant_name)
 
     if not isinstance(journal, PostgresEffectJournal) or retry_policy not in {"unsafe", "journal_only"}:
@@ -261,5 +262,6 @@ def create_durable_text_delivery_adapter(
             approvals=approvals,
             options_resolver=options_resolver,
             assistant_name=assistant_name,
+            content_policy=content_policy,
         ),
     )

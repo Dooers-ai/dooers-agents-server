@@ -23,6 +23,8 @@ from .outputs import (
     MaestroOutput,
     RunTracker,
     UnsupportedAgentEvent,
+    clean_json,
+    clean_text,
     media_output,
     message_content_bytes,
     output_for,
@@ -56,13 +58,21 @@ _MEDIA_TIMEOUT_SECONDS = 30.0
 #: never fail the handler (``pipeline.py``), so any refusal ``callbacks`` marks for them is tolerated
 #: (``THREAD_OPERATION_OUTPUTS``). A ``run_start``/``run_end`` for another agent in a thread with
 #: several agents is not an error either: ``run.update`` tolerates only 403 ``multi_agent_thread``.
+#: ``send.update_user_event`` (``message.update``) on a missing event only logs a warning in production
+#: (``pipeline.py``) and any agent may edit any event: Maestro's 404 ``NOT_FOUND`` and 403
+#: ``multi_agent_thread`` are tolerated too. Its 422 (an attachment Maestro refuses) is not.
 _TOLERATED_RUN_REFUSALS = frozenset({"multi_agent_thread"})
+_TOLERATED_MESSAGE_UPDATE_REFUSALS = frozenset({"multi_agent_thread", "not_found"})
 
 
 def _tolerated(output_type: str, refusal: str | None) -> bool:
     if refusal is None:
         return False
-    return output_type in THREAD_OPERATION_OUTPUTS or (output_type == "run.update" and refusal in _TOLERATED_RUN_REFUSALS)
+    return (
+        output_type in THREAD_OPERATION_OUTPUTS
+        or (output_type == "run.update" and refusal in _TOLERATED_RUN_REFUSALS)
+        or (output_type == "message.update" and refusal in _TOLERATED_MESSAGE_UPDATE_REFUSALS)
+    )
 
 
 def _artifact_filename(name: str) -> str:
@@ -290,7 +300,10 @@ class MaestroEventSink:
             raise MaestroCallbackError("PAYLOAD_TOO_LARGE")
 
     def prepare_text(self, text: str, ordinal: int, handoff: str | None = None) -> MaestroOutputIntent:
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str):
+            raise MaestroCallbackError("INVALID_REQUEST")
+        text = clean_text(text)
+        if not text.strip():
             raise MaestroCallbackError("INVALID_REQUEST")
         self._check_message_size({"content": [{"type": "text", "text": text}]})
         output = {
@@ -445,10 +458,32 @@ class MaestroEventSink:
             self._failed = True
             raise
 
+    async def report_handler_failure(self, text: str) -> None:
+        """Production's error path for a handler exception, in the thread (``pipeline.py``), best effort.
+
+        The error text as a message of the current run, then that run ends as failed (``run_end`` with the same text
+        as ``error``). With no current run, only the message. Each step is independent: one that Maestro refuses (too
+        large, a rule) or that the lost authority stops is logged and skipped. The executor still completes the
+        phase as ``failed/handler_error``.
+        """
+        failing_run = self._runs.current
+        steps = [AgentEvent("text", {"text": text, "author": None})]
+        if failing_run is not None:
+            steps.append(AgentEvent("run_end", {"status": "failed", "error": text}))
+        for step in steps:
+            try:
+                self._active()
+                await self._publish(step)
+            except Exception as error:
+                logger.warning(
+                    "maestro handler failure: send.%s not published (%s)", step.send_type, getattr(error, "code", type(error).__name__)
+                )
+
     def _output_intent(self, output: MaestroOutput, ordinal: int) -> MaestroOutputIntent:
-        value = {"output_id": f"output:{ordinal}", "type": output.type, "payload": output.payload}
+        # Like production's persistence: no NUL, no lone surrogate (Maestro refuses both with a 422).
+        value = {"output_id": f"output:{ordinal}", "type": output.type, "payload": clean_json(output.payload)}
         if output.type in {"message.create", "message.update"}:
-            self._check_message_size(output.payload)
+            self._check_message_size(value["payload"])
         try:
             self._client._contracts.validate("Public.OutputRequest", {**value, "lease_fence": self._client._envelope["lease_fence"]})
             raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
