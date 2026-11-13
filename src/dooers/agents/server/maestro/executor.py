@@ -198,11 +198,17 @@ class MaestroTextExecutor:
             ) as context:
                 outcome, reason = "failed", "handler_error"
                 failure: Exception | None = None
+                # Only the delivery budget expiring is handler_timeout; a TimeoutError the handler itself raises
+                # (e.g. its own asyncio.wait_for) is a handler failure, as in production.
+                budget_spent = False
+                budget_timer: asyncio.Timeout | None = None
                 try:
                     budget = admission.remaining_seconds() - self.config.completion_budget_seconds - self.config.safety_margin_seconds
                     if budget <= 0:
+                        budget_spent = True
                         raise TimeoutError
-                    async with asyncio.timeout(budget):
+                    budget_timer = asyncio.timeout(budget)
+                    async with budget_timer:
                         with bind_effects(journal_execution) if journal_execution else nullcontext():
                             if context.content_policy_denial:
                                 result = self._denial_events(context)
@@ -243,8 +249,11 @@ class MaestroTextExecutor:
                     outcome, reason = "failed", error.reason_code
                 except MaestroEffectUnknown:
                     outcome, reason = "failed", "manual_review"
-                except TimeoutError:
-                    outcome, reason = "failed", "handler_timeout"
+                except TimeoutError as error:
+                    if budget_spent or (budget_timer is not None and budget_timer.expired()):
+                        outcome, reason = "failed", "handler_timeout"
+                    else:
+                        outcome, reason, failure = "failed", "handler_error", error
                 except MaestroCallbackError as error:
                     # Unknown output/commit e perda de autoridade pertencem à
                     # recuperação durável; não sobrescrever com outra intenção.

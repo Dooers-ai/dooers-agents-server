@@ -94,6 +94,25 @@ async def test_handler_exception_fails_the_run_and_writes_the_error_message(priv
         assert analytics.calls == [("error.occurred", {"error": "falha do pedido 42", "type": "RuntimeError"})]
 
 
+async def test_timeout_error_raised_by_the_handler_is_a_handler_failure(private_key, contracts):
+    """A TimeoutError the handler raises (e.g. its own asyncio.wait_for) is not the delivery budget expiring."""
+    analytics = RecordingAnalytics()
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(_on, send, *_args):
+            yield send.run_start()
+            await asyncio.wait_for(asyncio.sleep(1), timeout=0.01)
+
+        response = await run_with(fixture, handler, analytics)
+        assert response.json()["state"] == "failed"
+        assert fixture.completions[-1]["reason_code"] == "handler_error"
+        start, error_message, run_failed = published(fixture)
+        assert error_message["type"] == "message.create"
+        assert run_failed["type"] == "run.update" and run_failed["payload"]["status"] == "failed"
+        assert run_failed["payload"]["run_id"] == start["payload"]["run_id"]
+        assert [event for event, _data in analytics.calls] == ["error.occurred"]
+
+
 async def test_handler_exception_without_a_run_writes_only_the_message(private_key, contracts):
     async with setup(private_key, contracts) as fixture:
 
