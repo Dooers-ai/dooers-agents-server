@@ -47,6 +47,7 @@ from dooers.agents.server.maestro.persistence import MaestroAgentMemory, Maestro
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User, WireS2C_TextPart
 from tests.parity import fake_maestro as fake_module
+from tests.parity import samples
 from tests.parity.fake_maestro import FakeMaestro, private_resources, shared_contracts
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import AGENT_ID, ASSISTANT_NAME, ORG_ID, USER, WORKSPACE_ID, ParityResult
@@ -516,7 +517,9 @@ async def test_reads_after_yield_see_the_outputs_like_production(fmt):
 async def test_raw_events_and_thread_after_yield_equal_production():
     turns = (_text_turn("Oi", lambda send, _: [send.run_start(), send.text("Olá!"), send.run_end()]), WRITES_TURN)
     production = await _production(turns)
-    memory = _in_execution(turns)
+    # Maestro lists the context participants by a random UUID: here the agent comes before the owner,
+    # and the SDK still gives production's order, [owner, agent, added].
+    memory = _in_execution(turns, participants=tuple(reversed(PARTICIPANTS)))
 
     raw = await memory.get_history_raw(limit=100)
     expected = await production.get_history_raw(limit=100)
@@ -743,7 +746,7 @@ async def test_executor_gives_the_handler_the_production_memory():
             yield event
 
     with fake.serving():
-        image = fake.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
+        image = fake.upload(USER, samples.png_bytes(), filename="foto.png", mime_type="image/png")
         # AgentConfig.assistant_name reaches the adapter (the Maestro name differs).
         responses = await _deliver_turns(
             fake, handler, [[_text("Veja esta foto"), image], [_text("Resuma a conversa")]], config=_agent_config(fake)
@@ -901,7 +904,7 @@ async def test_own_uploaded_file_is_read_back_with_its_url(monkeypatch):
         return issue(self, request, execution_id, artifact_id)
 
     monkeypatch.setattr(FakeMaestro, "_artifact_link", counting)
-    data_url = "data:image/png;base64," + base64.b64encode(b"\x89PNG fixture").decode()
+    data_url = "data:image/png;base64," + base64.b64encode(samples.png_bytes()).decode()
 
     async def handler(on, send, memory, analytics, settings):
         yield send.image(data_url, mime_type="image/png")
@@ -955,7 +958,7 @@ async def test_history_file_without_link_degrades_and_the_handler_replies(monkey
 
     caplog.set_level(logging.WARNING)
     with fake.serving():
-        image = fake.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
+        image = fake.upload(USER, samples.png_bytes(), filename="foto.png", mime_type="image/png")
         first, second = await _deliver_turns(fake, handler, [[_text("Veja esta foto"), image], [_text("Resuma a conversa")]])
 
     assert [first.json()["state"], second.json()["state"]] == ["responded", "responded"]
@@ -983,7 +986,7 @@ async def test_history_without_the_link_route_fails_as_configuration_error(monke
 
     caplog.set_level(logging.ERROR)
     with fake.serving():
-        image = fake.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
+        image = fake.upload(USER, samples.png_bytes(), filename="foto.png", mime_type="image/png")
         first, second = await _deliver_turns(fake, handler, [[_text("Veja esta foto"), image], [_text("Resuma a conversa")]])
 
     assert first.json()["state"] == "responded"

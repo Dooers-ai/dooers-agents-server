@@ -40,7 +40,7 @@ As Maestro does:
 - ``respond_form`` answers a production form (``form.created``): it records
   ``form.responded``, its own causal root, and ``deliveries_for`` gives it one delivery to
   the form's author;
-- files follow the production type matrix (``infer_chat_upload_kind``) up to 25 MiB, and an
+- files follow Maestro's file policy (``maestro_file_policy``: type matrix, canonical MIME and content inspection) up to 25 MiB, and an
   execution gets a temporary link (``ARTIFACT_LINKS_ENABLED``) for each file linked to its
   thread up to the context cutoff, without the fake serving the bytes.
 
@@ -83,7 +83,7 @@ from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.context import MaestroPrivateResources, MaestroPrivateScope
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from dooers.agents.server.protocol.models import User
-from dooers.agents.server.storage.chat_upload_file_policy import infer_chat_upload_kind
+from tests.parity.maestro_file_policy import MAX_ARTIFACT_BYTES, canonical_mime_type, maestro_accepts_file
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import AGENT_ID, ASSISTANT_NAME, ORG_ID, WORKSPACE_ID
 from tests.test_maestro_admission import BASE, json_bytes, request, sign, signed_request, timestamp
@@ -98,8 +98,8 @@ RUNTIME_ENDPOINT = "http://127.0.0.1:9000/api/dev/agent/maestro/deliveries"
 CORE_BASE_URL = "http://127.0.0.1:8788/api/v1"
 #: Outputs that make a phase `responded` in Maestro (spec M07-005/006); the SDK has its own copy.
 VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.create"})
-#: ``ARTIFACT_MAX_BYTES`` default of Maestro (25 MiB, the production limit).
-MAX_ARTIFACT_BYTES = 26214400
+#: Parts of an agent message (``messageOf``, ``events.ts``): Maestro refuses more with ``PAYLOAD_TOO_LARGE``.
+MAX_AGENT_MESSAGE_PARTS = 20
 #: Name Maestro gives a web chat person in actors and participants (no Core profile in Maestro).
 WEB_CHAT_PERSON_NAME = "Humano"
 #: The thread SDK fields of index 4.3 that every ``Public.Thread`` projection of Maestro carries.
@@ -142,11 +142,6 @@ def reuse_compiled_contracts() -> Iterator[None]:
 async def private_resources(scope: MaestroPrivateScope) -> MaestroPrivateResources:
     """The creator's private resolver: an empty private database, no settings or analytics."""
     return MaestroPrivateResources(scope, MemoryPersistence(), {}, {})
-
-
-def maestro_accepts_file(mime_type: str, filename: str, size: int) -> bool:
-    """Maestro's file policy: the production type matrix (index 2), 1 byte to 25 MiB."""
-    return infer_chat_upload_kind(mime_type, filename) is not None and 0 < size <= MAX_ARTIFACT_BYTES
 
 
 def _now() -> str:
@@ -361,7 +356,9 @@ class FakeMaestro:
         actor and go back only to this agent (``agent_view``).
         """
         action = "agent.event.create"
-        if not 1 <= len(content) <= 32 or not all(self.contracts.is_valid("Public.ContentPart", part) for part in content):
+        if len(content) > MAX_AGENT_MESSAGE_PARTS:
+            raise FakeMaestroRejected(action, f"PAYLOAD_TOO_LARGE: {len(content)} parts, Maestro accepts {MAX_AGENT_MESSAGE_PARTS}")
+        if not content or not all(self.contracts.is_valid("Public.ContentPart", part) for part in content):
             raise FakeMaestroRejected(action, f"Public.ContentPart does not accept the parts {[part.get('type') for part in content]}")
         thread = self.threads.get(thread_id)
         if thread is None or sum(p["kind"] == "agent" and p["state"] != "removed" for p in thread["participants"]) != 1:
@@ -406,14 +403,14 @@ class FakeMaestro:
                 "workspace_id": WORKSPACE_ID,
             },
         )
-        if not maestro_accepts_file(mime_type, filename, len(data)):
+        if not maestro_accepts_file(mime_type, filename, data):
             raise FakeMaestroRejected("artifact.upload", f"Maestro does not accept {mime_type} ({len(data)} bytes)")
         artifact = self._store_artifact(metadata, data, uploaded_by=human.user_id, execution_id=None)
         return {
             "type": "attachment",
             "artifact_id": artifact["artifact_id"],
             "filename": filename,
-            "mime_type": mime_type,
+            "mime_type": artifact["mime_type"],
             "size_bytes": len(data),
         }
 
@@ -494,7 +491,15 @@ class FakeMaestro:
         Same shape as ``MaestroMemory.execution_snapshot()`` (the trigger is the last event).
         """
         events = [self._agent_event(event) for event in self.events[thread_id]]
-        return {"trigger_event": deepcopy(events[-1]), "participants": deepcopy(self.threads[thread_id]["participants"]), "events": events}
+        return {"trigger_event": deepcopy(events[-1]), "participants": self._context_participants(thread_id), "events": events}
+
+    def _context_participants(self, thread_id: str) -> list[dict[str, Any]]:
+        """The participants of the delivery context, in Maestro's order: by participant id (a random UUID).
+
+        ``callbacks.ts`` lists them ``ORDER BY participants.id``: the order says nothing about who
+        joined first. The SDK orders them (``legacy_model.to_thread``).
+        """
+        return sorted(deepcopy(self.threads[thread_id]["participants"]), key=lambda participant: participant["participant_id"])
 
     def artifact_link(self, thread_id: str, artifact_id: str, *, cutoff: str | None = None) -> dict[str, Any]:
         """A temporary link (``{url, expires_at}``) to a file linked to the thread (up to ``cutoff``).
@@ -609,7 +614,7 @@ class FakeMaestro:
         page = {
             "delivery_id": delivery.delivery_id,
             "trigger_event": self._agent_event(delivery.trigger_event),
-            "participants": deepcopy(self.threads[delivery.thread_id]["participants"]),
+            "participants": self._context_participants(delivery.thread_id),
             "context_cursor": delivery.context_cursor,
             "history": {
                 "items": [self._agent_event(event) for event in history[offset:end]],
@@ -806,7 +811,7 @@ class FakeMaestro:
         if delivery.state != "running":
             raise _CallbackError(409, "EXECUTION_TERMINAL")
         if (
-            not maestro_accepts_file(metadata["mime_type"], metadata["filename"], len(data))
+            not maestro_accepts_file(metadata["mime_type"], metadata["filename"], data)
             or parts["file"].get_content_type() != metadata["mime_type"]
             or metadata["size_bytes"] != len(data)
             or metadata["sha256"] != hashlib.sha256(data).hexdigest()
@@ -926,7 +931,8 @@ class FakeMaestro:
         artifact = {
             "artifact_id": str(uuid4()),
             "filename": metadata["filename"],
-            "mime_type": metadata["mime_type"],
+            # Maestro stores the canonical MIME (``canonicalMimeType``), never the client's raw value.
+            "mime_type": canonical_mime_type(metadata["mime_type"], metadata["filename"]),
             "size_bytes": metadata["size_bytes"],
             "sha256": metadata["sha256"],
             "state": "ready_unbound",

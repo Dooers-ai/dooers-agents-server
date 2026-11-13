@@ -12,6 +12,7 @@ import dooers.agents.server.maestro.media_fetch as media_fetch_module
 from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.maestro import create_text_delivery_adapter
 from dooers.agents.server.protocol.models import User
+from tests.parity import samples
 from tests.parity.fake_maestro import (
     CALLBACK_BASE_URL,
     WEB_CHAT_PERSON_NAME,
@@ -20,7 +21,7 @@ from tests.parity.fake_maestro import (
     private_resources,
     shared_contracts,
 )
-from tests.parity.model import USER
+from tests.parity.model import AGENT_ID, USER
 from tests.test_maestro_legacy_model import MaestroThread, _every_send, _runs_only
 
 ANA = User(user_id="user-1", user_name="Ana Souza", user_email="ana@example.com")
@@ -119,6 +120,18 @@ def test_publish_outside_the_contract_is_rejected():
             fake.publish(thread_id, ANA, [{"type": "text", "text": "Veja"}, part], client_event_id="client-1")
         assert error.value.action == "message.create"
     assert _after_creation(fake, thread_id) == []
+
+
+def test_agent_publish_accepts_at_most_20_parts_as_maestro_does():
+    """``messageOf`` (``events.ts``): more than 20 parts is ``PAYLOAD_TOO_LARGE``."""
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(USER, title=None)
+    parts = [{"type": "text", "text": f"parte {index}"} for index in range(21)]
+
+    fake.agent_publish(thread_id, USER, parts[:20], client_event_id="client-1")
+    with pytest.raises(FakeMaestroRejected, match="PAYLOAD_TOO_LARGE"):
+        fake.agent_publish(thread_id, USER, parts, client_event_id="client-2")
+    assert len(fake.events[thread_id]) == 2  # thread.created and the 20 parts
 
 
 def test_agent_publish_declares_the_person_only_to_the_agent():
@@ -262,6 +275,71 @@ def test_upload_follows_the_production_file_types():
     assert fake.upload(ANA, b"OggS audio", filename="recado.ogg", mime_type="audio/ogg")["mime_type"] == "audio/ogg"
     with pytest.raises(FakeMaestroRejected):
         fake.upload(ANA, b"MZ binary", filename="setup.exe", mime_type="application/x-msdownload")
+
+
+def test_upload_refuses_what_the_content_inspection_refuses():
+    fake = FakeMaestro()
+    for filename, mime_type, data in [
+        ("grafico.png", "image/png", b"\x89PNG\r\n\x1a\nparity-chart"),
+        ("relatorio.pdf", "application/pdf", b"%PDF-1.4 parity-report"),
+        ("pagina.txt", "text/plain", b"<html></html>"),
+    ]:
+        with pytest.raises(FakeMaestroRejected):
+            fake.upload(ANA, data, filename=filename, mime_type=mime_type)
+    assert fake.artifacts == {}
+    assert fake.upload(ANA, samples.png_bytes(), filename="grafico.png", mime_type="image/png")["size_bytes"] == len(samples.png_bytes())
+
+
+async def test_both_uploads_store_and_return_the_canonical_mime():
+    """``canonicalMimeType``: the extension decides when the type is inspected or generic; the receipt carries it."""
+    fake = FakeMaestro()
+    seen = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        seen["parts"] = [(part.type, part.mime_type) for part in on.content if part.type != "text"]
+        yield send.artifact(b"a,b\n1,2\n", filename="dados.csv", mime_type="application/octet-stream")
+        yield send.artifact(samples.pdf_bytes(), filename="Relatorio.PDF", mime_type="text/html")
+
+    with fake.serving():
+        person = fake.upload(ANA, b"x,y\n", filename="entrada.csv", mime_type="application/octet-stream")
+        thread_id, _delivery, response = await _deliver(fake, handler, [{"type": "text", "text": "Veja"}, person])
+
+    assert response.json()["state"] == "responded"
+    assert person["mime_type"] == "text/csv"
+    assert seen["parts"] == [("document", "text/csv")]
+    attachments = [
+        part for event in _after_creation(fake, thread_id) for part in event["payload"].get("content", []) if part["type"] == "attachment"
+    ]
+    mime_types = [part["mime_type"] for part in attachments]
+    assert mime_types == ["text/csv", "text/csv", "application/pdf"]
+    assert {artifact["mime_type"] for artifact in fake.artifacts.values()} == {"text/csv", "application/pdf"}
+
+
+async def test_context_participants_come_in_the_order_of_their_id_not_of_joining():
+    """Maestro lists them ``ORDER BY participants.id`` (a random UUID); the SDK still gives [owner, agent, added]."""
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(ANA, title=None)
+    owner, agent = fake.threads[thread_id]["participants"]
+    owner["participant_id"], agent["participant_id"] = "ffffffff-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+    seen = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        yield send.add_participant("user-2")
+        seen["users"] = [user.user_id for user in (await memory.get_thread()).users]
+        yield send.text("Pronto.")
+
+    with fake.serving():
+        trigger = fake.publish(thread_id, ANA, [{"type": "text", "text": "Oi"}], client_event_id="client-1")
+        (delivery,) = fake.deliveries_for(trigger)
+        adapter = create_text_delivery_adapter(fake.config, handler, private_resources)
+        response = await fake.deliver(adapter, delivery)
+
+    assert response.json()["state"] == "responded"
+    assert fake.agent_view(thread_id)["participants"][0]["kind"] == "agent"  # its id sorts first: not the join order
+    assert [participant["participant_id"] for participant in fake.agent_view(thread_id)["participants"]] == sorted(
+        participant["participant_id"] for participant in fake.threads[thread_id]["participants"]
+    )
+    assert seen["users"] == ["user-1", AGENT_ID, "user-2"]
 
 
 def test_artifact_link_only_for_files_linked_up_to_the_cutoff():

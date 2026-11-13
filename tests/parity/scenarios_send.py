@@ -21,6 +21,7 @@ from tests.parity.model import (
     capture_histories,
     capture_incoming,
 )
+from tests.parity.samples import pdf_bytes, png_bytes
 
 FORM_RESPONSE_FIELDS = ("message", "content", "form_data", "form_cancelled", "form_event_id")
 
@@ -143,10 +144,11 @@ def _chart(chart_type: str) -> Handler:
 
 
 #: Media URLs that answer (``ScenarioInput.media``): in Maestro mode the SDK uploads these files.
+#: The PNG and the PDF are valid, as Maestro's content inspection requires (OGG has no structure check).
 ONLINE_MEDIA: dict[str, tuple[bytes, str]] = {
-    "https://cdn.example.com/online/grafico.png": (b"\x89PNG\r\n\x1a\nparity-chart", "image/png"),
+    "https://cdn.example.com/online/grafico.png": (png_bytes(), "image/png"),
     "https://cdn.example.com/online/resposta.ogg": (b"OggS\x00parity-audio", "audio/ogg"),
-    "https://cdn.example.com/online/relatorio.pdf": (b"%PDF-1.4 parity-report", "application/pdf"),
+    "https://cdn.example.com/online/relatorio.pdf": (pdf_bytes(), "application/pdf"),
 }
 
 

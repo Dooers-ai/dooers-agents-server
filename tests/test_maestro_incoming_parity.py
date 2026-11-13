@@ -40,6 +40,7 @@ from dooers.agents.server.protocol.maestro import MaestroContracts
 from dooers.agents.server.protocol.models import AudioPart, ContactPart, DocumentPart, ImagePart, TextPart, User
 from dooers.tools.rag.runtime import current_execution_context
 from tests.parity import fake_maestro as fake_module
+from tests.parity import samples
 from tests.parity.fake_maestro import CALLBACK_BASE_URL, FakeMaestro
 from tests.parity.harness import _agent_content, _maestro_content, run_legacy
 from tests.parity.memory_persistence import MemoryPersistence
@@ -171,20 +172,20 @@ async def test_media_part_has_bytes_and_link(monkeypatch, caplog):
     caplog.set_level(logging.DEBUG)
     with maestro.serving():
         thread_id = maestro.create_thread(USER, title=None)
-        image = maestro.upload(USER, b"\x89PNG fixture", filename="foto.png", mime_type="image/png")
-        audio = {**maestro.upload(USER, b"RIFF fixture", filename="recado.wav", mime_type="audio/wav"), "duration": 4.0}
-        document = maestro.upload(USER, b"%PDF fixture", filename="nota.pdf", mime_type="application/pdf")
+        image = maestro.upload(USER, samples.png_bytes(), filename="foto.png", mime_type="image/png")
+        audio = {**maestro.upload(USER, samples.wav_bytes(), filename="recado.wav", mime_type="audio/wav"), "duration": 4.0}
+        document = maestro.upload(USER, samples.pdf_bytes(), filename="nota.pdf", mime_type="application/pdf")
         content = [image, audio, document, deepcopy(image)]
         await _deliver(maestro, adapter, maestro.publish(thread_id, USER, content, client_event_id="client-1"))
 
     image_part, audio_part, document_part, again = seen["content"]
     links = f"{CALLBACK_BASE_URL}/artifact-links/"
-    assert isinstance(image_part, ImagePart) and image_part.data == b"\x89PNG fixture" and image_part.url.startswith(links)
+    assert isinstance(image_part, ImagePart) and image_part.data == samples.png_bytes() and image_part.url.startswith(links)
     assert (image_part.mime_type, image_part.filename, image_part.width, image_part.height) == ("image/png", "foto.png", None, None)
-    assert isinstance(audio_part, AudioPart) and audio_part.data == b"RIFF fixture" and audio_part.url.startswith(links)
+    assert isinstance(audio_part, AudioPart) and audio_part.data == samples.wav_bytes() and audio_part.url.startswith(links)
     assert (audio_part.mime_type, audio_part.filename, audio_part.duration) == ("audio/wav", "recado.wav", 4.0)
-    assert isinstance(document_part, DocumentPart) and document_part.data == b"%PDF fixture" and document_part.url.startswith(links)
-    assert (document_part.filename, document_part.size_bytes) == ("nota.pdf", len(b"%PDF fixture"))
+    assert isinstance(document_part, DocumentPart) and document_part.data == samples.pdf_bytes() and document_part.url.startswith(links)
+    assert (document_part.filename, document_part.size_bytes) == ("nota.pdf", len(samples.pdf_bytes()))
     assert again == image_part
     # Production message of media without text: one marker per part.
     assert seen["message"] == "[image] [audio] [document: nota.pdf] [image]"

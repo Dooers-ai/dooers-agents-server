@@ -607,7 +607,12 @@ A suíte de paridade roda cada cenário duas vezes: no caminho de produção
 (`thread_management="agent"`) e no modo Maestro, contra o `FakeMaestro`. O `FakeMaestro`
 confere cada pedido com o contrato vendorizado e tem as regras do Maestro: `thread.created`,
 mudança de título e fila, participante novo, link temporário, entrega de `form.responded` e
-a política de arquivos de produção. A leitura do Maestro passa pela conversão do SDK
+a política de arquivos do Maestro: matriz de tipos, MIME canônico por extensão, inspeção de
+conteúdo (estrutura de txt, PDF, PNG, JPEG e WAV) e teto de 20 partes por mensagem do agente.
+Os arquivos de teste são válidos (`tests/parity/samples.py`): o Maestro recusa um PNG ou um
+PDF sem estrutura, e o SDK publica um `media_link` no lugar do upload. O contexto da entrega
+lista os participantes por UUID aleatório; o `FakeMaestro` faz o mesmo e o SDK ordena
+`Thread.users` por entrada na thread (dono, agente, adicionados). A leitura do Maestro passa pela conversão do SDK
 (`MaestroExecutionPersistence` e `legacy_model.to_runs`), a mesma do handler.
 
 - Cada `send.*` de produção (exceto `send.whatsapp.*`), cada tipo de gráfico, cada campo de
@@ -633,6 +638,11 @@ Diferenças declaradas:
 - Documento por URL (`media_link`): sem tamanho. A parte gravada tem `size_bytes=None` e a
   parte do handler tem `size_bytes=0`.
 - Arquivo de um agente: depois da execução, a URL é o link temporário (ver acima).
+- `mime_type` do arquivo de um agente: o SDK guarda o MIME que o Maestro devolve (o MIME
+  canônico), não o argumento do `send`. `send.image(url)` sem `mime_type` dá `None` em
+  produção e o MIME do arquivo no Maestro.
+- `send.artifact` (extra do Maestro, sem equivalente em produção): uma imagem ou um áudio
+  enviado assim aparece na visão de produção sem o nome do arquivo e sem `ref_id`.
 - URL de mídia com esquema diferente de `http`/`https` falha a execução (ver acima).
 
 Lacunas abertas (`tests/parity/known_gaps.py`): a entrada pelo `AgentServer` (`dispatch`,
