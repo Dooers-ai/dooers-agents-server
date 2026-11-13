@@ -22,10 +22,11 @@ conservar entradas legadas no mesmo processo, use outra instância configurada
 `agent` e mantenha seus endpoints separados. Configuração Maestro presente em
 modo `agent` não muda os fluxos legados nem monta endpoint automaticamente.
 
-No servidor Maestro, `dispatch`, `ingest` e `chat_upload`
-retornam `ThreadManagementModeError` antes de inicializar/acessar persistência.
+No servidor Maestro, `dispatch` retorna `ThreadManagementModeError` antes de
+inicializar/acessar persistência.
 `repository()` e `memory(thread_id)` funcionam: leem e gravam pela API do agente
-(ver "Repository e memory(thread_id) pela API do agente").
+(ver "Repository e memory(thread_id) pela API do agente"). `ingest` e `chat_upload`
+também funcionam (ver "ingest e chat_upload pela API do agente").
 O guard de `HandlerPipeline.setup` é uma defesa complementar. O router WS rejeita
 thread list/subscribe/unsubscribe/delete/participants.add, event create/list,
 thread artifacts e feedback antes de ler/escrever histórico. Settings, analytics,
@@ -793,6 +794,66 @@ Diferenças declaradas (produção -> Maestro):
   `queue` e `external_key`. O SDK varre as páginas até o limite. `count_threads` varre todas as
   threads do agente, sem limite; `list_runs` sem `thread_id` para em 1000 threads.
 - `update_thread` muda título e fila; fila inválida é decisão do servidor (produção não valida).
+
+## ingest e chat_upload pela API do agente
+
+No modo Maestro, `AgentServer.ingest` publica a mensagem na thread do Maestro e não executa o
+handler. `AgentServer.chat_upload` guarda o arquivo no `UploadStore` local. As duas funções de
+produção mantêm assinatura e retorno. O código está em `maestro/ingress.py` (`MaestroIngress`);
+`tests/test_maestro_ingest.py` roda as mesmas chamadas na produção e no Maestro e compara a
+`Thread` e os `ThreadEvent` lidos de volta.
+
+`chat_upload`:
+
+- Devolve `{ref_id, mime_type, filename, size_bytes, size, public_url: None}`. O `ref_id` é o id
+  local do `UploadStore`. As regras são as de produção: `agent_id is required`, `empty file`,
+  limite de 25 MiB (26214400 bytes) e a política de tipo quando o criador liga
+  `persist_chat_attachments`.
+- Não chama o Maestro, nem quando a thread já existe. Motivo: um só caminho de envio (no
+  `ingest`), nenhum artefato órfão se o chamador nunca publica, e o `ref_id` continua de uso único.
+- O `agent_id` é o do token: o id da instância, em qualquer caixa. Outro id levanta
+  `MaestroAgentScopeError`. O `UploadStore` não precisa do banco. A leitura de `persist_chat_attachments`
+  usa a persistência local, como em produção; se ela falha, o SDK só registra o erro.
+
+`ingest`:
+
+- **Thread.** O `thread_id` do chamador é a `external_key`. O SDK procura a thread pela chave e,
+  se o id é um UUID, pelo id do Maestro. Se não existe, cria com `title`, `channel` e
+  `channel_meta`. Sem `thread_id`, o SDK cria um UUID e o usa como chave. O retorno é o `thread_id`
+  do chamador. Produção não manda `queue` no `ingest`: a thread fica sem fila.
+- **Pessoa.** Com `channel == "dooers-platform"`, o ator é o humano declarado de `user` (nome,
+  e-mail e `identity_ids`). Com `whatsapp` ou `dooers-public-chat`, o ator é o contato externo
+  (`external_id` = `user.user_id`, ou `from_e164`). Em thread nova o humano é o dono e o contato
+  externo é participante. Em thread que existe, o SDK chama `add_participant` só se a pessoa ainda
+  não está na thread (`upsert_thread_participant` de produção).
+- **Evento.** O SDK monta o `ThreadEvent` de produção antes de gravar. Por isso
+  `ingest(actor="assistant")` (e `system`, `tool`) levanta o mesmo `ValidationError` de produção
+  (F13): é um erro de produção que continua. A decisão de corrigir fica com o usuário. O id do
+  evento é o `client_event_id` (`idempotency_key`). O `data` é o do chamador mais `source`, como
+  produção grava (F7).
+- **Arquivos.** O SDK resolve as partes com o código de produção (mesmos erros). Uma parte com
+  `ref_id` ou com bytes vira artefato (`upload_artifact`) e a parte `attachment` leva o MIME que o
+  Maestro devolve. Uma parte com URL é baixada (`fetch_media`) e enviada. Se o download, a política
+  de tipo ou o envio falham, a parte é `media_link` (só `http` e `https`).
+
+Diferenças declaradas (produção -> Maestro):
+
+- Os horários são os do Maestro. `Thread.users` lista o agente junto do contato, na ordem de
+  entrada: em thread de canal o agente pode vir antes do contato.
+- Uma parte de arquivo lida de volta tem o id do artefato como `ref_id`, o link temporário como
+  `url` e o MIME do Maestro. Produção guarda o id local, sem `url`. Uma parte `media_link` não
+  tem `ref_id` nem `size_bytes`.
+- O `author` informado em `ingest` de um usuário não é gravado: o autor vem da pessoa.
+- `ingest(actor=...)` que falha na validação de produção não grava nada no Maestro. Produção já
+  criou a thread vazia.
+- Sem evento de analytics `thread.created`, sem broadcast por WebSocket (o Maestro é a autoridade)
+  e sem enriquecimento pelos metadados de visitante (plano 6).
+- Levantam `MaestroAgentUnsupported`, antes de gravar: canal sem contato externo no Maestro (só
+  `whatsapp` e `dooers-public-chat`), pessoa sem `user_id` (sem `from_e164` num canal), parte sem
+  arquivo e sem URL, e URL que não é `http` nem `https` e não pôde ser baixada. Um arquivo de
+  `ref_id` ou de bytes que o Maestro recusa (tipo fora da política, tamanho) levanta
+  `MaestroAgentApiError` (sem URL para cair em `media_link`).
+- Um `ingest` que falha depois do envio de um arquivo deixa o artefato na thread.
 
 ## Paridade com a produção (`tests/parity`)
 

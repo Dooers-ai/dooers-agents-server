@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dooers.agents.server.auth_validation import AuthValidationClient
 from dooers.agents.server.broadcast import BroadcastManager, broadcast_thread_upsert
@@ -47,6 +47,10 @@ from dooers.agents.server.storage.chat_upload_file_policy import (
 )
 from dooers.agents.server.thread_access import ThreadViewGrantStore
 from dooers.agents.server.upload_store import UploadStore
+
+if TYPE_CHECKING:
+    from dooers.agents.server.maestro.agent_api import MaestroAgentApi
+    from dooers.agents.server.maestro.ingress import MaestroIngress
 
 logger = logging.getLogger(__name__)
 # Same namespace the Router uses, so handle-loop diagnostics show up in apps that tune `agents`.
@@ -197,12 +201,19 @@ class AgentServer:
         Durable write runs only when creator ``persist_chat_attachments``, ops
         ``store_chat_uploads``, and configured GCS/Azure are all satisfied.
         """
-        self._config.require_agent_thread_management()
+        maestro = self._config.thread_management == "maestro"
+        if not maestro:
+            self._config.require_agent_thread_management()
         aid = (agent_id or "").strip()
         if not aid:
             raise ValueError("agent_id is required")
         if not data:
             raise ValueError("empty file")
+        if maestro:
+            # Maestro mode (plan 5, F11): the file stays in the local store and Maestro is not called here; ``ingest`` and
+            # ``dispatch`` upload it to the thread. The agent is the one of the token: its id is the instance id.
+            self._maestro_api().check_scope(agent_id=aid)
+            aid = self._config.maestro.instance_agent_id  # type: ignore[union-attr]
 
         cfg = self._config
         creator_persist = False
@@ -220,7 +231,10 @@ class AgentServer:
                 allowed_raw=getattr(cfg, "allowed_content_types", None),
             )
 
-        ref_id = await self.upload(data=data, filename=filename, mime_type=mime_type)
+        if maestro:
+            ref_id = (await self._ensure_upload_store()).store(data, filename, mime_type)
+        else:
+            ref_id = await self.upload(data=data, filename=filename, mime_type=mime_type)
         out: dict[str, Any] = {
             "ref_id": ref_id,
             "mime_type": mime_type,
@@ -269,6 +283,16 @@ class AgentServer:
         assert self._upload_store is not None
         return self._upload_store.store(data, filename, mime_type)
 
+    async def _ensure_upload_store(self) -> UploadStore:
+        """The local store of staged files. Maestro mode needs it without the database (``chat_upload``, ``ingest``)."""
+        if self._upload_store is None:
+            self._upload_store = UploadStore(
+                max_size=self._config.upload_max_size_bytes,
+                ttl=self._config.upload_ttl_seconds,
+            )
+            await self._upload_store.start()
+        return self._upload_store
+
     async def _ensure_initialized(self) -> Persistence:
         if self._persistence and self._initialized:
             return self._persistence
@@ -307,11 +331,7 @@ class AgentServer:
             ws_context=self._settings_ws_context,
         )
 
-        self._upload_store = UploadStore(
-            max_size=self._config.upload_max_size_bytes,
-            ttl=self._config.upload_ttl_seconds,
-        )
-        await self._upload_store.start()
+        await self._ensure_upload_store()
 
         self._auth_validator = AuthValidationClient(
             url=self._config.auth_validation_url or "",
@@ -507,6 +527,7 @@ class AgentServer:
             await persistence.upsert_thread_participant(result.thread.id, resolved_user)
 
         from dooers.agents.server.observability.otel import start_tracker
+
         tracker = start_tracker(
             thread_id=result.thread.id,
             event_id=result.user_event.id,
@@ -546,6 +567,25 @@ class AgentServer:
         Returns ``thread_id``.
         """
 
+        if self._config.thread_management == "maestro":
+            published = await self._maestro_ingress().publish(
+                agent_id=agent_id,
+                message=message,
+                user=user,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                thread_title=thread_title,
+                content=content,
+                channel=channel,
+                channel_meta=channel_meta,
+                queues=queues,
+                actor=actor,
+                author=author,
+                data=data,
+                trigger=False,
+            )
+            return published.thread_id
         self._config.require_agent_thread_management()
 
         async def _noop_handler(*_args: Any, **_kwargs: Any):
@@ -621,6 +661,26 @@ class AgentServer:
             MaestroAgentApi(self._config.maestro),
             assistant_name=self._config.assistant_name,
             local=self._ensure_initialized,
+        )
+
+    def _maestro_api(self) -> MaestroAgentApi:
+        from dooers.agents.server.maestro.agent_api import MaestroAgentApi
+
+        if self._config.maestro is None:
+            from dooers.agents.server.maestro.config import MaestroConfigurationError
+
+            raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
+        return MaestroAgentApi(self._config.maestro)
+
+    def _maestro_ingress(self) -> MaestroIngress:
+        """The publication path of ``ingest`` (and ``dispatch``) over the agent API (Maestro mode only)."""
+        from dooers.agents.server.maestro.ingress import MaestroIngress
+
+        return MaestroIngress(
+            self._config,
+            self._maestro_api(),
+            persistence=self._maestro_agent_persistence(),
+            upload_store=self._ensure_upload_store,
         )
 
     async def repository(self) -> Repository:

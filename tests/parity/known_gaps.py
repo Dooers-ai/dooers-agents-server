@@ -22,6 +22,9 @@ execution scenario matches, except the ones below that need Core's connection co
 (plan 5). The other gaps are the ``AgentServer`` ingress (plan 5: WhatsApp, ``Repository``,
 ``dispatch`` outside a delivery) and the public chat (plan 6).
 
+Task 6a (2026-11-13): ``AgentServer.ingest`` and ``chat_upload`` no longer raise in Maestro mode (``server_ingest`` ends at
+the first agent API call; ``chat_upload`` ends at its ``dispatch``).
+
 Task 5c (2026-11-13): ``AgentServer.repository()`` and ``memory(thread_id)`` no longer raise in Maestro mode; ``repository_crud``
 ends at the first agent API call (see its entry).
 
@@ -128,7 +131,16 @@ GAPS: dict[str, Gap] = {
     "incoming_fields": _declared("media_link_size", deliveries=_RESPONDED * 2),
     # AgentServer ingress (plan 5) and public chat (plan 6)
     "server_dispatch": _server_blocked("dispatch"),
-    "server_ingest": _server_blocked("ingest"),
+    # ``AgentServer.ingest`` runs over the agent API (plan 5, task 6a): ``tests/test_maestro_ingest.py`` runs the same calls on
+    # production and on Maestro and compares the thread and the events. This harness serves only the delivery routes
+    # (FakeMaestro), so the run ends at the first agent API call with CREDENTIAL_UNAVAILABLE (as ``repository_crud``): the
+    # scenario joins the harness with the agent API server when the WhatsApp tasks need it (plan 5, task 8).
+    "server_ingest": Gap(
+        "plan 5: ingest runs over the agent API (compared in test_maestro_ingest.py); this harness has no agent API server, "
+        "so the run ends with CREDENTIAL_UNAVAILABLE at the first call",
+        raises=MaestroAgentApiError,
+        match="CREDENTIAL_UNAVAILABLE",
+    ),
     # ``AgentServer.repository()`` runs over the agent API (plan 5, task 5c): ``tests/test_maestro_agent_persistence.py`` runs this
     # scenario's calls on production and on Maestro and compares them. This harness serves only the delivery routes (FakeMaestro),
     # so the Maestro run ends at the first agent API call, which has no Core credential: the scenario joins the harness
@@ -140,7 +152,9 @@ GAPS: dict[str, Gap] = {
         match="CREDENTIAL_UNAVAILABLE",
     ),
     "memory_by_thread_id": _server_blocked("dispatch", " (first call of the script; memory is never reached)"),
-    "chat_upload": _server_blocked("chat_upload"),
+    # ``chat_upload`` works in Maestro mode (plan 5, task 6a: local store, production fields and errors); the scenario ends with a
+    # ``dispatch`` of the staged file (task 6b).
+    "chat_upload": _server_blocked("dispatch", " (the last call of the script, after chat_upload)"),
     **{
         f"whatsapp_{send_type}": _server_blocked("dispatch", f" (the WhatsApp ingress); send.whatsapp.{send_type} is never reached")
         for send_type in WHATSAPP_SENDS

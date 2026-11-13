@@ -360,8 +360,10 @@ async def test_semantic_json_order_unicode_and_integral_numbers(private_key):
     assert (await request(adapter, wire, headers)).status_code == 200
 
 
-@pytest.mark.parametrize("method", ["dispatch", "ingest", "chat_upload"])
+@pytest.mark.parametrize("method", ["dispatch"])
 async def test_legacy_entries_reject_before_persistence(private_key, method):
+    # ``ingest`` and ``chat_upload`` are served in Maestro mode since plan 5, task 6a (``tests/test_maestro_ingest.py``);
+    # ``dispatch`` is served in task 6b.
     server = AgentServer(AgentConfig(database_type="postgres", thread_management="maestro", maestro=config_for(private_key)))
     server._ensure_initialized = AsyncMock(side_effect=AssertionError("DB must not initialize"))
     kwargs = {
