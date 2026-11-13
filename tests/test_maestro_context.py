@@ -307,19 +307,77 @@ async def test_handler_memory_is_the_production_agent_memory(private_key, contra
             assert isinstance(thread, Thread) and thread.id == memory._envelope["thread_id"]
 
 
-async def test_execution_snapshot_is_read_once_and_checks_the_lease_on_each_call(private_key, contracts):
-    """Below the cutoff the context does not change: one read per execution, one lease check per call."""
+async def test_execution_window_is_read_once_and_checks_the_lease_on_each_use(private_key, contracts):
+    """Below the cutoff the context does not change: one window per execution, one lease check per use."""
     async with fixture_server() as server:
         memory, page, _, _ = prepare(private_key, contracts, server)
-        first = await memory.execution_snapshot()
+        window = memory.window()
+        assert memory.window() is window
+        first = await window.load()
         requests = len(server.requests)
-        second = await memory.execution_snapshot()
+        second = await window.load()
         assert second is first and len(server.requests) == requests == 1
-        assert [event["event_id"] for event in first["events"]] == [page["trigger_event"]["event_id"]]
+        assert "direction=backward" in server.requests[0][0]
+        assert [event["event_id"] for event in window.events] == [page["trigger_event"]["event_id"]] and window.exhausted
         memory._client.close()
         with pytest.raises(MaestroContextError, match="CONTEXT_EXPIRED"):
-            await memory.execution_snapshot()
+            await window.load()
         assert len(server.requests) == requests
+
+
+async def test_page_sends_the_direction_only_when_backward(private_key, contracts):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        cursor = memory._envelope["context_cursor"]
+
+        await memory._client.page(cursor, limit=5)
+        await memory._client.page(cursor, limit=5, direction="backward")
+
+        forward, backward = (request[0] for request in server.requests)
+        assert "direction" not in forward and "limit=5" in forward
+        assert "direction=backward" in backward and "limit=5" in backward
+
+
+async def test_a_cursor_is_never_sent_in_the_other_direction(private_key, contracts):
+    """Maestro binds a cursor to the direction that issued it (a mix is CURSOR_INVALID): the client does not send one."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        client, context_cursor = memory._client, memory._envelope["context_cursor"]
+        older = {**deepcopy(page["trigger_event"]), "event_id": str(uuid4()), "sequence": "2"}
+        page["history"].update(items=[older], has_more=True, next_cursor="mcx1.backward-cursor")
+
+        got = await client.page(context_cursor, direction="backward")
+        sent = len(server.requests)
+        assert got["history"]["next_cursor"] == "mcx1.backward-cursor"
+        with pytest.raises(MaestroContextError, match="CONTEXT_INVALID"):
+            await client.page("mcx1.backward-cursor")
+        assert len(server.requests) == sent
+        await client.page("mcx1.backward-cursor", direction="backward")
+        assert len(server.requests) == sent + 1
+
+        page["history"].update(next_cursor="mcx1.forward-cursor")
+        await client.page(context_cursor)
+        sent = len(server.requests)
+        with pytest.raises(MaestroContextError, match="CONTEXT_INVALID"):
+            await client.page("mcx1.forward-cursor", direction="backward")
+        assert len(server.requests) == sent
+        # The envelope's context_cursor starts a read in either direction.
+        await client.page(context_cursor, direction="backward")
+        assert len(server.requests) == sent + 1
+
+
+async def test_backward_pages_must_shrink_in_sequence_and_forward_pages_grow(private_key, contracts):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(private_key, contracts, server)
+        trigger = page["trigger_event"]
+        older = {**deepcopy(trigger), "event_id": str(uuid4()), "sequence": "2"}
+        page["history"]["items"] = [older, deepcopy(trigger)]  # ascending
+
+        with pytest.raises(MaestroContextError, match="CONTEXT_INVALID"):
+            await memory.window().load()
+        page["history"]["items"] = [deepcopy(trigger), older]  # newest first
+        assert (await memory.window().load())["trigger_event"] == trigger
+        assert [event["sequence"] for event in memory.window().events] == ["2", trigger["sequence"]]
 
 
 @pytest.mark.parametrize(
@@ -692,7 +750,12 @@ async def test_resume_context_preserves_trigger_and_uses_response_cutoff(private
                 "phase_id": interaction_id,
             },
         )
-        page["history"]["items"].append(response)
+        # Newest first for the window (backward), oldest first for the other reads (forward).
+        ascending = deepcopy(page)
+        ascending["history"]["items"].append(response)
+        descending = deepcopy(page)
+        descending["history"]["items"].insert(0, response)
+        server.response = lambda first: descending if "direction=backward" in first else ascending
         async with maestro_handler_context(memory, private) as prepared:
             context = prepared.on.context.maestro
             assert context.trigger_event_id == memory._envelope["trigger_event_id"]

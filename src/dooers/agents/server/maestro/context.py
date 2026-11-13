@@ -30,6 +30,7 @@ from dooers.tools.whatsapp.runtime import (
 from .client import MaestroContextError
 from .diagnostics import diagnostic_stage
 from .memory import MaestroMemory
+from .window import MaestroContextWindow
 
 if TYPE_CHECKING:
     from dooers.agents.server.handlers.incoming import AgentIncoming
@@ -213,18 +214,16 @@ def _url_part(part: dict[str, Any]) -> AudioPart | ImagePart | DocumentPart:
     )
 
 
-def _form_response(origin: dict[str, Any], snapshot: dict[str, Any], envelope: dict[str, Any]) -> tuple[dict, bool, str]:
+async def _form_response(origin: dict[str, Any], window: MaestroContextWindow, envelope: dict[str, Any]) -> tuple[dict, bool, str]:
     """``form_data``, ``form_cancelled`` and ``form_event_id`` of a ``form.responded`` trigger."""
     payload = origin["payload"]
-    forms = [
-        event
-        for event in snapshot["events"]
-        if event["event_id"] == payload["form_event_id"]
-        and event["type"] == "form.created"
-        and event["actor"]["kind"] == "agent"
-        and event["actor"]["instance_agent_id"] == envelope["instance_agent_id"]
-    ]
-    if len(forms) != 1:
+    form = await window.find_event(payload["form_event_id"])
+    if (
+        form is None
+        or form["type"] != "form.created"
+        or form["actor"]["kind"] != "agent"
+        or form["actor"]["instance_agent_id"] != envelope["instance_agent_id"]
+    ):
         raise MaestroContextError("CONTEXT_INVALID")
     return deepcopy(payload["values"]), payload["cancelled"], payload["form_event_id"]
 
@@ -232,6 +231,8 @@ def _form_response(origin: dict[str, Any], snapshot: dict[str, Any], envelope: d
 async def _incoming(
     memory: MaestroMemory, snapshot: dict[str, Any], cancellation: MaestroCancellation, private_resume=None, checkpoint_state=None
 ) -> AgentIncoming:
+    """``snapshot`` is the context head (``MaestroContextWindow.load``); the window gives the older events it needs."""
+    window = memory.window()
     from dooers.agents.server.handlers.context import AgentContext
     from dooers.agents.server.handlers.incoming import AgentIncoming
 
@@ -241,10 +242,9 @@ async def _incoming(
     resume = envelope.get("resume")
     form_data, form_cancelled, form_event_id = None, False, None
     if resume:
-        candidates = [event for event in snapshot["events"] if event["event_id"] == resume["response_event_id"]]
-        if len(candidates) != 1:
+        origin = await window.find_event(resume["response_event_id"])
+        if origin is None:
             raise MaestroContextError("CONTEXT_INVALID")
-        origin = candidates[0]
         payload = origin["payload"]
         if (
             origin["type"] != "interaction.responded"
@@ -269,7 +269,7 @@ async def _incoming(
     elif origin["type"] == "form.responded":
         # Production form (send.form): the response is a new delivery to the form's author.
         # A cancel invokes the handler too, as production does.
-        form_data, form_cancelled, form_event_id = _form_response(origin, snapshot, envelope)
+        form_data, form_cancelled, form_event_id = await _form_response(origin, window, envelope)
     actor = origin["actor"]
     metadata = MaestroExecutionContext(
         **{
@@ -311,7 +311,7 @@ async def _incoming(
             else None
         ),
     )
-    thread = thread_at_cutoff(snapshot["events"])
+    thread = thread_at_cutoff(await window.thread_events())
     channel = thread["channel"] or DEFAULT_CHANNEL
     if actor["kind"] == "external" and channel == DEFAULT_CHANNEL:
         # A channel contact is never a platform user: no RAG on_behalf (production: channel "whatsapp").
@@ -400,10 +400,10 @@ async def maestro_handler_context(
     """Prepara on/memory/analytics/settings; E05-08 fornece send e roda handler.
 
     A assinatura handler(on, send, memory, analytics, settings) continua intacta.
-    ``memory`` é ``MaestroAgentMemory`` (o ``AgentMemory`` de produção) sobre o snapshot desta
-    execução; ``assistant_name`` é ``AgentConfig.assistant_name``, o autor que produção grava para
-    o agente; ``published`` (o sink do executor) dá as saídas já aceitas, que as leituras
-    seguintes veem como produção.
+    ``memory`` é ``MaestroAgentMemory`` (o ``AgentMemory`` de produção) sobre a janela de contexto desta
+    execução (``MaestroMemory.window()``: lida do fim da thread); ``assistant_name`` é
+    ``AgentConfig.assistant_name``, o autor que produção grava para o agente; ``published`` (o sink
+    do executor) dá as saídas já aceitas, que as leituras seguintes veem como produção.
     Use async with dentro da task que efetivamente consome o generator. Nenhum
     contexto RAG/Maestro é herdado automaticamente por tasks filhas.
     """
@@ -416,8 +416,8 @@ async def maestro_handler_context(
             raise MaestroContextError("CONTEXT_EXPIRED")
         memory._client.bind_cancellation(lambda: cancellation.cancelled)
         with diagnostic_stage("context.snapshot", memory._envelope):
-            # One read for the whole execution: the handler's memory reuses it.
-            snapshot = await memory.execution_snapshot()
+            # The newest page and the thread's first event: the handler's memory reuses the window.
+            snapshot = await memory.window().load()
         from .recipient_options import TurnSettings, prepare_recipient_options
 
         selected_options, assert_options_current = prepare_recipient_options(

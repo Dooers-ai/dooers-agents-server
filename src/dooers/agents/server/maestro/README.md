@@ -168,11 +168,11 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
 `get_history` dá o mesmo resultado de produção nos 8 formatos, e `get_history_raw`,
 `get_thread` e `list_artifacts` devolvem `ThreadEvent`, `Thread` e `ThreadArtifact`.
 
-- Um snapshot por execução (`MaestroMemory.execution_snapshot()`): o contexto é lido uma
-  vez, porque abaixo do corte ele não muda. `on` e a memória usam a mesma leitura. Cada
-  leitura confere de novo lease, capability e cancelamento; depois do fim da execução, ela
-  falha.
-- Leitura depois de `yield`: a memória junta ao snapshot os eventos que o Maestro gravou
+- Uma janela por execução (`MaestroMemory.window()`, `window.py`): o contexto é lido do
+  **fim** da thread, como produção lê só as últimas linhas. Veja "Janela de leitura pelo
+  fim" abaixo. `on` e a memória usam a mesma janela. Cada uso confere de novo lease,
+  capability e cancelamento; depois do fim da execução, ele falha.
+- Leitura depois de `yield`: a memória junta à janela os eventos que o Maestro gravou
   para as saídas já aceitas nesta execução (o eco das saídas). Os ecos vêm na ordem do
   Maestro (`sequence`), uma vez cada um: uma saída gravada enquanto um stream está aberto
   vem antes da mensagem final do stream. Uma saída recusada e tolerada (por exemplo
@@ -182,7 +182,7 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
   `run.updated` com `status="running"` e `trigger_event_id`).
 - Diferença declarada: uma mensagem que chega depois do corte fica fora das leituras desta
   execução. Produção lê a tabela ao vivo e a mostra.
-- O snapshot com os ecos passa inteiro por `fold_events` e pela conversão de
+- A janela com os ecos passa inteira por `fold_events` e pela conversão de
   `legacy_model.py`. Depois `limit`, `order`, `filters`, `after_event_id` e
   `before_event_id` escolhem os eventos, como a consulta de produção. Uma edição ou remoção
   vale em qualquer página.
@@ -201,10 +201,6 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
   de erro dá as configurações. Um 403/404 para **um** arquivo (removido, fora do corte):
   só essa parte fica sem URL (os formatos de produção mostram `[image: <nome>]`), com um log
   `warning` com o ID do arquivo; o cliente continua aberto e a entrega segue.
-- Teto do contexto (provisório): o snapshot aceita até 20 páginas e 16 MiB (bytes UTF-8).
-  Acima disso, a entrega falha com `PAYLOAD_TOO_LARGE` (HTTP 413; o Maestro grava
-  `runtime_rejected_payload_too_large`), antes do handler. Produção lê só `limit * 3` linhas
-  e não tem teto. A leitura pelo fim da thread vem numa tarefa seguinte.
 - O autor dos eventos do próprio agente é `AgentConfig.assistant_name`, não o nome do
   agente no Maestro. Passe o `AgentConfig` do agente no modo Maestro a
   `create_text_delivery_adapter` ou `create_durable_text_delivery_adapter` (ou
@@ -221,6 +217,70 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
 - Extras do Maestro: `hydrate_artifact(reference)` e `list_maestro_artifacts(...)` (o
   `list_artifacts` de `MaestroMemory`). O `actor` de cada referência não tem e-mail nem
   identity IDs, como o `ThreadArtifact` de produção.
+
+#### Janela de leitura pelo fim
+
+`GET /deliveries/:id/context?direction=backward&limit=&cursor=` devolve os eventos até o
+corte do mais novo para o mais antigo. `next_cursor` continua antes do evento mais antigo da
+página, até a sequência 1. A resposta não repete a direção: o SDK envia `direction=backward`
+em toda página, e o cliente não envia um cursor na direção errada (o Maestro o amarra à
+direção; a mistura é `CURSOR_INVALID`). `context_cursor` do envelope começa a leitura nas duas
+direções. Sem `direction`, a leitura é a de antes (crescente).
+
+A janela (`MaestroContextWindow`) é o final da thread lido até agora, em ordem
+cronológica. Ela começa com uma página de 100 eventos (a que traz gatilho, evento de
+invocação e participantes) e só cresce quando uma leitura precisa de eventos mais antigos.
+Ela guarda também o primeiro evento da thread (uma página crescente de 1 evento, lida só
+quando alguém pede): `thread.created` traz o canal, a criação e a fila inicial.
+
+`get_events` (e por isso `get_history`, `get_history_raw`, `list_artifacts`) lê páginas
+mais antigas só até a escolha ser a que a thread inteira daria:
+
+- `order="desc"` (o padrão de `get_history`): até haver `limit` eventos visíveis. Visível é
+  o evento depois de `fold_events`: `message.updated` vale para o alvo, `message.removed` tira
+  o alvo e os eventos de controle (`run.updated` e outros sem equivalente em produção) não
+  contam. Uma edição ou remoção cujo alvo é mais velho que a janela não aparece (como a
+  janela de `limit * 3` linhas de produção). Se a leitura passa a incluir o alvo, a edição vale.
+- `after_event_id` e `before_event_id`: a leitura volta até achar cada referência. Uma
+  referência que a thread não tem, ou que foi removida, é ignorada como em produção, mas só
+  a leitura até o primeiro evento prova isso (uma referência desconhecida lê a thread até o
+  teto da janela, e então falha com o erro abaixo).
+- `order="asc"` com `after_event_id`: até achar a referência (os eventos depois dela estão todos
+  na janela). **Sem** `after_event_id`, a leitura crescente começa no início da thread: ela lê a
+  thread inteira.
+- Filtros e `limit` valem como em produção (a seleção é feita depois do `fold_events`).
+
+Teto: a janela guarda no máximo `MaestroConfig.max_history_pages` páginas (padrão 20, de
+100 eventos: 2000 eventos; de 1 a 1000). Uma leitura que precisa de eventos mais antigos
+levanta `MaestroHistoryLimitError` (`MAESTRO_HISTORY_LIMIT`, subclasse de `RuntimeError`, não de
+`MaestroContextError`): o handler pode capturá-la; sem captura, a execução termina como
+`failed` (`handler_error`), não como 413 nem como lease perdido. O que a janela já leu
+continua: uma leitura que cabe nela ainda funciona. O teto de 16 MiB do snapshot não vale
+mais para o handler (o limite de 1 MiB por página do Maestro continua). `list_artifacts`
+de `AgentMemory` varre para trás de 50 em 50 eventos, como em produção, até ter
+`cursor + limit + 1` anexos; numa thread longa com poucos anexos ele chega ao teto.
+
+`on` usa a mesma janela: gatilho, participantes, evento de invocação e o primeiro evento
+da thread vêm sem ler a thread inteira. Um formulário de resposta (`form.responded`) ou uma
+retomada procura o evento de origem (`find_event`) para trás.
+
+`get_thread()`: os participantes vêm do contexto atual; criação, agente dono e canal vêm de
+`thread.created` (primeiro evento da thread); título e fila são a última mudança que a
+janela guarda, senão os de `thread.created`.
+
+Diferenças que continuam (produção guarda o estado da thread numa linha; o Maestro o
+guarda em eventos):
+
+- Uma mudança de título ou de fila **mais antiga que a janela** não é vista: `on.context.thread_title`,
+  `queue` e `get_thread().title/queue` ficam com o valor da última mudança lida (ou o de
+  `thread.created`). O `from` de um `thread.update` de fila mais velho que a janela parte da fila de
+  `thread.created`. Fechar isso pede o estado da thread no cabeçalho do contexto (mudança no Maestro).
+- `MaestroMemory.get_history_raw()`, `list_artifacts()` (extras `list_maestro_artifacts`),
+  `hydrate_artifact` e o modo de grupo (`group.py`) continuam lendo a thread inteira, para frente
+  (`snapshot()`: até `max_pages` páginas e `max_total_bytes`, 20 páginas e 16 MiB por padrão; o
+  excesso é `CONTEXT_LIMIT`, 413 `PAYLOAD_TOO_LARGE`). Numa thread longa, esses extras falham.
+- `get_history(order="asc")` e `get_history_raw(order="asc")` sem referência leem a thread
+  inteira (produção: um `LIMIT` do início da tabela, barato).
 
 O cliente usa somente a URL de callback confiável do `MaestroConfig`, fixa
 `127.0.0.1`, porta e prefixo, e faz `GET /deliveries/:id/context`. Envia
@@ -244,7 +304,7 @@ corpo remoto/URL/segredo. 401/403/404/409/410 encerram leituras naquela execuç�
 Validade da credencial é o mínimo entre `exp` assinado e metadata do resolvedor,
 revalidada também depois de receber o corpo.
 
-Paginação usa o `context_cursor` do envelope na primeira requisição, depois
+Paginação (leitura crescente, `snapshot()`) usa o `context_cursor` do envelope na primeira requisição, depois
 `history.next_cursor`; cada resposta conserva o mesmo `context_cursor` e
 `history.watermark == context_cutoff_sequence`. Páginas são cronológicas,
 sequências estritamente crescentes e IDs não repetidos, inclusive entre páginas.

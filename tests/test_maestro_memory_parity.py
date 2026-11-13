@@ -30,7 +30,6 @@ from uuid import uuid4
 
 import pytest
 
-import dooers.agents.server.maestro.executor as executor_module
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import ThreadManagementModeError
 from dooers.agents.server.handlers.memory import AgentMemory
@@ -44,10 +43,12 @@ from dooers.agents.server.maestro.journal_store import PostgresEffectJournal
 from dooers.agents.server.maestro.links import ArtifactLinkMissing, LinkResolver
 from dooers.agents.server.maestro.memory import MaestroArtifactReference, MaestroMemory
 from dooers.agents.server.maestro.persistence import MaestroAgentMemory, MaestroExecutionPersistence
+from dooers.agents.server.maestro.window import MaestroContextWindow
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User, WireS2C_TextPart
 from tests.parity import fake_maestro as fake_module
 from tests.parity import samples
+from tests.parity.context_pages import ThreadPages
 from tests.parity.fake_maestro import FakeMaestro, private_resources, shared_contracts
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import AGENT_ID, ASSISTANT_NAME, ORG_ID, USER, WORKSPACE_ID, ParityResult
@@ -103,17 +104,25 @@ PARTICIPANTS = (_participant(PERSON, role="owner"), _participant(MAESTRO_AGENT))
 class ContextMemory:
     """What ``MaestroExecutionPersistence`` reads of ``MaestroMemory``.
 
-    ``envelope``, ``links`` (the execution's ``LinkResolver``) and ``execution_snapshot()``:
-    the delivery context read once, at the first call (``cutoff``: the number of thread events
-    it holds; default all). Each call counts in ``reads`` (the real one checks the lease there).
-    ``snapshot()`` is a new read (``snapshots``); ``list_artifacts`` is the real
-    ``MaestroMemory`` method over it.
+    ``envelope``, ``links`` (the execution's ``LinkResolver``) and ``window()``: the real
+    ``MaestroContextWindow`` over pages of the thread up to the cutoff (``cutoff``: the number of
+    thread events the context holds, default all; ``page_size`` events per page). ``pages`` serves and
+    records the requests (``pages.requests``; ``pages.checks`` counts the lease checks).
+    ``snapshot()`` is a new forward read of the whole thread (``snapshots``); ``list_artifacts`` is
+    the real ``MaestroMemory`` method over it.
     """
 
     list_artifacts = MaestroMemory.list_artifacts
 
     def __init__(
-        self, thread: MaestroThread, participants=PARTICIPANTS, *, links: LinkResolver | None = None, cutoff: int | None = None
+        self,
+        thread: MaestroThread,
+        participants=PARTICIPANTS,
+        *,
+        links: LinkResolver | None = None,
+        cutoff: int | None = None,
+        page_size: int = 100,
+        max_pages: int = 20,
     ) -> None:
         self._envelope = {
             "thread_id": thread.thread_id,
@@ -123,27 +132,22 @@ class ContextMemory:
         }
         self.links = links or _links()
         self._thread, self._participants, self._cutoff = thread, list(participants), cutoff
-        self._execution: dict[str, Any] | None = None
-        self.snapshots = self.reads = 0
+        self.pages = ThreadPages(thread.events, list(participants), cutoff=cutoff)
+        self._window = self.pages.window(page_size=page_size, max_pages=max_pages)
+        self.snapshots = 0
         self.hydrated: list[MaestroArtifactReference] = []
 
     @property
     def envelope(self) -> dict[str, Any]:
         return self._envelope
 
-    def _read(self) -> dict[str, Any]:
-        events = deepcopy(self._thread.events[: self._cutoff])
-        return {"trigger_event": events[-1], "participants": deepcopy(self._participants), "events": events}
+    def window(self) -> MaestroContextWindow:
+        return self._window
 
     async def snapshot(self) -> dict[str, Any]:
         self.snapshots += 1
-        return self._read()
-
-    async def execution_snapshot(self) -> dict[str, Any]:
-        self.reads += 1
-        if self._execution is None:
-            self._execution = self._read()
-        return self._execution
+        events = deepcopy(self._thread.events[: self._cutoff])
+        return {"trigger_event": events[-1], "participants": deepcopy(self._participants), "events": events}
 
     async def hydrate_artifact(self, reference: MaestroArtifactReference) -> str:
         self.hydrated.append(reference)
@@ -484,9 +488,9 @@ async def test_links_are_issued_only_for_the_events_returned():
 
 
 async def test_one_snapshot_per_execution_and_a_lease_check_per_read():
-    """The context below the cutoff does not change: every read uses the execution snapshot.
+    """The context below the cutoff does not change: every read uses the execution window.
 
-    ``execution_snapshot()`` reads the pages once and checks the lease on every call
+    ``window()`` reads the first page once and checks the lease on every use
     (``tests/test_maestro_context.py``); here each read goes through it, and nothing else reads.
     """
     context = ContextMemory(_maestro(TURNS))
@@ -497,8 +501,10 @@ async def test_one_snapshot_per_execution_and_a_lease_check_per_read():
     await memory.get_thread()
     artifacts, _, _ = await memory.list_artifacts()
 
-    # list_artifacts: get_thread, one get_events batch of 50 events, then an empty batch.
-    assert (context.reads, context.snapshots) == (6, 0)
+    # The thread fits the first page: one request for all the reads, a lease check for each of them
+    # (get_history, get_history_raw, get_thread, then list_artifacts: get_thread and two get_events batches).
+    assert (len(context.pages.requests), context.snapshots) == (1, 0)
+    assert context.pages.checks >= 6
     assert len(artifacts) == 4
 
 
@@ -683,7 +689,7 @@ async def test_every_other_persistence_method_raises_thread_management_mode_erro
 
     with pytest.raises(ThreadManagementModeError, match="THREAD_MANAGEMENT_MISMATCH"):
         await method(*arguments)
-    assert (context.reads, context.snapshots) == (0, 0)
+    assert (context.pages.checks, len(context.pages.requests), context.snapshots) == (0, 0, 0)
 
 
 def test_the_class_defines_every_persistence_method():
@@ -993,28 +999,6 @@ async def test_history_without_the_link_route_fails_as_configuration_error(monke
     assert (second.status_code, second.json()["error"]["code"]) == (422, "UNSUPPORTED_CAPABILITY")
     assert "histories" not in seen
     assert ARTIFACT_LINKS_UNAVAILABLE in caplog.text
-
-
-async def test_context_over_the_limit_fails_as_payload_too_large(monkeypatch):
-    """Interim (the tail read comes later): a context past the page limit is its own error, not LEASE_STALE."""
-    monkeypatch.setattr(executor_module, "MaestroMemory", lambda client: MaestroMemory(client, max_pages=1))
-    fake = FakeMaestro()
-    ran: list[Any] = []
-
-    async def handler(on, send, memory, analytics, settings):
-        ran.append(on)
-        yield send.text("never")
-
-    adapter = create_text_delivery_adapter(fake.config, handler, private_resources)
-    with fake.serving():
-        thread_id = fake.create_thread(USER, title=None)
-        for number in range(1, 102):
-            trigger = fake.publish(thread_id, USER, [_text(f"Mensagem {number}")], client_event_id=f"client-{number}")
-        (delivery,) = fake.deliveries_for(trigger)
-        response = await fake.deliver(adapter, delivery)
-
-    assert (response.status_code, response.json()["error"]["code"]) == (413, "PAYLOAD_TOO_LARGE")
-    assert ran == []
 
 
 async def test_context_limit_inside_the_handler_fails_as_payload_too_large():

@@ -87,7 +87,7 @@ def _time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def fold_events(events: list[dict]) -> list[dict]:
+def fold_events(events: list[dict], *, queue: str | None = None) -> list[dict]:
     """The Maestro events (oldest first) that production would have stored, in Maestro shape.
 
     - ``message.updated`` replaces the content of its target; ``message.removed`` takes its
@@ -97,14 +97,15 @@ def fold_events(events: list[dict]) -> list[dict]:
       gets the run's ``run_id`` in its payload, as ``HandlerPipeline.execute`` does on
       ``run_start``; with several runs the last one stays. An event the agent wrote inside its
       own run keeps that ``run_id``.
-    - A ``thread.updated`` that changed the queue gets :data:`PREVIOUS_QUEUE`.
+    - A ``thread.updated`` that changed the queue gets :data:`PREVIOUS_QUEUE`. ``queue`` is the queue
+      the thread had before the first event of the list (a ``thread.created`` in the list replaces it):
+      a list that does not start at the thread's first event passes what it knows.
 
     The input list and its events are not changed; a changed event is a new dict.
     """
     folded: list[dict | None] = []
     positions: dict[str, int] = {}
     own_run: set[str] = set()
-    queue: str | None = None
     for event in events:
         kind, payload = event["type"], event["payload"]
         if kind in ("message.updated", "message.removed"):

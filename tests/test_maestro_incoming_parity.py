@@ -380,7 +380,7 @@ async def test_person_without_email_has_none_like_production(key, bundle):
             assert prepared.on.context.user.user_email is None
 
 
-def _form_response_page(page: dict[str, Any], envelope: dict[str, Any], *, author: str) -> str:
+def _form_response_page(server: Any, page: dict[str, Any], envelope: dict[str, Any], *, author: str) -> str:
     form_id = str(uuid4())
     form = deepcopy(page["trigger_event"])
     form.update(event_id=form_id, sequence="9", root_event_id=form_id, type="form.created")
@@ -395,13 +395,17 @@ def _form_response_page(page: dict[str, Any], envelope: dict[str, Any], *, autho
     trigger = page["trigger_event"]
     trigger.update(type="form.responded", payload={"form_event_id": form_id, "values": {}, "cancelled": True})
     page["history"]["items"] = [form, deepcopy(trigger)]
+    # The window reads newest first (backward); every other read is oldest first (forward).
+    descending = deepcopy(page)
+    descending["history"]["items"].reverse()
+    server.response = lambda first: descending if "direction=backward" in first else page
     return form_id
 
 
 async def test_form_response_reads_the_form_of_this_agent(key, bundle):
     async with fixture_server() as server:
         memory, page, _, _ = prepare(key, bundle, server)
-        form_id = _form_response_page(page, memory._envelope, author=memory._envelope["instance_agent_id"])
+        form_id = _form_response_page(server, page, memory._envelope, author=memory._envelope["instance_agent_id"])
         async with maestro_handler_context(memory, private) as prepared:
             on = prepared.on
             assert (on.form_data, on.form_cancelled, on.form_event_id) == ({}, True, form_id)
@@ -411,7 +415,7 @@ async def test_form_response_reads_the_form_of_this_agent(key, bundle):
 async def test_form_response_to_another_agents_form_is_rejected(key, bundle):
     async with fixture_server() as server:
         memory, page, _, _ = prepare(key, bundle, server)
-        _form_response_page(page, memory._envelope, author=str(uuid4()))
+        _form_response_page(server, page, memory._envelope, author=str(uuid4()))
         with pytest.raises(MaestroContextError, match="CONTEXT_INVALID"):
             async with maestro_handler_context(memory, private):
                 pytest.fail("not this agent's form")
@@ -420,7 +424,7 @@ async def test_form_response_to_another_agents_form_is_rejected(key, bundle):
 async def test_form_response_invocation_must_be_the_trigger(key, bundle):
     async with fixture_server() as server:
         memory, page, _, _ = prepare(key, bundle, server)
-        _form_response_page(page, memory._envelope, author=memory._envelope["instance_agent_id"])
+        _form_response_page(server, page, memory._envelope, author=memory._envelope["instance_agent_id"])
         page["invocation_event"] = deepcopy(page["trigger_event"])
         memory._validate_page(page)
         page["invocation_event"]["payload"]["cancelled"] = False

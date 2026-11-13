@@ -18,6 +18,7 @@ from .artifacts import MaestroArtifactsClient
 from .client import MaestroContextClient, MaestroContextError
 from .converters import history_messages, public_actor
 from .links import LinkResolver
+from .window import MaestroContextWindow
 
 
 @dataclass(frozen=True)
@@ -50,9 +51,29 @@ TRIGGER_TYPES = frozenset({"message.created", "form.responded"})
 
 
 class MaestroMemory:
-    def __init__(self, client: MaestroContextClient, *, max_pages: int = 20, max_total_bytes: int = 16777216) -> None:
+    def __init__(
+        self,
+        client: MaestroContextClient,
+        *,
+        max_pages: int = 20,
+        max_total_bytes: int = 16777216,
+        max_history_pages: int | None = None,
+        history_page_size: int = 100,
+    ) -> None:
+        """``max_pages`` and ``max_total_bytes`` bound ``snapshot()`` (the whole thread, forward).
+
+        ``max_history_pages`` (pages of ``history_page_size`` events; default ``MaestroConfig.max_history_pages``)
+        is how far back one history read of the handler's memory may go (``window()``); beyond it the read
+        raises ``MaestroHistoryLimitError``.
+        """
+        if max_history_pages is None:
+            max_history_pages = client.config.max_history_pages
         if (
-            type(max_pages) is not int
+            type(max_history_pages) is not int
+            or not 1 <= max_history_pages <= 1000
+            or type(history_page_size) is not int
+            or not 1 <= history_page_size <= 100
+            or type(max_pages) is not int
             or not 1 <= max_pages <= 100
             or type(max_total_bytes) is not int
             or not 1024 <= max_total_bytes <= 33554432
@@ -63,7 +84,8 @@ class MaestroMemory:
         self._max_pages, self._max_total_bytes = max_pages, max_total_bytes
         # One link per artifact for the whole execution (incoming parts and history).
         self._links = LinkResolver(MaestroArtifactsClient(client).issue_link)
-        self._execution_snapshot: dict[str, Any] | None = None
+        self._max_history_pages, self._history_page_size = max_history_pages, history_page_size
+        self._window: MaestroContextWindow | None = None
 
     @property
     def envelope(self) -> Mapping[str, Any]:
@@ -75,21 +97,32 @@ class MaestroMemory:
         """The execution's temporary links: one per artifact (incoming parts and history)."""
         return self._links
 
-    async def execution_snapshot(self) -> dict[str, Any]:
-        """The delivery context of this execution: read once (``snapshot()``), then the same.
+    def window(self) -> MaestroContextWindow:
+        """The newest events of this execution's delivery context, read backward and kept (one per execution).
 
-        Below the cutoff the context does not change, so one read serves the whole execution
-        (``on``, ``MaestroAgentMemory``). Every call checks the lease, the capability and the
-        cancellation again (``_check_current``): after the execution ends, it fails. The result
-        is shared: read it, never change it.
+        Below the cutoff the context does not change, so one window serves the whole execution
+        (``on`` and the handler's memory): it starts with one page and grows only when a read
+        needs older events (``MaestroContextWindow``). Every use checks the lease, the capability
+        and the cancellation again: after the execution ends, it fails. The window is shared:
+        read it, never change it.
         """
-        if self._execution_snapshot is None:
-            self._execution_snapshot = await self.snapshot()
-        else:
-            self._client._check_current()
-        return self._execution_snapshot
+        if self._window is None:
 
-    def _validate_page(self, page: dict[str, Any]) -> None:
+            async def fetch(cursor: str, limit: int, direction: Literal["forward", "backward"]) -> dict[str, Any]:
+                page = await self._client.page(cursor, limit=limit, direction=direction)
+                self._validate_page(page, direction)
+                return page
+
+            self._window = MaestroContextWindow(
+                fetch,
+                cursor=self._envelope["context_cursor"],
+                check_current=self._client._check_current,
+                page_size=self._history_page_size,
+                max_pages=self._max_history_pages,
+            )
+        return self._window
+
+    def _validate_page(self, page: dict[str, Any], direction: Literal["forward", "backward"] = "forward") -> None:
         envelope = self._envelope
         trigger = page["trigger_event"]
         recipients = [p for p in page["participants"] if p["participant_id"] == envelope["recipient_participant_id"]]
@@ -136,7 +169,11 @@ class MaestroMemory:
                 raise MaestroContextError("CONTEXT_INVALID")
         for event in page["history"]["items"]:
             sequence = (len(event["sequence"]), event["sequence"])
-            if sequence <= previous:
+            # Forward pages grow, backward pages (newest first) shrink.
+            if direction == "backward":
+                if previous != (0, "") and sequence >= previous:
+                    raise MaestroContextError("CONTEXT_INVALID")
+            elif sequence <= previous:
                 raise MaestroContextError("CONTEXT_INVALID")
             previous = sequence
         history = page["history"]

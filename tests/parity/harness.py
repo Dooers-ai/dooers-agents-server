@@ -67,8 +67,10 @@ from dooers.agents.server.maestro.context import MaestroPrivateResources
 from dooers.agents.server.maestro.legacy_model import to_runs
 from dooers.agents.server.maestro.links import ArtifactLinkMissing, LinkResolver
 from dooers.agents.server.maestro.persistence import MaestroExecutionPersistence
+from dooers.agents.server.maestro.window import MaestroContextWindow
 from dooers.agents.server.server import AgentServer
 from dooers.tools.whatsapp.transport import build_x_message_sig
+from tests.parity.context_pages import ThreadPages
 from tests.parity.fake_maestro import FakeMaestro
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import (
@@ -512,9 +514,11 @@ class _AgentReader:
                 raise ArtifactLinkMissing("NOT_FOUND") from None
 
         self.links = LinkResolver(issue)
+        view = maestro.agent_view(thread_id)
+        self._window = ThreadPages(view["events"], view["participants"]).window()
 
-    async def execution_snapshot(self) -> dict[str, Any]:
-        return self._maestro.agent_view(self._thread_id)
+    def window(self) -> MaestroContextWindow:
+        return self._window
 
 
 async def _maestro_read_back(maestro: FakeMaestro, observe: frozenset[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -530,7 +534,7 @@ async def _maestro_read_back(maestro: FakeMaestro, observe: frozenset[str]) -> t
             out.setdefault("threads", []).append(thread.model_dump())
         if "runs" in observe:
             # Production ``list_runs``: the run that started last comes first.
-            runs = reversed(to_runs((await reader.execution_snapshot())["events"]))
+            runs = reversed(to_runs(maestro.agent_view(thread_id)["events"]))
             out.setdefault("runs", []).extend(run.model_dump() for run in runs)
     for name in observe:
         out.setdefault(name, [])

@@ -83,6 +83,7 @@ from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.context import MaestroPrivateResources, MaestroPrivateScope
 from dooers.agents.server.protocol.maestro import MaestroContracts
 from dooers.agents.server.protocol.models import User
+from tests.parity.context_pages import ContextGap, CursorInvalid, serve_context
 from tests.parity.maestro_file_policy import MAX_ARTIFACT_BYTES, canonical_mime_type, maestro_accepts_file
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import AGENT_ID, ASSISTANT_NAME, ORG_ID, WORKSPACE_ID
@@ -191,6 +192,8 @@ class Delivery:
     output_kinds: list[str] = field(default_factory=list)
     stream_chunks: list[dict[str, Any]] = field(default_factory=list)
     context_pages: int = 0
+    #: ``(cursor, limit, direction)`` of every context request, in order.
+    context_requests: list[tuple[str | None, int | None, str]] = field(default_factory=list)
     replies: dict[str, tuple[dict[str, Any], dict[str, Any]]] = field(default_factory=dict)
 
     @property
@@ -488,7 +491,7 @@ class FakeMaestro:
     def agent_view(self, thread_id: str) -> dict[str, Any]:
         """The whole thread as the agent's delivery context has it: events and participants.
 
-        Same shape as ``MaestroMemory.execution_snapshot()`` (the trigger is the last event).
+        Same shape as ``MaestroMemory.snapshot()`` (the trigger is the last event).
         """
         events = [self._agent_event(event) for event in self.events[thread_id]]
         return {"trigger_event": deepcopy(events[-1]), "participants": self._context_participants(thread_id), "events": events}
@@ -587,43 +590,51 @@ class FakeMaestro:
         return httpx.Response(status, json=self.contracts.validate(schema, value))
 
     def _context(self, request: httpx.Request, delivery_id: str) -> httpx.Response:
+        """``GET /deliveries/:id/context``: forward or backward pages (``context_pages.serve_context``)."""
         delivery = self._authorized_delivery(request)
         if delivery.delivery_id != delivery_id:
             raise _CallbackError(403, "FORBIDDEN")
         params = dict(request.url.params)
         try:
-            query = {"cursor": params["cursor"], "limit": int(params.get("limit", "100"))}
-        except (KeyError, ValueError):
+            query = {key: (int(value) if key == "limit" else value) for key, value in params.items()}
+        except ValueError:
             raise _CallbackError(400, "INVALID_REQUEST") from None
-        if not self.contracts.is_valid("Public.PageQuery", query):
+        if not self.contracts.is_valid("Public.ContextQuery", query):
             raise _CallbackError(400, "INVALID_REQUEST")
         if delivery.state != "running":
             raise _CallbackError(409, "EXECUTION_TERMINAL")
-        cursor = query["cursor"]
-        if cursor == delivery.context_cursor:
-            offset = 0
-        elif cursor.startswith(delivery.context_cursor + ".") and cursor.rsplit(".", 1)[1].isdecimal():
-            offset = int(cursor.rsplit(".", 1)[1])
-        else:
-            raise _CallbackError(400, "CURSOR_INVALID")
-        cutoff = _sequence_key(delivery.envelope["context_cutoff_sequence"])
-        history = [event for event in self.events[delivery.thread_id] if _sequence_key(event["sequence"]) <= cutoff]
-        end = offset + query["limit"]
-        has_more = end < len(history)
         delivery.context_pages += 1
-        page = {
-            "delivery_id": delivery.delivery_id,
-            "trigger_event": self._agent_event(delivery.trigger_event),
-            "participants": self._context_participants(delivery.thread_id),
-            "context_cursor": delivery.context_cursor,
-            "history": {
-                "items": [self._agent_event(event) for event in history[offset:end]],
-                "next_cursor": f"{delivery.context_cursor}.{end}" if has_more else None,
-                "has_more": has_more,
-                "watermark": delivery.envelope["context_cutoff_sequence"],
-            },
-        }
-        return self._reply("Public.ContextResponse", page)
+        delivery.context_requests.append((query.get("cursor"), query.get("limit"), query.get("direction", "forward")))
+
+        def page(items: list[dict[str, Any]], next_cursor: str | None, has_more: bool) -> dict[str, Any]:
+            return {
+                "delivery_id": delivery.delivery_id,
+                "trigger_event": self._agent_event(delivery.trigger_event),
+                "participants": self._context_participants(delivery.thread_id),
+                "context_cursor": delivery.context_cursor,
+                "history": {
+                    "items": [self._agent_event(event) for event in items],
+                    "next_cursor": next_cursor,
+                    "has_more": has_more,
+                    "watermark": delivery.envelope["context_cutoff_sequence"],
+                },
+            }
+
+        try:
+            value = serve_context(
+                self.events[delivery.thread_id],
+                cutoff=int(delivery.envelope["context_cutoff_sequence"]),
+                base=delivery.context_cursor,
+                cursor=query.get("cursor"),
+                limit=query.get("limit"),
+                direction=query.get("direction", "forward"),
+                page=page,
+            )
+        except CursorInvalid:
+            raise _CallbackError(400, "CURSOR_INVALID") from None
+        except ContextGap:
+            raise _CallbackError(503, "DEPENDENCY_UNAVAILABLE") from None
+        return self._reply("Public.ContextResponse", value)
 
     def _execution(self, request: httpx.Request, execution_id: str, action: str) -> httpx.Response:
         handlers = {

@@ -7,7 +7,7 @@ import math
 import re
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -58,6 +58,8 @@ class MaestroContextClient:
         self._contracts = contracts or MaestroContracts()
         self._closed = False
         self._finished = False
+        #: Direction of every ``next_cursor`` received: a cursor is only valid in the direction that gave it.
+        self._cursor_directions: dict[str, str] = {}
         self._cancelled: Callable[[], bool] = lambda: False
         self._capability = admission.execution_capability
         self._claims = admission.capability_claims
@@ -144,11 +146,20 @@ class MaestroContextClient:
     async def _credential(self, scopes: tuple[str, ...] = ("deliveries:read", "context:read")) -> MaestroInstanceCredential:
         return await resolve_instance_credential(self.config, self.admission, self._contracts, scopes, capability=self._capability)
 
-    async def page(self, cursor: str, *, limit: int = 100) -> dict[str, Any]:
-        """Cada página renova autorização remota, inclusive chamadas repetidas."""
+    async def page(self, cursor: str, *, limit: int = 100, direction: Literal["forward", "backward"] = "forward") -> dict[str, Any]:
+        """Cada página renova autorização remota, inclusive chamadas repetidas.
+
+        ``direction="backward"`` lê do corte para o início (``direction=backward``): a página vem do
+        mais novo para o mais antigo. O cursor de uma direção nunca vale na outra (o Maestro o
+        amarra à direção): o cliente lembra a direção de cada ``next_cursor`` recebido e não envia
+        um cursor na direção errada. ``context_cursor`` do envelope começa nas duas direções.
+        """
         try:
             with diagnostic_stage("context.page", self._envelope):
-                self._contracts.validate("Public.PageQuery", {"cursor": cursor, "limit": limit})
+                query = {"cursor": cursor, "limit": limit, **({"direction": "backward"} if direction == "backward" else {})}
+                self._contracts.validate("Public.ContextQuery", query)
+                if self._cursor_directions.get(cursor, direction) != direction:
+                    raise MaestroContextError("CONTEXT_INVALID")
                 remaining = self._check_current()
                 async with asyncio.timeout(min(remaining, self.config.network_timeout_seconds)):
                     with diagnostic_stage("auth.credential", self._envelope):
@@ -168,7 +179,7 @@ class MaestroContextClient:
                         transport=transport, trust_env=False, follow_redirects=False, timeout=self.config.network_timeout_seconds
                     ) as client:
                         url = f"{self.config.callback_base_url}/deliveries/{self._envelope['delivery_id']}/context"
-                        async with client.stream("GET", url, params={"cursor": cursor, "limit": limit}, headers=headers) as response:
+                        async with client.stream("GET", url, params=query, headers=headers) as response:
                             if response.status_code in {401, 403, 404, 409, 410}:
                                 self._closed = True
                                 raise MaestroContextError("ACCESS_REVOKED")
@@ -190,7 +201,10 @@ class MaestroContextClient:
                             self._check_current()
                             if time.time() >= credential.expires_at:
                                 raise MaestroContextError("ACCESS_REVOKED")
-                            return self._contracts.validate("Public.ContextResponse", strict_json(bytes(raw)))
+                            value = self._contracts.validate("Public.ContextResponse", strict_json(bytes(raw)))
+                            if value["history"]["next_cursor"] is not None:
+                                self._cursor_directions[value["history"]["next_cursor"]] = direction
+                            return value
         except MaestroContextError as error:
             if error.code == "ACCESS_REVOKED":
                 self._closed = True

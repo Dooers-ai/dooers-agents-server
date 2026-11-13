@@ -123,6 +123,8 @@ class MaestroConfig:
     artifact_mime_types: tuple[str, ...] = ()
     max_artifact_bytes: int = 26214400
     max_hydrated_bytes: int = 16777216
+    #: How far back one history read of the handler may go, in context pages of 100 events (``MaestroContextWindow``).
+    max_history_pages: int = 20
     artifact_timeout_seconds: int = 5
     remote_transport: MaestroRemoteTransport | None = field(default=None, repr=False)
 
@@ -172,6 +174,7 @@ class MaestroConfig:
             "max_output_bytes": (1, 1048576),
             "max_artifact_bytes": (1, 26214400),
             "max_hydrated_bytes": (1, 33554432),
+            "max_history_pages": (1, 1000),
             "artifact_timeout_seconds": (1, 10),
         }
         for name, (minimum, maximum) in limits.items():

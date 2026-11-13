@@ -4,16 +4,19 @@
 a handler written for production reads the same history, in every format, in a Maestro
 delivery (design 7.5). No production method changes.
 
-``MaestroExecutionPersistence`` reads the execution snapshot (``MaestroMemory.execution_snapshot``:
-the context is read once per execution, because below the cutoff it does not change; every read
-checks the lease again). It adds the events Maestro stored for the outputs this execution already
-published (the sink's echoes), as production stores each yielded event before the next read. A
-message that arrives after the cutoff stays out (production reads the table live). It folds the
-whole list (``legacy_model.fold_events``) and converts it to the production models; then
-``limit``, ``order``, ``filters``, ``after_event_id`` and ``before_event_id`` select from the
-converted events, as the production query selects from the stored rows. Only the selected
-events get temporary links (in parallel); a file this execution uploaded keeps the URL it came
-from (it is past the cutoff, so Maestro has no link for it; production stores that URL).
+``MaestroExecutionPersistence`` reads the newest events of the delivery context, from the end of the
+thread (``MaestroMemory.window()``, ``window.py``: ``direction=backward`` pages, one window per
+execution, every use checks the lease). It adds the events Maestro stored for the outputs this
+execution already published (the sink's echoes), as production stores each yielded event before the
+next read. A message that arrives after the cutoff stays out (production reads the table live).
+``get_events`` folds the window (``legacy_model.fold_events``), converts it to the production models,
+and selects as the production query does (``limit``, ``order``, filters, ``after_event_id`` and
+``before_event_id``). It reads older pages only until the selection is the one the whole thread
+would give: ``limit`` matching events for ``desc``; the reference event for an ascending read
+(without ``after_event_id`` an ascending read starts at the thread's first event, so it reads the
+whole thread). Only the selected events get temporary links (in parallel); a file this execution
+uploaded keeps the URL it came from (it is past the cutoff, so Maestro has no link for it;
+production stores that URL).
 
 ``get_thread`` and ``get_events`` are the reads ``AgentMemory`` uses (``list_artifacts``
 included). Every other method raises ``ThreadManagementModeError``: in an execution the agent
@@ -37,6 +40,7 @@ from dooers.agents.server.protocol.models import Thread, ThreadEvent
 
 from .context import thread_at_cutoff
 from .legacy_model import DEFAULT_ASSISTANT_NAME, fold_events, to_thread, to_thread_event
+from .window import MaestroContextWindow
 
 if TYPE_CHECKING:
     from .artifacts import MaestroHydratedArtifact
@@ -100,7 +104,7 @@ async def _unsupported(*_args: Any, **_kwargs: Any) -> Any:
 class MaestroExecutionPersistence(Persistence):
     """``Persistence`` that reads the thread of one Maestro delivery; nothing else.
 
-    ``memory`` is the execution's ``MaestroMemory`` (``envelope``, ``execution_snapshot()`` and
+    ``memory`` is the execution's ``MaestroMemory`` (``envelope``, ``window()`` and
     ``links``). ``assistant_name`` is ``AgentConfig.assistant_name``. ``published`` is what this
     execution already published (the executor's sink); without it, only the context is read.
     """
@@ -116,10 +120,13 @@ class MaestroExecutionPersistence(Persistence):
         """Only the delivery's thread exists here; another thread is unknown, as in production."""
         return thread_id == self._memory.envelope["thread_id"]
 
-    async def _thread_state(self) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], Mapping[str, str]]:
-        """The snapshot, its events plus the echoes (in order), its participants plus the ones added, the uploaded URLs."""
-        snapshot = await self._memory.execution_snapshot()
-        events, participants, uploaded = list(snapshot["events"]), list(snapshot["participants"]), {}
+    async def _thread_state(
+        self,
+    ) -> tuple[MaestroContextWindow, list[dict[str, Any]], list[dict[str, Any]], Mapping[str, str]]:
+        """The window, its events plus the echoes (in order), its participants plus the ones added, the uploaded URLs."""
+        window = self._memory.window()
+        head = await window.load()
+        events, participants, uploaded = list(window.events), list(head["participants"]), {}
         if self._published is not None:
             # An echo is after the cutoff; an event already read (same event id) is not added again.
             known_events = {event["event_id"] for event in events}
@@ -136,7 +143,19 @@ class MaestroExecutionPersistence(Persistence):
                     known.add(added["participant_id"])
                     participants.append(added)
             uploaded = self._published.published_media_urls
-        return snapshot, events, participants, uploaded
+        return window, events, participants, uploaded
+
+    @staticmethod
+    async def _queue_before(window: MaestroContextWindow, events: list[dict[str, Any]]) -> str | None:
+        """The queue the thread had at its creation: what ``fold_events`` starts from when the window starts later.
+
+        Only a queue change in the window needs it (its ``from``); without one, the first event of the
+        thread is not read.
+        """
+        if window.exhausted or not any(event["type"] == "thread.updated" and "queue" in event["payload"] for event in events):
+            return None
+        origin = await window.origin()
+        return origin["payload"]["thread"].get("queue") if origin is not None and origin["type"] == "thread.created" else None
 
     def _conversion(self, participants: list[dict[str, Any]]) -> dict[str, Any]:
         agents = [participant for participant in participants if participant["kind"] == "agent"]
@@ -148,14 +167,21 @@ class MaestroExecutionPersistence(Persistence):
         }
 
     async def get_thread(self, thread_id: str) -> Thread | None:
+        """The thread as the window sees it.
+
+        Participants come from the context head (current). The creation time, the owner agent and the
+        channel come from ``thread.created`` (the first event of the thread, read on its own); the
+        title and the queue are the last change the window holds, else the ones of ``thread.created``.
+        """
         if not self._reads(thread_id):
             return None
-        snapshot, events, participants, _ = await self._thread_state()
-        envelope, events = self._memory.envelope, events or [snapshot["trigger_event"]]
-        # Title, queue and creation time by the rule on.context uses; the owner agent from thread.created.
-        state = thread_at_cutoff(events)
-        created = next((event["payload"]["thread"] for event in events if event["type"] == "thread.created"), {})
-        last = events[-1]["created_at"]
+        window, events, participants, _ = await self._thread_state()
+        envelope = self._memory.envelope
+        # The window with the thread's first event in front (it holds the creation), then the echoes.
+        known = [*await window.thread_events(), *events[len(window.events) :]]
+        known = known or [(await window.load())["trigger_event"]]
+        state = thread_at_cutoff(known)
+        created = next((event["payload"]["thread"] for event in known if event["type"] == "thread.created"), {})
         view = {
             "thread_id": envelope["thread_id"],
             "organization_id": envelope["organization_id"],
@@ -164,8 +190,8 @@ class MaestroExecutionPersistence(Persistence):
             "participants": participants,
             "title": state["title"] or "",
             "queue": state["queue"],
-            "created_at": state["created_at"].isoformat() if state["created_at"] else events[0]["created_at"],
-            "updated_at": last,
+            "created_at": state["created_at"].isoformat() if state["created_at"] else known[0]["created_at"],
+            "updated_at": known[-1]["created_at"],
         }
         return to_thread(view, recipient_instance_id=envelope["instance_agent_id"], assistant_name=self._assistant_name)
 
@@ -179,13 +205,59 @@ class MaestroExecutionPersistence(Persistence):
         order: EventOrder = "asc",
         filters: dict[str, str] | None = None,
     ) -> list[ThreadEvent]:
+        """The events production's query returns, read from the end of the thread.
+
+        Production selects ``limit`` rows by ``created_at`` (after the filters and the two reference
+        events). Here the window grows backward, page by page, until the selection is the one the
+        whole thread would give; it never reads more than that. The selection is final when:
+
+        - ``desc``: ``limit`` events match (and every reference event was found), or the thread starts;
+        - ``asc``: ``after_event_id`` was found (the events after it are all in the window), or the
+          thread starts (without it the first events are at the beginning of the thread).
+
+        A reference event the thread does not have (or has removed) is ignored, as production ignores
+        an unknown id; only reading to the first event proves it. The window holds at most
+        ``max_history_pages`` pages (``MaestroHistoryLimitError`` for a read that needs older events).
+        """
         if not self._reads(thread_id):
             return []
-        _, events, participants, uploaded = await self._thread_state()
+        while True:
+            window, events, participants, uploaded = await self._thread_state()
+            selected = await self._select(window, events, participants, after_event_id, before_event_id, limit, order, filters)
+            if selected is not None or window.exhausted:
+                break
+            await window.read_back()
         conversion = self._conversion(participants)
-        # The whole list is folded first: an edit or removal can target an event of any page.
+        links = _ExecutionLinks(self._memory.links, uploaded)
+        return await _all(to_thread_event(event, links=links, **conversion) for event in selected or [])
+
+    async def _select(
+        self,
+        window: MaestroContextWindow,
+        events: list[dict[str, Any]],
+        participants: list[dict[str, Any]],
+        after_event_id: str | None,
+        before_event_id: str | None,
+        limit: int,
+        order: EventOrder,
+        filters: dict[str, str] | None,
+    ) -> list[dict[str, Any]] | None:
+        """The events (folded, Maestro shape) the query selects from this window; ``None`` if older ones could change it."""
+        exhausted = window.exhausted
+        ids = {event["event_id"] for event in events}
+        gone = {event["payload"]["event_id"] for event in events if event["type"] == "message.removed"}
+        references = [reference for reference in (after_event_id, before_event_id) if reference]
+        if not exhausted:
+            # A reference not read yet may be older than the window; a removed one is known to be absent.
+            if any(reference not in ids and reference not in gone for reference in references):
+                return None
+            # Without ``after_event_id`` the first ``limit`` events of an ascending read are at the thread's start.
+            if order == "asc" and not after_event_id:
+                return None
+        conversion = self._conversion(participants)
+        # The whole window is folded first: an edit or removal can target an event of any page.
         rows = []
-        for event in fold_events(events):
+        for event in fold_events(events, queue=await self._queue_before(window, events)):
             converted = await to_thread_event(event, links=_NoLinks(), **conversion)
             if converted is not None:
                 rows.append((event, converted))
@@ -202,10 +274,11 @@ class MaestroExecutionPersistence(Persistence):
             if key in FILTERABLE_FIELDS:
                 # SQL ``column = value``: NULL never matches.
                 selected = [(i, row) for i, row in selected if (column := _column(row[1], key)) is not None and column == value]
+        if not exhausted and order == "desc" and len(selected) < limit:
+            return None
         if order == "desc":
             selected.reverse()
-        links = _ExecutionLinks(self._memory.links, uploaded)
-        return await _all(to_thread_event(event, links=links, **conversion) for _, (event, _) in selected[: max(limit, 0)])
+        return [event for _, (event, _) in selected[: max(limit, 0)]]
 
     # Inside an execution the agent writes through ``send``; nothing else is read here.
     connect = disconnect = migrate = _unsupported
