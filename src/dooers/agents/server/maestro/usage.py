@@ -586,9 +586,9 @@ class JournalUsage:
     async def record_output_receipt(self, op: UsageOperation, receipt):
         # Caller supplies the callback-authenticated receipt. Schema alone is not
         # proof of commit: Maestro rechecks the canonical event/output at ingestion.
-        from dooers.agents.server.protocol.maestro import MaestroContracts
+        from dooers.agents.server.protocol.maestro import default_contracts
 
-        response = MaestroContracts().validate("Public.PersistedResponse", receipt)
+        response = default_contracts().validate("Public.PersistedResponse", receipt)
         event = response["event"]
         if (
             event["type"] != "message.created"

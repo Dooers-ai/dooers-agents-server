@@ -13,7 +13,7 @@ from dooers.agents.server.maestro.outputs import (
     agent_event_from,
     output_for,
 )
-from dooers.agents.server.protocol.maestro.contracts import MaestroContracts
+from dooers.agents.server.protocol.maestro.contracts import default_contracts
 
 FENCE = "1"
 S = AgentSend()
@@ -100,7 +100,7 @@ def output_of(event: AgentEvent, ordinal: int = 0) -> MaestroOutput:
 
 @pytest.fixture(scope="module")
 def contracts():
-    return MaestroContracts()
+    return default_contracts()
 
 
 def strip_none(event: AgentEvent) -> AgentEvent:

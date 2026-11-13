@@ -24,9 +24,9 @@ def remote_core_credentials(
     if transport.validate_url(core_origin) != core_origin or not callable(credential) or identity.audience != "dooers-service-maestro":
         raise MaestroRemoteError()
 
-    from dooers.agents.server.protocol.maestro import MaestroContracts
+    from dooers.agents.server.protocol.maestro import default_contracts
 
-    contracts = MaestroContracts()
+    contracts = default_contracts()
 
     async def resolve(request: MaestroCredentialRequest) -> MaestroInstanceCredential:
         if (

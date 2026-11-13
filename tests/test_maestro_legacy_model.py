@@ -25,7 +25,7 @@ from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.legacy_model import fold_events, to_run, to_runs, to_thread, to_thread_event
 from dooers.agents.server.maestro.links import LinkResolver
 from dooers.agents.server.maestro.outputs import RunTracker, media_output, output_for
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts
 from dooers.agents.server.protocol.models import (
     Run,
     Thread,
@@ -73,7 +73,7 @@ MEDIA_SENDS = frozenset({"image", "audio", "document"})
 
 @pytest.fixture(scope="module")
 def contracts() -> MaestroContracts:
-    return MaestroContracts()
+    return default_contracts()
 
 
 def _public(event: dict[str, Any]) -> dict[str, Any]:

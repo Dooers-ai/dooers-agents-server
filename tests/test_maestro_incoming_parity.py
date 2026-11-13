@@ -36,7 +36,7 @@ from dooers.agents.server.maestro.context import (
     maestro_handler_context,
 )
 from dooers.agents.server.maestro.links import LinkResolver
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import default_contracts
 from dooers.agents.server.protocol.models import AudioPart, ContactPart, DocumentPart, ImagePart, TextPart, User
 from dooers.tools.rag.runtime import current_execution_context
 from tests.parity import fake_maestro as fake_module
@@ -60,7 +60,7 @@ def key():
 
 @pytest.fixture(scope="module")
 def bundle():
-    return MaestroContracts()
+    return default_contracts()
 
 
 def with_links(data: dict[str, Any]) -> None:

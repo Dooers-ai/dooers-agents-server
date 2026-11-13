@@ -67,7 +67,6 @@ from datetime import UTC, datetime
 from email.parser import BytesParser
 from email.policy import HTTP
 from typing import Any
-from unittest.mock import patch
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -76,12 +75,10 @@ import respx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-import dooers.agents.server.maestro.adapter as adapter_module
-import dooers.agents.server.maestro.executor as executor_module
 from dooers.agents.server.maestro import MaestroConfig, MaestroDeliveryAdapter, MaestroInstanceCredential
 from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.context import MaestroPrivateResources, MaestroPrivateScope
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts
 from dooers.agents.server.protocol.models import User
 from tests.parity.context_pages import ContextGap, CursorInvalid, serve_context
 from tests.parity.maestro_file_policy import MAX_ARTIFACT_BYTES, canonical_mime_type, maestro_accepts_file
@@ -115,29 +112,15 @@ _PERMISSIONS = ("read", "write", "manage", "supervise", "export", "cancel", "fee
 _NO_PERMISSIONS = dict.fromkeys(_PERMISSIONS, False)
 
 
-@functools.cache
 def shared_contracts() -> MaestroContracts:
-    """The vendored contract, compiled once per process (the validator is immutable)."""
-    return MaestroContracts()
+    """The vendored contract, compiled once per process (the SDK shares the same instance)."""
+    return default_contracts()
 
 
 @functools.cache
 def signing_key() -> rsa.RSAPrivateKey:
     """The fake Maestro signing key (dispatch and capability JWTs, core credential)."""
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-
-@contextmanager
-def reuse_compiled_contracts() -> Iterator[None]:
-    """Speed only: the adapter and the executor reuse ``shared_contracts()``.
-
-    Each ``MaestroContracts()`` compiles every schema of the same verified bundle again
-    (about 1.3 s). Validation behavior does not change.
-    """
-    with ExitStack() as stack:
-        stack.enter_context(patch.object(adapter_module, "MaestroContracts", shared_contracts))
-        stack.enter_context(patch.object(executor_module, "MaestroContracts", shared_contracts))
-        yield
 
 
 async def private_resources(scope: MaestroPrivateScope) -> MaestroPrivateResources:
@@ -481,7 +464,6 @@ class FakeMaestro:
             if mock is None:
                 mock = stack.enter_context(respx.mock(assert_all_called=False))
             mock.route(url__startswith=CALLBACK_BASE_URL + "/").mock(side_effect=self.handle)
-            stack.enter_context(reuse_compiled_contracts())
             yield self
 
     def all_events(self) -> list[dict[str, Any]]:

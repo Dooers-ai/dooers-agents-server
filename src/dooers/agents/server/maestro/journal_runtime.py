@@ -208,7 +208,7 @@ def create_durable_text_delivery_adapter(
     assistant_name: str | None = None,
 ):
     """``config`` is the ``MaestroConfig`` or the Maestro-mode ``AgentConfig`` (``executor.maestro_settings``)."""
-    from dooers.agents.server.protocol.maestro import MaestroContracts
+    from dooers.agents.server.protocol.maestro import default_contracts
 
     from .adapter import MaestroDeliveryAdapter
     from .callbacks import MaestroHeartbeatGate
@@ -240,7 +240,7 @@ def create_durable_text_delivery_adapter(
             raise ValueError("MAESTRO_APPROVAL_JOURNAL_REQUIRED")
     if type(terminal_replay) is not bool:
         raise ValueError("MAESTRO_TERMINAL_REPLAY_CONFIGURATION")
-    contracts = MaestroContracts()
+    contracts = default_contracts()
     from .terminal_replay import MaestroDurableReplayGate
 
     return MaestroDeliveryAdapter(

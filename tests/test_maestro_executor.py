@@ -30,7 +30,7 @@ from dooers.agents.server.maestro import (
 )
 from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.security import _decode, strict_json
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import default_contracts
 from dooers.tools.rag.runtime import current_execution_context
 from tests.test_maestro_admission import BASE, json_bytes, request, sign, signed_request, timestamp
 from tests.test_maestro_context import AGENT, prepare, private
@@ -45,7 +45,7 @@ def private_key():
 
 @pytest.fixture(scope="module")
 def contracts():
-    return MaestroContracts()
+    return default_contracts()
 
 
 class CallbackFixture:

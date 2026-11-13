@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroContracts
+from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroContracts, default_contracts
 
 from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedResult, MaestroCurrentLease, _epoch
 from .client import MAX_OUTPUT_RESPONSE_BYTES, MAX_RESPONSE_BYTES, MaestroContextClient, MaestroContextError
@@ -413,7 +413,7 @@ class MaestroHeartbeatGate:
 
     def __init__(self, config: MaestroConfig, *, contracts: MaestroContracts | None = None) -> None:
         self.config = config
-        self._contracts = contracts or MaestroContracts()
+        self._contracts = contracts or default_contracts()
 
     async def admit(self, admission: MaestroAdmission) -> MaestroCurrentLease:
         envelope = admission.envelope

@@ -23,7 +23,7 @@ from dooers.agents.server.maestro.context import (
 from dooers.agents.server.maestro.converters import history_messages
 from dooers.agents.server.maestro.memory import MaestroMemory
 from dooers.agents.server.maestro.persistence import MaestroAgentMemory
-from dooers.agents.server.protocol.maestro import MaestroContracts, verify_contract_bundle
+from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts, verify_contract_bundle
 from dooers.agents.server.protocol.models import Thread, ThreadEvent, User
 from dooers.tools.rag.runtime import bind_execution_context, current_execution_context, reset_execution_context
 from dooers.tools.whatsapp.runtime import require_agent_id, require_persistence
@@ -43,7 +43,7 @@ def private_key():
 
 @pytest.fixture(scope="module")
 def contracts():
-    return MaestroContracts()
+    return default_contracts()
 
 
 class HTTPFixture:

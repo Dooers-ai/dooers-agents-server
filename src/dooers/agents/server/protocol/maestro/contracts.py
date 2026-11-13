@@ -10,6 +10,7 @@ import builtins
 import hashlib
 import json
 import stat
+import threading
 from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
@@ -175,3 +176,23 @@ class MaestroContracts:
                 _fail("CONTRACT_FIXTURE_DIVERGENCE")
             results.append((case["id"], case["schema"], valid))
         return results
+
+
+_default: MaestroContracts | None = None
+_default_lock = threading.Lock()
+
+
+def default_contracts() -> MaestroContracts:
+    """The ``MaestroContracts`` of the vendored bundle, built once per process.
+
+    Building one verifies the bundle and compiles every schema (about 3 s). The compiled validators
+    keep no state and ``validate`` returns a copy, so every adapter, executor and client of the process
+    can share one. Callers that need another bundle (``directory``) build their own
+    ``MaestroContracts``.
+    """
+    global _default
+    if _default is None:
+        with _default_lock:
+            if _default is None:
+                _default = MaestroContracts()
+    return _default

@@ -560,7 +560,7 @@ class PostgresEffectJournal:
         Locks bind generation/inventory, phase intent, execution and exact fence.
         Missing/incomplete/unknown phases are rejected without reserve or recovery.
         """
-        from dooers.agents.server.protocol.maestro import MaestroContracts
+        from dooers.agents.server.protocol.maestro import default_contracts
 
         from .adapter import MaestroConfirmedResult
 
@@ -591,7 +591,7 @@ class PostgresEffectJournal:
             ):
                 raise JournalError("JOURNAL_RESULT_UNCONFIRMED")
             try:
-                result = (contracts or MaestroContracts()).validate("Public.CallbackResponse", json.loads(inv["result"]))
+                result = (contracts or default_contracts()).validate("Public.CallbackResponse", json.loads(inv["result"]))
                 if (
                     result["delivery_id"] != delivery
                     or result["execution_id"] != authority.execution_id

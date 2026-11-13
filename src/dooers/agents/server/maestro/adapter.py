@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
-from dooers.agents.server.protocol.maestro.contracts import MaestroContractError, MaestroContracts
+from dooers.agents.server.protocol.maestro.contracts import MaestroContractError, default_contracts
 
 from .config import MaestroConfig
 from .diagnostics import diagnostic_stage
@@ -124,7 +124,7 @@ class MaestroDeliveryAdapter:
             raise ValueError("MAESTRO_CONFIG_REQUIRED")
         config.validate_startup()
         self.config = config
-        self._contracts = MaestroContracts()
+        self._contracts = default_contracts()
         self._keys = load_public_keys(config.trusted_public_keys)
         self._lease_gate = lease_gate
         self._executor = executor

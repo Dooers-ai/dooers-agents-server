@@ -21,7 +21,7 @@ from dooers.agents.server.maestro import outputs as outputs_module
 from dooers.agents.server.maestro import sink as sink_module
 from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.sink import MaestroSend
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import default_contracts
 from tests.test_maestro_executor import execute_fixture, setup
 
 OTHER_AGENT = "00000000-0000-4000-8000-000000000012"
@@ -39,7 +39,7 @@ def private_key():
 
 @pytest.fixture(scope="module")
 def contracts():
-    return MaestroContracts()
+    return default_contracts()
 
 
 MESSAGE_SENDS = ("text", "image", "document", "audio", "contact", "template")

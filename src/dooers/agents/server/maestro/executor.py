@@ -8,7 +8,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
 
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts
 
 from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedResult, MaestroCurrentLease, MaestroDeliveryAdapter
 from .callbacks import MaestroCallbackClient, MaestroCallbackError, MaestroHeartbeatGate
@@ -80,7 +80,7 @@ class MaestroTextExecutor:
         self.config, self.handler, self.private_resolver = config, handler, private_resolver
         #: ``AgentConfig.assistant_name``: the author production writes for the agent's events.
         self.assistant_name = assistant_name
-        self._contracts = contracts or MaestroContracts()
+        self._contracts = contracts or default_contracts()
         self.journal, self.retry_policy, self.checkpoints, self.approvals = journal, retry_policy, checkpoints, approvals
         if options_resolver is not None and (not callable(options_resolver) or inspect.iscoroutinefunction(options_resolver)):
             raise ValueError("MAESTRO_OPTIONS_REGISTRATION_INVALID")
@@ -277,7 +277,7 @@ def create_text_delivery_adapter(
     (``maestro_settings``).
     """
     config, assistant_name = maestro_settings(config, assistant_name)
-    contracts = MaestroContracts()
+    contracts = default_contracts()
     return MaestroDeliveryAdapter(
         config,
         lease_gate=MaestroHeartbeatGate(config, contracts=contracts),

@@ -22,9 +22,9 @@ def private_key():
 
 @pytest.fixture(scope="module")
 def contracts():
-    from dooers.agents.server.protocol.maestro import MaestroContracts
+    from dooers.agents.server.protocol.maestro import default_contracts
 
-    return MaestroContracts()
+    return default_contracts()
 
 
 @asynccontextmanager

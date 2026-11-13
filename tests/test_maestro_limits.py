@@ -8,7 +8,7 @@ from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.maestro import MaestroConfigurationError
 from dooers.agents.server.maestro.callbacks import MaestroCallbackClient, MaestroCallbackError
 from dooers.agents.server.maestro.sink import MaestroEventSink, MaestroSend
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import default_contracts
 from tests.test_maestro_executor import execute_fixture, setup
 
 KIB = 1024
@@ -23,7 +23,7 @@ def private_key():
 
 @pytest.fixture(scope="module")
 def contracts():
-    return MaestroContracts()
+    return default_contracts()
 
 
 def test_default_output_limit_is_one_mib_and_configurable(private_key, contracts):

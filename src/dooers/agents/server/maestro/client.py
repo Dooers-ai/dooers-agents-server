@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import httpx
 
-from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroContracts
+from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroContracts, default_contracts
 
 from .adapter import MaestroAdmission, MaestroCurrentLease, _epoch
 from .config import MaestroConfig, MaestroCredentialRequest, MaestroInstanceCredential
@@ -55,7 +55,7 @@ class MaestroContextClient:
     ) -> None:
         self.config, self.admission = config, admission
         self._lease = lease
-        self._contracts = contracts or MaestroContracts()
+        self._contracts = contracts or default_contracts()
         self._closed = False
         self._finished = False
         #: Direction of every ``next_cursor`` received: a cursor is only valid in the direction that gave it.

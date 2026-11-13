@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts
 from dooers.agents.server.protocol.maestro.journal import ExecutionAuthority, JournalScope
 
 from .adapter import MaestroAdmission, MaestroAdmissionError, MaestroConfirmedResult, _epoch
@@ -28,7 +28,7 @@ class MaestroDurableReplayGate:
 
     def __init__(self, config, *, journal: PostgresEffectJournal, retry_policy: str, contracts: MaestroContracts | None = None):
         self.config, self.journal, self.retry_policy = config, journal, retry_policy
-        self.contracts = contracts or MaestroContracts()
+        self.contracts = contracts or default_contracts()
         self.heartbeat = MaestroHeartbeatGate(config, contracts=self.contracts)
 
     def _current(self, admission: MaestroAdmission) -> float:

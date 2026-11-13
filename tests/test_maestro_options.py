@@ -10,7 +10,7 @@ from dooers.agents.server.maestro.callbacks import MaestroCallbackError
 from dooers.agents.server.maestro.context import MaestroPrivateResources, current_maestro_context
 from dooers.agents.server.maestro.executor import MaestroTextExecutor
 from dooers.agents.server.maestro.recipient_options import MaestroOptionsRegistration
-from dooers.agents.server.protocol.maestro import MaestroContracts
+from dooers.agents.server.protocol.maestro import default_contracts
 from tests.test_maestro_executor import setup
 
 
@@ -23,7 +23,7 @@ def private_key():
 
 @pytest.fixture(scope="module")
 def contracts():
-    return MaestroContracts()
+    return default_contracts()
 
 
 class Settings:
