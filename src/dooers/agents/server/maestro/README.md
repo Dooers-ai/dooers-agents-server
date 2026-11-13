@@ -385,18 +385,21 @@ origem da invocação, corte, actor completo, causa/raiz/depth, prazos, resume e
 cooperativo de cancelamento. Orçamento causal restante é `None`, pois não está no
 wire; não se inventa número.
 
-`AgentIncoming` e `AgentContext` têm os valores de produção (`HandlerPipeline.execute`),
-exceto os papéis do usuário (primeiro item):
+`AgentIncoming` e `AgentContext` têm os valores de produção (`HandlerPipeline.execute`).
+O contexto da entrega traz os dados do Core que o handler de produção lê do
+`ConnectionContext` (campos só do contexto do agente, nunca no que vai ao navegador):
 
-- `user`: humano vira `User(user_id=principal_id, user_name=display_name,
-  user_email=email, identity_ids=identity_ids)`. Nome ou e-mail vazio vira `None`, como
-  em produção. E-mail e `identity_ids` vêm do contexto da entrega (actor; senão, o
-  participante). Esses campos existem só no contexto do agente, nunca no que vai ao
-  navegador. **Diferença até o plano 5:** `system_role`, `organization_role` e
-  `workspace_role` ficam nos padrões do `User` (`"user"`, `"member"`, `"member"`) e
-  `connection_type` fica `"dashboard"`. Em produção, eles vêm do `ConnectionContext` do
-  Core; o contexto da entrega do Maestro ainda não os traz. Um handler que confere o papel
-  (por exemplo `organization_role == "owner"`) vê o padrão no Maestro. Contato externo vira
+- `user`: humano vira `User(user_id=principal_id, user_name=display_name, user_email=email,
+  identity_ids=identity_ids, system_role, organization_role, workspace_role)`. Os campos
+  vêm do actor; o que o actor não tem vem do participante. Nome ou e-mail vazio vira
+  `None`, como em produção. Se o Core descreveu a pessoa (há `system_role`) e não tem o
+  nome dela, o Maestro mostra o nome genérico `"Humano"`; o SDK entrega `user_name=None`,
+  nunca `"Humano"`. O perfil que o agente declarou ao publicar a mensagem (e-mail e
+  `identity_ids` no actor) tem precedência; os papéis vêm do participante. Uma pessoa que
+  o Core não descreve (Maestro sem dados do Core, ou pessoa desconhecida) fica com os
+  padrões do `User` (`"user"`, `"member"`, `"member"`). `connection_type` fica
+  `"dashboard"` (o Maestro não o envia). Um handler que confere o papel (por exemplo
+  `organization_role == "owner"`) vê o papel do Core.
   `User(user_id=external_id, user_name=display_name)`, como o contato do WhatsApp em
   produção. Outro agente (ou sistema) vira `User(user_id="")`; o autor real fica em
   `on.context.maestro.actor`.
@@ -404,12 +407,17 @@ exceto os papéis do usuário (primeiro item):
   `"dooers-platform"`. Um contato externo nunca fica com `"dooers-platform"`: sem
   canal na thread, vale o canal do contato (`"whatsapp"` ou `"public_chat"`; o plano 6
   completa o chat público), e o RAG não age em nome dele.
-- `thread_title`, `thread_created_at`, `queue` e `channel_meta`: do `thread.created`
-  e dos `thread.updated` até o corte. Título vazio vira `None`. Thread sem
-  `thread.created` (criada por agente, sem dono) fica com os padrões de produção.
-- `queues`: catálogo de filas do workspace vindo de `MaestroPrivateResources.queues`
-  (itens `WorkspaceQueueCatalog`, cópia por execução). O Core não tem rota que o agente
-  possa chamar para esse catálogo; o operador o fornece. Padrão vazio.
+- `thread_title`, `thread_created_at`, `queue`, `channel` e `channel_meta`: da visão `thread`
+  do contexto da entrega (a thread no corte, em toda página). Título vazio vira `None`.
+  Um Maestro sem `thread` (versão antiga): do `thread.created` e dos `thread.updated`
+  da janela até o corte; thread sem `thread.created` (criada por agente, sem dono) fica
+  com os padrões de produção. `get_thread()` usa a mesma visão.
+- `queues`: catálogo de filas do workspace, de `workspace.queues` do contexto da entrega
+  (itens `WorkspaceQueueCatalog`, cópia por execução; vazio no escopo pessoal). Os slugs
+  (`workspace.allowed_queues`, o `allowed_queues` de produção) ficam em
+  `on.context.maestro.allowed_queues`. `MaestroPrivateResources.queues` está **obsoleto**: o
+  SDK só o lê quando o Maestro não envia `workspace` (versão antiga); com `workspace`, ele
+  é ignorado.
 - `message`: a regra de `_extract_message` de produção (textos e cartões de contato
   unidos por espaço; sem texto, `[image]`, `[audio]`, `[document: nome]`).
 - Partes: `text` → `TextPart`; `attachment` → `ImagePart`, `AudioPart` ou
@@ -723,12 +731,9 @@ lista os participantes por UUID aleatório; o `FakeMaestro` faz o mesmo e o SDK 
 
 Diferenças declaradas:
 
-- Papéis do usuário (`system_role`, `organization_role`, `workspace_role`) e catálogo de
-  filas: vêm do contexto de conexão do Core no plano 5. Até lá, os papéis ficam nos padrões
-  de `User` e as filas vêm de `MaestroPrivateResources.queues`.
-- Pessoa do chat web: o contexto do agente não tem nome (o Maestro mostra `"Humano"`),
-  e-mail nem `identity_ids` dela. O mesmo vale para `owner` e `users` de `get_thread()`
-  (participantes do Maestro). Produção tem os dados do Core. Correção no plano 5.
+- Leitura de `get_thread()` na mesma execução: uma pessoa que o handler adicionou com
+  `send.add_participant` nessa execução aparece só com o `principal_id` (o Maestro devolve
+  o participante sem os dados do Core). Em outra execução, ele traz os dados do Core.
 - `run_start(agent_id=<o próprio agente>)` volta como `agent_id=None` no `Run`, como
   `send.run_start()` sem argumento.
 - Documento por URL (`media_link`): sem tamanho. A parte gravada tem `size_bytes=None` e a
@@ -743,8 +748,10 @@ Diferenças declaradas:
 
 Lacunas abertas (`tests/parity/known_gaps.py`): a entrada pelo `AgentServer` (`dispatch`,
 `ingest`, `repository`, `memory(thread_id)`, `chat_upload`) e o WhatsApp ficam para o plano 5.
-O chat público fica para o plano 6. Cada lacuna diz o plano que a fecha. Uma lacuna que é
-só uma diferença declarada tem de dar o mesmo resultado com essa diferença mascarada.
+O chat público fica para o plano 6. Cada lacuna diz o plano que a fecha. Três cenários
+(`form_response_submit`, `form_response_cancel`, `incoming_fields`) diferem só por uma
+diferença declarada permanente (os acks do WebSocket legado; o tamanho de um documento por
+URL): com essa diferença mascarada, o resultado é igual ao de produção.
 
 ## Incremental local (E09-03)
 

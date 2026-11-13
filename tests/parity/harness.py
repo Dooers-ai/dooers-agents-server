@@ -457,8 +457,8 @@ async def _run_maestro_deliveries(maestro: FakeMaestro, scenario: Scenario) -> d
     spec = scenario.incoming
 
     async def resources(scope: Any) -> MaestroPrivateResources:
-        # The operator's queue catalog (``MaestroPrivateResources.queues``) until Core sends it (plan 5).
-        return MaestroPrivateResources(scope, MemoryPersistence(), {}, {}, queues=spec.queues)
+        # The queue catalog comes from the delivery context (``workspace``), not from the operator.
+        return MaestroPrivateResources(scope, MemoryPersistence(), {}, {})
 
     # Configured as the legacy side (``_config``): the same AgentConfig (assistant name, content policy).
     agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
@@ -516,7 +516,9 @@ class _AgentReader:
 
         self.links = LinkResolver(issue)
         view = maestro.agent_view(thread_id)
-        self._window = ThreadPages(view["events"], view["participants"]).window()
+        self._window = ThreadPages(
+            view["events"], view["participants"], workspace=view.get("workspace"), thread=view.get("thread")
+        ).window()
 
     def window(self) -> MaestroContextWindow:
         return self._window
@@ -545,7 +547,7 @@ async def _maestro_read_back(maestro: FakeMaestro, observe: frozenset[str]) -> t
 async def run_maestro(name: str) -> ParityResult:
     scenario = SCENARIOS[name]
     spec = scenario.incoming
-    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME)
+    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME, core_people=[spec.user, *spec.core_people], queues=spec.queues)
     persistence = MemoryPersistence()
     with _offline_environment(persistence, spec.connect or DASHBOARD_CONNECT, maestro, spec.media) as fakes:
         capture, token = open_capture(scenario.history_formats)

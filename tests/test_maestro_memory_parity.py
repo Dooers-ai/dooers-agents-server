@@ -123,6 +123,8 @@ class ContextMemory:
         cutoff: int | None = None,
         page_size: int = 100,
         max_pages: int = 20,
+        workspace: dict[str, Any] | None = None,
+        thread_view: dict[str, Any] | None = None,
     ) -> None:
         self._envelope = {
             "thread_id": thread.thread_id,
@@ -132,7 +134,7 @@ class ContextMemory:
         }
         self.links = links or _links()
         self._thread, self._participants, self._cutoff = thread, list(participants), cutoff
-        self.pages = ThreadPages(thread.events, list(participants), cutoff=cutoff)
+        self.pages = ThreadPages(thread.events, list(participants), cutoff=cutoff, workspace=workspace, thread=thread_view)
         self._window = self.pages.window(page_size=page_size, max_pages=max_pages)
         self.snapshots = 0
         self.hydrated: list[MaestroArtifactReference] = []
@@ -763,8 +765,8 @@ async def test_executor_gives_the_handler_the_production_memory():
     production = await _production((PHOTO_TURN, LAST_TURN))
     for fmt in HISTORY_FORMATS:
         assert _normalized(seen["histories"][fmt]) == _normalized(await production.get_history(format=fmt)), fmt
-    # A web chat person has no name in Maestro's agent context ("Humano") until Core's context reaches it (plan 5).
-    person = fake_module.WEB_CHAT_PERSON_NAME
+    # The agent's context has the name Core gives the web chat person (browsers read the placeholder).
+    person = USER.user_name
     assert [(e.actor, e.author) for e in seen["raw"]] == [("user", person), ("assistant", ASSISTANT_NAME), ("user", person)]
     assert seen["raw"][0].content[1].url.startswith(f"{fake_module.CALLBACK_BASE_URL}/artifact-links/")
     assert isinstance(seen["thread"], Thread) and seen["thread"].id == seen["raw"][0].thread_id

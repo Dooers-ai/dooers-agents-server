@@ -126,6 +126,9 @@ class ScenarioInput:
     channel: str = "dooers-platform"
     channel_meta: Mapping[str, Any] | None = None
     queues: tuple[WorkspaceQueueCatalog, ...] = ()
+    #: Maestro mode: people Core knows besides ``user`` (what its connection context says about a
+    #: person the handler adds to the thread); production gets them from the handler's own ``User``.
+    core_people: tuple[User, ...] = ()
     #: ``websocket`` flow: public chat handshake through the fake core.
     connect: Connect | None = None
     #: ``script`` flow: runs public ``AgentServer`` calls and returns their results.

@@ -3,10 +3,12 @@
 ``FakeMaestro`` plays the sides the SDK does not own:
 
 - the web chat (a person): ``create_thread``, ``publish``, ``upload`` and ``respond_form``.
-  As in Maestro, the person's actor and participant are the placeholder ``"Humano"``
-  (``events/publication.ts``, ``participantView``): the agent's context has no name, e-mail
-  or identity IDs of a web chat person (Core's connection context reaches the delivery in
-  plan 5);
+  The person's actor and participant are the placeholder ``"Humano"`` in what browsers read
+  (``events/publication.ts``, ``participantView``). The agent's context adds what Core's
+  connection context says about the person (``core_people``; a person who creates a thread or
+  publishes is one): name, e-mail, identity IDs and the three roles, and the ``workspace`` catalog
+  (``queues``) and the ``thread`` view on every page, as Maestro's ``agent-profiles.ts`` and
+  ``callbacks.ts`` do. ``connection_context=False`` is a Maestro that sends none of them;
 - the agent's own publication of a person's message, ``agent_publish``: the Maestro side of
   production ``AgentServer.dispatch`` (``POST /agent/threads/:id/events`` with a declared
   person and ``trigger: true``, Maestro 99c2902). The declared name goes with the message;
@@ -35,8 +37,8 @@ As Maestro does:
 - each accepted output becomes the event of its type (index 4.4: ``message.create`` ->
   ``message.created``, ``run.update`` -> ``run.updated``, ...), with the payload as sent plus
   the fields Maestro adds. ``thread.update`` changes the title and queue of the thread and
-  ``participant.add`` adds the person (without name, e-mail or identity IDs; one already in
-  the thread is refused ``already_participant``);
+  ``participant.add`` adds the person (the stored participant has only the principal; the agent's
+  context adds what the core knows of it; one already in the thread is refused ``already_participant``);
 - ``respond_form`` answers a production form (``form.created``): it records
   ``form.responded``, its own causal root, and ``deliveries_for`` gives it one delivery to
   the form's author;
@@ -59,7 +61,7 @@ import functools
 import hashlib
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -79,7 +81,7 @@ from dooers.agents.server.maestro import MaestroConfig, MaestroDeliveryAdapter, 
 from dooers.agents.server.maestro.callbacks import STORED_EVENT_TYPES
 from dooers.agents.server.maestro.context import MaestroPrivateResources, MaestroPrivateScope
 from dooers.agents.server.protocol.maestro import MaestroContracts, default_contracts
-from dooers.agents.server.protocol.models import User
+from dooers.agents.server.protocol.models import User, WorkspaceQueueCatalog
 from tests.parity.context_pages import ContextGap, CursorInvalid, serve_context
 from tests.parity.maestro_file_policy import MAX_ARTIFACT_BYTES, canonical_mime_type, maestro_accepts_file
 from tests.parity.memory_persistence import MemoryPersistence
@@ -195,9 +197,19 @@ class FakeMaestro:
         assistant_name: str = ASSISTANT_NAME,
         artifact_mime_types: tuple[str, ...] = (),
         product_capabilities: tuple[str, ...] = (),
+        core_people: Sequence[User] = (),
+        queues: Sequence[WorkspaceQueueCatalog] = (),
+        connection_context: bool = True,
     ) -> None:
         self.contracts = shared_contracts()
         self.assistant_name = assistant_name
+        #: What Core's connection context says about each person (by user id); the one who creates a thread
+        #: or publishes is added.
+        self.core_people: dict[str, User] = {person.user_id: person for person in core_people}
+        #: The workspace queue catalog Core gives the agent's context.
+        self.queues = tuple(queues)
+        #: False: a Maestro without the core connection context (no ``workspace``, ``thread`` or person fields).
+        self.connection_context = connection_context
         key = signing_key()
         self.core_token, core_expires_at = self._core_credential(key)
 
@@ -266,6 +278,7 @@ class FakeMaestro:
                 "participants": [{"kind": "agent", "principal_id": INSTANCE_AGENT_ID}],
             },
         )
+        self.core_people.setdefault(human.user_id, human)
         thread_id, now = str(uuid4()), _now()
         person = {
             "participant_id": str(uuid4()),
@@ -326,6 +339,7 @@ class FakeMaestro:
             f"(part types: {[part.get('type') for part in content]})",
         )
         person = self._participant(thread_id, kind="human", principal_id=human.user_id)
+        self.core_people.setdefault(human.user_id, human)
         self._check_attachments(request["content"], human.user_id)
         payload = {"client_event_id": request["client_event_id"], "content": request["content"], "mentions": request["mentions"]}
         event = self._append(thread_id, self._person_actor(person), payload)
@@ -350,6 +364,7 @@ class FakeMaestro:
         if thread is None or sum(p["kind"] == "agent" and p["state"] != "removed" for p in thread["participants"]) != 1:
             raise FakeMaestroRejected(action, "multi_agent_thread: only a thread with one agent")
         person = self._participant(thread_id, kind="human", principal_id=human.user_id)
+        self.core_people.setdefault(human.user_id, human)
         self._check_attachments(content, INSTANCE_AGENT_ID)
         actor = {**self._person_actor(person), **({"display_name": human.user_name} if human.user_name else {})}
         event = self._append(thread_id, actor, {"client_event_id": client_event_id, "content": deepcopy(content), "mentions": []})
@@ -476,7 +491,10 @@ class FakeMaestro:
         Same shape as ``MaestroMemory.snapshot()`` (the trigger is the last event).
         """
         events = [self._agent_event(event) for event in self.events[thread_id]]
-        return {"trigger_event": deepcopy(events[-1]), "participants": self._context_participants(thread_id), "events": events}
+        view = {"trigger_event": deepcopy(events[-1]), "participants": self._context_participants(thread_id), "events": events}
+        if self.connection_context:
+            view.update(workspace=self._workspace(), thread=self._thread_view(thread_id, len(events)))
+        return view
 
     def _context_participants(self, thread_id: str) -> list[dict[str, Any]]:
         """The participants of the delivery context, in Maestro's order: by participant id (a random UUID).
@@ -484,7 +502,8 @@ class FakeMaestro:
         ``callbacks.ts`` lists them ``ORDER BY participants.id``: the order says nothing about who
         joined first. The SDK orders them (``legacy_model.to_thread``).
         """
-        return sorted(deepcopy(self.threads[thread_id]["participants"]), key=lambda participant: participant["participant_id"])
+        participants = sorted(deepcopy(self.threads[thread_id]["participants"]), key=lambda participant: participant["participant_id"])
+        return [self._with_profile(participant, thread_id) for participant in participants]
 
     def artifact_link(self, thread_id: str, artifact_id: str, *, cutoff: str | None = None) -> dict[str, Any]:
         """A temporary link (``{url, expires_at}``) to a file linked to the thread (up to ``cutoff``).
@@ -588,6 +607,8 @@ class FakeMaestro:
         delivery.context_pages += 1
         delivery.context_requests.append((query.get("cursor"), query.get("limit"), query.get("direction", "forward")))
 
+        cutoff = int(delivery.envelope["context_cutoff_sequence"])
+
         def page(items: list[dict[str, Any]], next_cursor: str | None, has_more: bool) -> dict[str, Any]:
             return {
                 "delivery_id": delivery.delivery_id,
@@ -600,6 +621,11 @@ class FakeMaestro:
                     "has_more": has_more,
                     "watermark": delivery.envelope["context_cutoff_sequence"],
                 },
+                **(
+                    {"workspace": self._workspace(), "thread": self._thread_view(delivery.thread_id, cutoff)}
+                    if self.connection_context
+                    else {}
+                ),
             }
 
         try:
@@ -883,10 +909,78 @@ class FakeMaestro:
         return form, author
 
     def _agent_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        """The event as the agent reads it: a declared person carries the declared e-mail and identity IDs."""
+        """The event as the agent reads it (``enrichEvent``, ``agent-profiles.ts``).
+
+        A declared person carries the declared e-mail and identity IDs. Then each person the core knows
+        (an active human of the thread) gets the core profile, unless the actor already has its own:
+        the human actor, and the people in ``thread.created`` and ``participant.added``.
+        """
         view = deepcopy(event)
         view["actor"].update(self.declared_profiles.get(event["event_id"], {}))
+        thread_id = event["thread_id"]
+        view["actor"] = self._with_profile(view["actor"], thread_id)
+        if view["type"] == "thread.created":
+            thread = view["payload"]["thread"]
+            thread["participants"] = [self._with_profile(person, thread_id) for person in thread["participants"]]
+        elif view["type"] == "participant.added":
+            view["payload"]["participant"] = self._with_profile(view["payload"]["participant"], thread_id)
         return view
+
+    def _with_profile(self, view: dict[str, Any], thread_id: str) -> dict[str, Any]:
+        """``withProfile``: an active human the core knows gets name (when it has one), e-mail, identity IDs and roles.
+
+        The e-mail is ``null`` when the core has none; a name the core lacks leaves the placeholder.
+        An actor or participant that already has an e-mail or identity IDs (the agent declared them) keeps them.
+        """
+        if not self.connection_context or view.get("kind") != "human" or "principal_id" not in view:
+            return view
+        person = self.core_people.get(view["principal_id"])
+        active = any(
+            p["kind"] == "human" and p["principal_id"] == view["principal_id"] and p["state"] == "active"
+            for p in self.threads[thread_id]["participants"]
+        )
+        if person is None or not active or "email" in view or "identity_ids" in view:
+            return view
+        return {
+            **view,
+            **({"display_name": person.user_name} if person.user_name else {}),
+            "email": person.user_email or None,
+            "identity_ids": list(person.identity_ids),
+            "system_role": person.system_role,
+            "organization_role": person.organization_role,
+            "workspace_role": person.workspace_role,
+        }
+
+    def _workspace(self) -> dict[str, Any]:
+        """``workspace`` of the context: the core's queue catalog and its slugs."""
+        return {
+            "allowed_queues": [queue.slug for queue in self.queues if queue.slug],
+            "queues": [queue.model_dump() for queue in self.queues],
+        }
+
+    def _thread_view(self, thread_id: str, cutoff: int) -> dict[str, Any]:
+        """``thread`` of the context (``Public.ContextThread``): the thread as it was at the ``cutoff``.
+
+        Title and queue are the last ``thread.created`` or ``thread.updated`` up to the cutoff; the other
+        fields are never written after the creation.
+        """
+        thread = self.threads[thread_id]
+        state = {"title": thread["title"], "queue": thread["queue"]}
+        for event in self.events[thread_id]:
+            if int(event["sequence"]) > cutoff:
+                break
+            if event["type"] == "thread.created":
+                state = {key: event["payload"]["thread"][key] for key in ("title", "queue")}
+            elif event["type"] == "thread.updated":
+                state = {key: event["payload"][key] for key in ("title", "queue")}
+        return {
+            "thread_id": thread_id,
+            **state,
+            "channel": thread["channel"],
+            "channel_meta": deepcopy(thread["channel_meta"]),
+            "created_at": thread["created_at"],
+            "owner_instance_agent_id": thread["owner_instance_agent_id"],
+        }
 
     def _append(
         self, thread_id: str, actor: dict[str, Any], payload: dict[str, Any], *, event_type: str = "message.created", **extra: Any

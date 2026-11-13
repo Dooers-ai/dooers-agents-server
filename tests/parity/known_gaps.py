@@ -5,7 +5,8 @@ failure the gap states counts as the gap, and any other error fails the test. It
 checks that each gap still fails as stated (``Gap.raises`` and ``Gap.deliveries``) and, for
 a gap with ``Gap.masked``, that the results are equal once those declared differences are
 masked on both sides: the gap is exactly what it states. Each plan removes the scenarios it
-fixes, or updates a gap whose failure changed. At the end of plan 6 the set is empty.
+fixes, or updates a gap whose failure changed. At the end of plan 6 the only gaps left are the ones
+that state a permanent declared difference and nothing else.
 
 History: measured on 2026-11-11 (task 8 of plan 1: no scenario matched); the variant
 scenarios (``chart_<type>``, ``form_text_<input_type>``, ``form_<builder>``,
@@ -20,6 +21,13 @@ message (the declared name, e-mail and identity IDs; URL parts as ``media_link``
 execution scenario matches, except the ones below that need Core's connection context
 (plan 5). The other gaps are the ``AgentServer`` ingress (plan 5: WhatsApp, ``Repository``,
 ``dispatch`` outside a delivery) and the public chat (plan 6).
+
+Measured again on 2026-11-13 (plan 5, task 5a). The delivery context carries Core's person data (name,
+e-mail, identity IDs and the three roles), the workspace queue catalog and the thread view, and the SDK
+reads them. The three ``send.*`` scenarios that waited for them match (``update_thread_title``,
+``update_thread_queue``, ``add_participant``). ``form_response_submit``, ``form_response_cancel`` and
+``incoming_fields`` still differ, only by a permanent declared difference (the legacy WebSocket acks; the
+size of a URL document).
 """
 
 from __future__ import annotations
@@ -29,34 +37,13 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 
 from dooers.agents.server.exceptions import ThreadManagementModeError
-from tests.parity.model import AGENT_ID, ParityResult
+from tests.parity.model import ParityResult
 from tests.parity.scenarios_server import WHATSAPP_SENDS
 
 Outcome = tuple[int, str, str | None]
 
 #: The value a declared difference gets on both sides before the comparison.
 MASK = "<declared>"
-_ROLES = ("system_role", "organization_role", "workspace_role")
-
-
-def _thread_people(result: ParityResult) -> None:
-    for thread in result.outputs.get("threads", []):
-        for user in [thread["owner"], *thread["users"]]:
-            if user["user_id"] != AGENT_ID:
-                user.update(dict.fromkeys(("user_name", "user_email", "identity_ids", *_ROLES), MASK))
-
-
-def _web_chat_person(result: ParityResult) -> None:
-    for event in result.events:
-        if event["actor"] == "user":
-            event["author"] = MASK
-            event["user"].update(user_name=MASK, user_email=MASK)
-
-
-def _core_roles(result: ParityResult) -> None:
-    user = result.incoming.get("context", {}).get("user")
-    if user is not None:
-        user.update(dict.fromkeys(_ROLES, MASK))
 
 
 def _media_link_size(result: ParityResult) -> None:
@@ -73,20 +60,6 @@ def _agent_websocket(result: ParityResult) -> None:
 
 #: Declared differences a gap may mask (name -> what differs, and the mask applied to both sides).
 DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
-    "thread_people": (
-        "plan 5: the people of Thread.owner/users. A Maestro participant has no name (Maestro shows 'Humano'), e-mail, "
-        "identity IDs or roles; production has the ones Core (or send.add_participant) gave",
-        _thread_people,
-    ),
-    "web_chat_person": (
-        "plan 5: a web chat person's event. The agent's context has no name ('Humano') or e-mail of a web chat person; "
-        "production has the ones of Core's connection context",
-        _web_chat_person,
-    ),
-    "core_roles": (
-        "plan 5: on.context.user has the User default roles; production takes them from Core's connection context",
-        _core_roles,
-    ),
     "media_link_size": (
         "declared, permanent: a URL document reaches Maestro as a media_link, which has no size "
         "(stored size_bytes None, handler size_bytes 0)",
@@ -141,17 +114,14 @@ def _server_blocked(call: str, detail: str = "") -> Gap:
 
 _RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
 #: A phase without a visible reply (message, form or chart) completes silent: Maestro refuses responded for it.
-_SILENT: tuple[Outcome, ...] = ((200, "silent", "implicit_empty"),)
 _PUBLIC_CHAT = Gap("plan 6: the Maestro-mode router acks event.create with THREAD_MANAGEMENT_MISMATCH: no events and no thread")
 
 GAPS: dict[str, Gap] = {
-    # send.* through a Maestro delivery: equal except Core's identity of the people (plan 5)
-    "update_thread_title": _declared("thread_people", deliveries=_SILENT),
-    "update_thread_queue": _declared("thread_people", deliveries=_SILENT),
-    "add_participant": _declared("thread_people", deliveries=_SILENT),
-    "form_response_submit": _declared("web_chat_person", "agent_websocket", deliveries=_RESPONDED * 2),
-    "form_response_cancel": _declared("web_chat_person", "agent_websocket", deliveries=_RESPONDED * 2),
-    "incoming_fields": _declared("core_roles", "media_link_size", deliveries=_RESPONDED * 2),
+    # Core's person, workspace and thread data reach the agent's context (plan 5, task 5a): the scenarios that
+    # waited for them match. What is left differs only by a permanent declared difference.
+    "form_response_submit": _declared("agent_websocket", deliveries=_RESPONDED * 2),
+    "form_response_cancel": _declared("agent_websocket", deliveries=_RESPONDED * 2),
+    "incoming_fields": _declared("media_link_size", deliveries=_RESPONDED * 2),
     # AgentServer ingress (plan 5) and public chat (plan 6)
     "server_dispatch": _server_blocked("dispatch"),
     "server_ingest": _server_blocked("ingest"),

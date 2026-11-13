@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from dooers.agents.server.protocol.models import User
 from tests.parity.model import (
     FORM_EVENT_REF,
     OTHER_AGENT_ID,
@@ -368,7 +369,11 @@ SEND_SCENARIOS: dict[str, Scenario] = {
                 )
             ]
         ),
-        incoming=ScenarioInput(observe=frozenset({"threads"})),
+        # Core knows the person the handler adds (its connection context describes every human of the thread).
+        incoming=ScenarioInput(
+            observe=frozenset({"threads"}),
+            core_people=(User(user_id="user-2", user_name="Bia Lima", user_email="bia@example.com", identity_ids=["idp-bia"]),),
+        ),
     ),
     **{f"chart_{chart_type}": Scenario(handler=_chart(chart_type), incoming=ScenarioInput()) for chart_type in CHART_VARIANTS},
     **{

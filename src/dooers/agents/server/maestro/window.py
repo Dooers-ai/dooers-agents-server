@@ -10,7 +10,7 @@ the lease on every use.
 
 The window also keeps the first event of the thread (a forward page of one event), read only
 when asked: ``thread.created`` has the channel and creation time, and the queue the thread had
-before the window.
+before the window. A Maestro that sends the ``thread`` view makes this read unnecessary.
 
 ``max_pages`` is how far back the window may go (backward pages, newest first): an execution never
 holds more. A read that needs events older than that raises ``MaestroHistoryLimitError`` (not an
@@ -86,7 +86,11 @@ class MaestroContextWindow:
         return self._head is not None and self._next is None
 
     async def load(self) -> dict[str, Any]:
-        """The context head (``trigger_event``, ``invocation_event``?, ``participants``), reading the first page once."""
+        """The context head, reading the first page once.
+
+        ``trigger_event``, ``invocation_event`` (if any), ``participants`` and, when the Maestro sends them,
+        ``workspace`` and ``thread``.
+        """
         if self._head is None:
             async with self._lock:
                 if self._head is None:  # a concurrent caller may have read it while this one waited
@@ -99,6 +103,10 @@ class MaestroContextWindow:
                         "trigger_event": deepcopy(page["trigger_event"]),
                         **({"invocation_event": deepcopy(page["invocation_event"])} if "invocation_event" in page else {}),
                         "participants": deepcopy(page["participants"]),
+                        # The core's workspace data and the thread view at the cutoff: every page repeats them,
+                        # and an older Maestro sends neither.
+                        **({"workspace": deepcopy(page["workspace"])} if "workspace" in page else {}),
+                        **({"thread": deepcopy(page["thread"])} if "thread" in page else {}),
                     }
         self._check_current()
         return self._head

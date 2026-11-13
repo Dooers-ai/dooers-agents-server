@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -19,6 +20,7 @@ from dooers.agents.server.protocol.models import (
     TextPart,
     User,
     WorkspaceQueueCatalog,
+    WorkspaceQueueMember,
 )
 from dooers.tools.whatsapp.runtime import (
     bind_handler_context,
@@ -29,6 +31,7 @@ from dooers.tools.whatsapp.runtime import (
 
 from .client import MaestroContextError
 from .diagnostics import diagnostic_stage
+from .legacy_model import production_user
 from .memory import MaestroMemory
 from .window import MaestroContextWindow
 
@@ -58,9 +61,9 @@ class MaestroPrivateResources:
     persistence: Any = field(repr=False)
     settings: Any = field(repr=False)
     analytics: Any = field(repr=False)
-    #: Workspace queue catalog for ``on.context.queues``, as the legacy path gets it from Core
-    #: (``WorkspaceQueueCatalog`` items). Core has no route an agent can call for it, so the
-    #: operator supplies it; empty by default.
+    #: Deprecated. The workspace queue catalog now comes from the delivery context (``workspace``: the core's
+    #: catalog, as the legacy path gets it from Core). This field is read only when the Maestro sends no
+    #: ``workspace`` (an older Maestro): ``WorkspaceQueueCatalog`` items; empty by default.
     queues: Sequence[WorkspaceQueueCatalog] = field(default=(), repr=False)
 
 
@@ -114,6 +117,8 @@ class MaestroExecutionContext:
     mode: Literal["maestro"] = "maestro"
     # Estes limites não existem no wire atual; não inventar orçamento restante.
     causal_budget_remaining: int | None = None
+    #: Slugs of the workspace queue catalog (production ``allowed_queues``); empty: no catalog.
+    allowed_queues: tuple[str, ...] = ()
 
     @property
     def original_trigger_event_id(self) -> str:
@@ -151,20 +156,42 @@ def _production_message(content: list[Any]) -> str:
     return HandlerPipeline._extract_message(None, content)
 
 
-def thread_at_cutoff(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def thread_from_view(view: dict[str, Any]) -> dict[str, Any]:
+    """Title, creation time, queue and channel from the ``thread`` view of the delivery context.
+
+    The view is the thread as it was at the context cutoff (``Public.ContextThread``): production
+    reads the same values from the thread row. An empty title is ``None``.
+    """
+    return {
+        "title": view["title"] or None,
+        "created_at": _timestamp(view["created_at"]),
+        "queue": view["queue"],
+        "channel": view["channel"],
+        "channel_meta": deepcopy(view["channel_meta"]),
+    }
+
+
+def thread_at_cutoff(events: list[dict[str, Any]], base: dict[str, Any] | None = None) -> dict[str, Any]:
     """Title, creation time, queue and channel of the thread up to the context cutoff.
 
     ``thread.created`` carries the thread view; each later ``thread.updated`` carries the
     current title and queue. A thread without ``thread.created`` (one an agent created, with
-    no owner) keeps the production defaults.
+    no owner) keeps the production defaults. ``base`` is the thread already known (``thread_from_view``):
+    the events then only add the changes that come after it.
     """
-    thread: dict[str, Any] = {"title": None, "created_at": None, "queue": None, "channel": None, "channel_meta": None}
+    thread: dict[str, Any] = (
+        deepcopy(base) if base is not None else {"title": None, "created_at": None, "queue": None, "channel": None, "channel_meta": None}
+    )
     for event in events:
         if event["type"] == "thread.created":
             view = event["payload"]["thread"]
             thread.update(
                 title=view["title"] or None,
-                created_at=datetime.fromisoformat(view["created_at"].replace("Z", "+00:00")),
+                created_at=_timestamp(view["created_at"]),
                 queue=view.get("queue"),
                 channel=view.get("channel"),
                 channel_meta=deepcopy(view.get("channel_meta")),
@@ -176,23 +203,39 @@ def thread_at_cutoff(events: list[dict[str, Any]]) -> dict[str, Any]:
     return thread
 
 
+def workspace_queues(workspace: dict[str, Any]) -> tuple[list[WorkspaceQueueCatalog], tuple[str, ...]]:
+    """The queue catalog and the allowed slugs of the ``workspace`` of the delivery context (copies)."""
+    queues = [
+        WorkspaceQueueCatalog(
+            slug=queue["slug"],
+            name=queue["name"],
+            members=[
+                WorkspaceQueueMember(
+                    user_id=member["user_id"],
+                    user_name=member["user_name"],
+                    user_email=member["user_email"],
+                    identity_ids=list(member["identity_ids"]),
+                    claims=deepcopy(member["claims"]),
+                )
+                for member in queue["members"]
+            ],
+        )
+        for queue in workspace["queues"]
+    ]
+    return queues, tuple(workspace["allowed_queues"])
+
+
 def _user(actor: dict[str, Any], participants: list[dict[str, Any]]) -> User:
     """The production ``User`` of the author: a person, a channel contact or ``User(user_id="")``.
 
-    E-mail and identity IDs come from the delivery context (actor, else its participant).
+    A person is what production builds from Core's connection context (``auth_validation``): name,
+    e-mail, identity IDs and the three roles. They come from the actor, else from its participant
+    (``production_user``); a person the core did not describe keeps the ``User`` defaults.
     They exist only in the agent's context, never in what browsers receive.
     """
     if actor["kind"] == "human":
-        participant = next((p for p in participants if p["participant_id"] == actor["participant_id"]), {})
-        # As production builds it from Core (``auth_validation``): an empty name or e-mail is None.
-        # The roles keep the User defaults: production takes them from Core's ConnectionContext,
-        # which a Maestro delivery does not carry yet (plan 5).
-        return User(
-            user_id=actor["principal_id"],
-            user_name=actor["display_name"] or None,
-            user_email=(actor["email"] if "email" in actor else participant.get("email")) or None,
-            identity_ids=list(actor["identity_ids"] if "identity_ids" in actor else participant.get("identity_ids", [])),
-        )
+        participant = next((p for p in participants if p["participant_id"] == actor["participant_id"]), None)
+        return production_user(actor, participant)
     if actor["kind"] == "external":
         # As production does with a WhatsApp contact: the user id is the contact (e.g. +55...).
         return User(user_id=actor["external_id"], user_name=actor.get("display_name") or None)
@@ -274,6 +317,8 @@ async def _incoming(
         # A cancel invokes the handler too, as production does.
         form_data, form_cancelled, form_event_id = await _form_response(origin, window, envelope)
     actor = origin["actor"]
+    # The core's queue catalog of the workspace, as production gets it in the handshake; an older Maestro sends none.
+    queues = workspace_queues(snapshot["workspace"]) if "workspace" in snapshot else ([], ())
     metadata = MaestroExecutionContext(
         **{
             key: envelope[key]
@@ -298,6 +343,7 @@ async def _incoming(
         },
         origin_event_id=origin["event_id"],
         origin_sequence=origin["sequence"],
+        allowed_queues=queues[1],
         actor=deepcopy(actor),
         causation_event_id=origin["causation_event_id"],
         resume=deepcopy(resume),
@@ -314,7 +360,9 @@ async def _incoming(
             else None
         ),
     )
-    thread = thread_at_cutoff(await window.thread_events())
+    # The thread view of the delivery context (production reads the thread row); an older Maestro sends none:
+    # then ``thread.created`` and the changes of the window give it.
+    thread = thread_from_view(snapshot["thread"]) if "thread" in snapshot else thread_at_cutoff(await window.thread_events())
     channel = thread["channel"] or DEFAULT_CHANNEL
     if actor["kind"] == "external" and channel == DEFAULT_CHANNEL:
         # A channel contact is never a platform user: no RAG on_behalf (production: channel "whatsapp").
@@ -331,6 +379,7 @@ async def _incoming(
         thread_title=thread["title"],
         thread_created_at=thread["created_at"],
         queue=thread["queue"],
+        queues=queues[0],
     )
     # Set before AgentIncoming is built: a Maestro context binds RAG only in maestro_handler_context.
     context.maestro = metadata
@@ -452,10 +501,13 @@ async def maestro_handler_context(
         assert_options_current()
         if not isinstance(resources, MaestroPrivateResources) or resources.scope != scope:
             raise MaestroContextError("ACCESS_REVOKED")
-        if isinstance(resources.queues, (str, bytes)) or not all(isinstance(q, WorkspaceQueueCatalog) for q in resources.queues):
-            raise MaestroContextError("CONTEXT_INVALID")
-        # A copy per execution, as production copies the handshake catalog (``list(context.queues)``).
-        incoming.context.queues = [queue.model_copy(deep=True) for queue in resources.queues]
+        if "workspace" not in snapshot:
+            # An older Maestro sends no catalog: the deprecated operator-supplied one, a copy per execution.
+            if isinstance(resources.queues, (str, bytes)) or not all(isinstance(q, WorkspaceQueueCatalog) for q in resources.queues):
+                raise MaestroContextError("CONTEXT_INVALID")
+            incoming.context.queues = [queue.model_copy(deep=True) for queue in resources.queues]
+            allowed = tuple(queue.slug for queue in incoming.context.queues if queue.slug)
+            incoming.context.maestro = dataclasses.replace(incoming.context.maestro, allowed_queues=allowed)
         # Recursos privados podem exigir I/O; revalidar acesso remoto antes de expor input.
         with diagnostic_stage("context.revalidate", memory._envelope):
             await memory.get_thread()

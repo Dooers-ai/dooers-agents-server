@@ -163,10 +163,11 @@ async def test_a_long_thread_through_the_real_adapter_answers_with_bounded_pages
     assert seen["title"] == "Atendimento" and seen["thread"].title == "Atendimento"
     backward = [request for request in delivery.context_requests if request[2] == "backward"]
     forward = [request for request in delivery.context_requests if request[2] == "forward"]
-    # The newest page once; two one-event forward pages: the thread's first event (``thread.created``: channel and
-    # creation time) and the authorization check of ``on`` (``MaestroMemory.get_thread``).
-    assert (len(backward), len(forward)) == (1, 2) and all(request[1] == 1 for request in forward)
-    assert delivery.context_pages == 3
+    # The newest page once, and one one-event forward page: the authorization check of ``on``
+    # (``MaestroMemory.get_thread``). The first event of the thread is not read: the ``thread`` view of the
+    # context has the channel, the creation time, the title and the queue.
+    assert (len(backward), len(forward)) == (1, 1) and all(request[1] == 1 for request in forward)
+    assert delivery.context_pages == 2
 
 
 async def test_a_history_read_past_the_window_cap_reaches_the_handler_as_its_own_error():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -11,7 +12,7 @@ import pytest
 import dooers.agents.server.maestro.media_fetch as media_fetch_module
 from dooers.agents.server.handlers.send import AgentSend
 from dooers.agents.server.maestro import create_text_delivery_adapter
-from dooers.agents.server.protocol.models import User
+from dooers.agents.server.protocol.models import User, WorkspaceQueueCatalog
 from tests.parity import samples
 from tests.parity.fake_maestro import (
     CALLBACK_BASE_URL,
@@ -24,7 +25,7 @@ from tests.parity.fake_maestro import (
 from tests.parity.model import AGENT_ID, USER
 from tests.test_maestro_legacy_model import MaestroThread, _every_send, _runs_only
 
-ANA = User(user_id="user-1", user_name="Ana Souza", user_email="ana@example.com")
+ANA = User(user_id="user-1", user_name="Ana Souza", user_email="ana@example.com", organization_role="owner", workspace_role="manager")
 
 
 async def _deliver(fake, handler, content=None, *, title="Atendimento"):
@@ -57,8 +58,8 @@ async def test_text_reply_becomes_an_agent_message_event():
         thread_id, delivery, response = await _deliver(fake, handler)
 
     assert response.status_code == 200 and response.json()["state"] == "responded"
-    # Maestro's web chat person: no name, e-mail or identity IDs in the agent's context (plan 5).
-    assert seen == {"message": "Olá", "user": User(user_id="user-1", user_name=WEB_CHAT_PERSON_NAME)}
+    # The agent's context has what Core says about the web chat person (browsers read the placeholder name).
+    assert seen == {"message": "Olá", "user": ANA}
     events = _after_creation(fake, thread_id)
     assert [event["type"] for event in events] == ["message.created", "run.updated", "message.created", "run.updated"]
     human, start, reply, end = events
@@ -492,3 +493,129 @@ async def test_legacy_model_test_shapes_are_the_ones_maestro_stores(build):
     thread.publish(build(AgentSend(), trigger["event_id"]), trigger, actor=stored[0]["actor"])
 
     assert _outputs_shape(stored) == _outputs_shape(thread.events[1:])
+
+
+# -- Core's person, workspace and thread data in the agent's context (Maestro's agent-profiles.ts and callbacks.ts) --
+
+BIA = User(user_id="user-2", user_name="Bia Lima", user_email="bia@example.com", identity_ids=["idp-bia"])
+QUEUE_CATALOG = (WorkspaceQueueCatalog(slug="suporte", name="Suporte"), WorkspaceQueueCatalog(slug="vendas", name="Vendas"))
+ROLES = ("system_role", "organization_role", "workspace_role")
+
+
+def _human(people: list[dict[str, Any]], principal_id: str) -> dict[str, Any]:
+    return next(person for person in people if person["kind"] == "human" and person["principal_id"] == principal_id)
+
+
+async def test_browsers_read_the_placeholder_and_the_agent_context_has_the_core_profile():
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(ANA, title="Atendimento")
+    event = fake.publish(thread_id, ANA, [{"type": "text", "text": "Olá"}], client_event_id="client-1")
+    assert event["actor"]["display_name"] == WEB_CHAT_PERSON_NAME and "email" not in event["actor"]
+    assert _human(fake.threads[thread_id]["participants"], "user-1")["display_name"] == WEB_CHAT_PERSON_NAME
+    view = fake.agent_view(thread_id)
+    for person in (_human(view["participants"], "user-1"), view["trigger_event"]["actor"]):
+        assert (person["display_name"], person["email"], person["identity_ids"]) == ("Ana Souza", "ana@example.com", [])
+        assert [person[role] for role in ROLES] == ["user", "owner", "manager"]
+    # thread.created lists the people too (``enrichEvent``).
+    created = view["events"][0]["payload"]["thread"]
+    assert _human(created["participants"], "user-1")["workspace_role"] == "manager"
+
+
+async def test_core_person_without_a_name_keeps_the_placeholder_and_a_null_email():
+    fake = FakeMaestro(core_people=[User(user_id="user-1")])
+    thread_id = fake.create_thread(User(user_id="user-1"), title=None)
+    person = _human(fake.agent_view(thread_id)["participants"], "user-1")
+    assert (person["display_name"], person["email"], person["system_role"]) == (WEB_CHAT_PERSON_NAME, None, "user")
+
+
+async def test_declared_person_keeps_the_declared_profile_and_the_participant_has_the_core_roles():
+    fake = FakeMaestro()
+    thread_id = fake.create_thread(ANA, title=None)
+    declared = User(user_id="user-1", user_name="Ana Declarada", user_email="declarada@example.com", identity_ids=["idp-declarada"])
+    event = fake.agent_publish(thread_id, declared, [{"type": "text", "text": "Olá"}], client_event_id="client-1")
+    view = fake.agent_view(thread_id)
+    actor = view["events"][-1]["actor"]
+    assert (actor["display_name"], actor["email"], actor["identity_ids"]) == ("Ana Declarada", "declarada@example.com", ["idp-declarada"])
+    assert not any(role in actor for role in ROLES) and event["actor"].get("email") is None
+    assert [_human(view["participants"], "user-1")[role] for role in ROLES] == ["user", "owner", "manager"]
+
+
+async def test_added_person_is_described_when_the_core_knows_it_and_not_otherwise():
+    async def handler(on, send, memory, analytics, settings):
+        yield send.run_start()
+        yield send.add_participant("user-2")
+        yield send.add_participant("user-9")
+        yield send.run_end()
+
+    fake = FakeMaestro(core_people=[BIA])
+    with fake.serving():
+        thread_id, _, response = await _deliver(fake, handler)
+    assert response.json()["state"] == "silent"
+    stored = _human(fake.threads[thread_id]["participants"], "user-2")
+    assert stored["display_name"] == WEB_CHAT_PERSON_NAME and "email" not in stored
+    view = fake.agent_view(thread_id)
+    known, unknown = _human(view["participants"], "user-2"), _human(view["participants"], "user-9")
+    assert (known["display_name"], known["email"], known["identity_ids"]) == ("Bia Lima", "bia@example.com", ["idp-bia"])
+    assert [known[role] for role in ROLES] == ["user", "member", "member"]
+    assert unknown["display_name"] == WEB_CHAT_PERSON_NAME and not any(key in unknown for key in ("email", *ROLES))
+    added = [event for event in view["events"] if event["type"] == "participant.added"]
+    assert [event["payload"]["participant"].get("email") for event in added] == ["bia@example.com", None]
+
+
+async def test_a_person_who_left_the_thread_is_not_described():
+    fake = FakeMaestro(core_people=[BIA])
+    thread_id = fake.create_thread(ANA, title=None)
+    fake.threads[thread_id]["participants"].append(
+        {
+            "participant_id": str(uuid4()),
+            "display_name": WEB_CHAT_PERSON_NAME,
+            "state": "removed",
+            "joined_sequence": "1",
+            "left_sequence": "1",
+            "kind": "human",
+            "principal_id": "user-2",
+            "role": "member",
+        }
+    )
+    assert "system_role" not in _human(fake.agent_view(thread_id)["participants"], "user-2")
+
+
+async def test_context_carries_the_queue_catalog_and_the_thread_view():
+    seen = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        seen.update(queues=on.context.queues, allowed=on.context.maestro.allowed_queues, title=on.context.thread_title)
+        yield send.run_start()
+        yield send.update_thread(title="Novo título", queue="vendas")
+        yield send.run_end()
+
+    fake = FakeMaestro(queues=QUEUE_CATALOG)
+    with fake.serving():
+        thread_id, delivery, response = await _deliver(fake, handler)
+    assert response.json()["state"] == "silent"
+    assert (seen["queues"], seen["allowed"], seen["title"]) == (list(QUEUE_CATALOG), ("suporte", "vendas"), "Atendimento")
+    view = fake.agent_view(thread_id)
+    assert view["workspace"] == {"allowed_queues": ["suporte", "vendas"], "queues": [queue.model_dump() for queue in QUEUE_CATALOG]}
+    assert (view["thread"]["title"], view["thread"]["queue"]) == ("Novo título", "vendas")
+    # As of the context cutoff: the change the execution published is after it.
+    cutoff = int(delivery.envelope["context_cutoff_sequence"])
+    old = fake._thread_view(thread_id, cutoff)
+    assert (old["title"], old["queue"], old["channel"], old["channel_meta"]) == ("Atendimento", None, "dooers-platform", None)
+    assert shared_contracts().is_valid("Public.ContextThread", old)
+
+
+async def test_without_the_connection_context_the_pages_are_those_of_an_older_maestro():
+    seen = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        seen.update(user=on.context.user, queues=on.context.queues, title=on.context.thread_title)
+        yield send.text("ok")
+
+    fake = FakeMaestro(queues=QUEUE_CATALOG, connection_context=False)
+    with fake.serving():
+        thread_id, _, response = await _deliver(fake, handler)
+    assert response.json()["state"] == "responded"
+    assert seen["queues"] == [] and seen["user"] == User(user_id="user-1", user_name=WEB_CHAT_PERSON_NAME)
+    view = fake.agent_view(thread_id)
+    assert "workspace" not in view and "thread" not in view
+    assert not any(role in _human(view["participants"], "user-1") for role in ROLES)

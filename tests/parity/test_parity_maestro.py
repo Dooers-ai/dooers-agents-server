@@ -46,10 +46,13 @@ def test_every_known_gap_states_what_differs():
     for gap in GAPS.values():
         assert gap.raises in {AssertionError, ThreadManagementModeError, FakeMaestroRejected}
         assert (gap.match is None) == (gap.raises is AssertionError)
-        # Only the AgentServer ingress, WhatsApp and Core's context (plan 5) and the public chat (plan 6) are left.
-        assert "plan 5" in gap.reason or "plan 6" in gap.reason, gap.reason
+        # Only the AgentServer ingress and WhatsApp (plan 5), the public chat (plan 6) and the scenarios that differ
+        # by a permanent declared difference alone are left.
         assert set(gap.masked) <= set(DECLARED_DIFFERENCES)
-        assert not gap.masked or (gap.raises is AssertionError and any("plan 5" in DECLARED_DIFFERENCES[m][0] for m in gap.masked))
+        if gap.masked:
+            assert gap.raises is AssertionError and all("permanent" in DECLARED_DIFFERENCES[m][0] for m in gap.masked)
+        else:
+            assert "plan 5" in gap.reason or "plan 6" in gap.reason, gap.reason
 
 
 @pytest.mark.parametrize("name", sorted(KNOWN_GAPS))

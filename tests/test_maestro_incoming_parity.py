@@ -94,8 +94,8 @@ async def test_incoming_fields_match_production():
     scenario = SCENARIOS["incoming_fields"]
     spec = scenario.incoming
     legacy = (await run_legacy("incoming_fields")).incoming
-    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME)
-    adapter = create_text_delivery_adapter(maestro.config, scenario.handler, _resources(spec.queues))
+    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME, queues=spec.queues)
+    adapter = create_text_delivery_adapter(maestro.config, scenario.handler, _resources())
     capture, token = open_capture()
     try:
         with maestro.serving():
@@ -107,17 +107,16 @@ async def test_incoming_fields_match_production():
     finally:
         close_capture(token)
     expected = deepcopy(legacy)
-    # Declared difference 1: a media_link has no size_bytes, and production gives a URL
+    # Declared difference: a media_link has no size_bytes, and production gives a URL
     # document without size_bytes the size 0.
     assert expected["content"][2]["type"] == "document" and expected["content"][2]["size_bytes"] == 2048
     expected["content"][2]["size_bytes"] = 0
-    # Declared difference 2 (plan 5): production takes the user's roles from Core's
-    # ConnectionContext; a Maestro delivery has no Core connection context yet, so the roles
-    # keep the User defaults.
-    roles = ("system_role", "organization_role", "workspace_role")
-    assert [expected["context"]["user"][role] for role in roles] == ["admin", "owner", "manager"]
-    assert [capture.incoming["context"]["user"][role] for role in roles] == ["user", "member", "member"]
-    expected["context"]["user"].update({role: capture.incoming["context"]["user"][role] for role in roles})
+    # The roles (and the queue catalog) are Core's: they come in the delivery context and equal production's.
+    assert [capture.incoming["context"]["user"][role] for role in ("system_role", "organization_role", "workspace_role")] == [
+        "admin",
+        "owner",
+        "manager",
+    ]
     assert normalize(ParityResult([], capture.incoming, {})).incoming == normalize(ParityResult([], expected, {})).incoming
     assert capture.incoming["context"]["queue"] == "suporte" and capture.incoming["rag_context"]["on_behalf"] is True
 
@@ -338,12 +337,13 @@ async def test_agent_author_gets_empty_user(key, bundle):
 
 async def test_personal_workspace_is_empty_string(key, bundle):
     async with fixture_server() as server:
-        memory, _, _, _ = prepare(key, bundle, server)
+        memory, page, _, _ = prepare(key, bundle, server)
         assert memory._envelope["workspace_id"] is None
+        del page["thread"]  # a Maestro that sends no thread view
         async with maestro_handler_context(memory, private) as prepared:
             context = prepared.on.context
             assert context.workspace_id == "" and current_execution_context().workspace_id == ""
-            # No thread.created in this context: the production defaults of a web chat thread.
+            # No thread view and no thread.created in this context: the production defaults of a web chat thread.
             thread = (context.channel, context.thread_title, context.thread_created_at, context.queue)
             assert thread == ("dooers-platform", None, None, None)
             assert context.queues == [] and context.channel_meta is None
@@ -485,8 +485,8 @@ async def test_replace_deepcopy_and_pickle_keep_working(key, bundle):
             assert repr(on.context).startswith("AgentContext(thread_id=") and "maestro" not in repr(on)
             assert list(dataclasses.asdict(on)["context"]) == names
 
-            moved = dataclasses.replace(on.context, queue="suporte")
-            assert moved.maestro is metadata and moved.queue == "suporte" and moved != on.context
+            moved = dataclasses.replace(on.context, queue="vendas")
+            assert moved.maestro is metadata and moved.queue == "vendas" and moved != on.context
             rag = current_execution_context()
             other = dataclasses.replace(on, message="outra")
             # Still a Maestro context: no second RAG binding (the token stays in maestro_handler_context).

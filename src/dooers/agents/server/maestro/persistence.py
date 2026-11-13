@@ -38,7 +38,7 @@ from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.persistence.base import FILTERABLE_FIELDS, EventOrder, Persistence
 from dooers.agents.server.protocol.models import Thread, ThreadEvent
 
-from .context import thread_at_cutoff
+from .context import thread_at_cutoff, thread_from_view
 from .legacy_model import DEFAULT_ASSISTANT_NAME, fold_events, to_thread, to_thread_event
 from .window import MaestroContextWindow
 
@@ -169,28 +169,39 @@ class MaestroExecutionPersistence(Persistence):
     async def get_thread(self, thread_id: str) -> Thread | None:
         """The thread as the window sees it.
 
-        Participants come from the context head (current). The creation time, the owner agent and the
-        channel come from ``thread.created`` (the first event of the thread, read on its own); the
+        Participants come from the context head (current), with the core's roles. The title, queue,
+        creation time and owner agent come from the ``thread`` view of the delivery context, then the
+        changes this execution published. A Maestro that sends no ``thread`` view: the creation time and
+        the owner agent come from ``thread.created`` (the first event of the thread, read on its own); the
         title and the queue are the last change the window holds, else the ones of ``thread.created``.
         """
         if not self._reads(thread_id):
             return None
         window, events, participants, _ = await self._thread_state()
         envelope = self._memory.envelope
-        # The window with the thread's first event in front (it holds the creation), then the echoes.
-        known = [*await window.thread_events(), *events[len(window.events) :]]
-        known = known or [(await window.load())["trigger_event"]]
-        state = thread_at_cutoff(known)
-        created = next((event["payload"]["thread"] for event in known if event["type"] == "thread.created"), {})
+        head = await window.load()
+        if "thread" in head:
+            # The thread view of the delivery context (as of the cutoff); only what this execution published
+            # after it (the echoes) is newer.
+            state = thread_at_cutoff(events[len(window.events) :], base=thread_from_view(head["thread"]))
+            created, owner_agent = state["created_at"].isoformat(), head["thread"]["owner_instance_agent_id"]
+            known = events
+        else:
+            # An older Maestro: the window with the thread's first event in front (it holds the creation), then the echoes.
+            known = [*await window.thread_events(), *events[len(window.events) :]]
+            state = thread_at_cutoff(known)
+            created = state["created_at"].isoformat() if state["created_at"] else None
+            owner_agent = next((e["payload"]["thread"] for e in known if e["type"] == "thread.created"), {}).get("owner_instance_agent_id")
+        known = known or [head["trigger_event"]]
         view = {
             "thread_id": envelope["thread_id"],
             "organization_id": envelope["organization_id"],
             "workspace_id": envelope["workspace_id"],
-            "owner_instance_agent_id": created.get("owner_instance_agent_id"),
+            "owner_instance_agent_id": owner_agent,
             "participants": participants,
             "title": state["title"] or "",
             "queue": state["queue"],
-            "created_at": state["created_at"].isoformat() if state["created_at"] else known[0]["created_at"],
+            "created_at": created or known[0]["created_at"],
             "updated_at": known[-1]["created_at"],
         }
         return to_thread(view, recipient_instance_id=envelope["instance_agent_id"], assistant_name=self._assistant_name)

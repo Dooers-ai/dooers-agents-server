@@ -755,6 +755,8 @@ async def test_resume_context_preserves_trigger_and_uses_response_cutoff(private
         ascending["history"]["items"].append(response)
         descending = deepcopy(page)
         descending["history"]["items"].insert(0, response)
+        for view in (ascending, descending):
+            view["thread"]["channel"] = "dooers-platform"  # a web chat thread (the fixture's is a WhatsApp one)
         server.response = lambda first: descending if "direction=backward" in first else ascending
         async with maestro_handler_context(memory, private) as prepared:
             context = prepared.on.context.maestro

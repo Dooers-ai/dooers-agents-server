@@ -108,11 +108,22 @@ class ThreadPages:
 
     ``events`` are the stored events in sequence order, ``participants`` the context participants;
     the context stops at the ``cutoff`` (a sequence; default the last event, which is the trigger).
+    ``workspace`` and ``thread`` are the core's workspace data and the thread view at the cutoff that every page
+    carries; without them the pages are those of a Maestro that does not send them yet.
     ``window()`` is the real ``MaestroContextWindow`` over these pages.
     """
 
-    def __init__(self, events: list[dict[str, Any]], participants: list[dict[str, Any]], *, cutoff: int | None = None) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, Any]],
+        participants: list[dict[str, Any]],
+        *,
+        cutoff: int | None = None,
+        workspace: dict[str, Any] | None = None,
+        thread: dict[str, Any] | None = None,
+    ) -> None:
         self.events, self.participants = events, participants
+        self.workspace, self.thread = workspace, thread
         self.cutoff = len(events) if cutoff is None else cutoff
         self.base = "ctx.test"
         self.requests: list[tuple[str, int, str]] = []
@@ -134,6 +145,8 @@ class ThreadPages:
                 "participants": self.participants,
                 "context_cursor": self.base,
                 "history": {"items": list(items), "next_cursor": next_cursor, "has_more": has_more, "watermark": str(self.cutoff)},
+                **({"workspace": self.workspace} if self.workspace is not None else {}),
+                **({"thread": self.thread} if self.thread is not None else {}),
             }
 
         return serve_context(self.events, cutoff=self.cutoff, base=self.base, cursor=cursor, limit=limit, direction=direction, page=page)
