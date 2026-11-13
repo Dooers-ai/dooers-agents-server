@@ -108,6 +108,8 @@ def __getattr__(name: str):
         "MaestroAgentNotFound": ".agent_api",
         "MaestroAgentThreadDeleting": ".agent_api",
         "MaestroAgentScopeError": ".agent_api",
+        "MaestroAgentPersistence": ".agent_persistence",
+        "MaestroAgentUnsupported": ".agent_persistence",
         "MaestroAgentMemory": ".persistence",
         "MaestroExecutionPersistence": ".persistence",
         "MaestroEventSink": ".sink",
@@ -137,6 +139,8 @@ __all__ += [
     "MaestroAgentApiError",
     "MaestroAgentMissing",
     "MaestroAgentNotFound",
+    "MaestroAgentPersistence",
     "MaestroAgentScopeError",
     "MaestroAgentThreadDeleting",
+    "MaestroAgentUnsupported",
 ]

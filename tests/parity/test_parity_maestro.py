@@ -16,6 +16,7 @@ from dataclasses import replace
 import pytest
 
 from dooers.agents.server.exceptions import ThreadManagementModeError
+from dooers.agents.server.maestro.agent_api import MaestroAgentApiError
 from tests.parity import harness
 from tests.parity.fake_maestro import FakeMaestro, FakeMaestroRejected
 from tests.parity.harness import ContractViolation, run_legacy, run_maestro
@@ -44,7 +45,7 @@ def test_every_known_gap_states_what_differs():
     assert set(GAP_REASONS) == KNOWN_GAPS
     assert all(isinstance(reason, str) and reason.strip() for reason in GAP_REASONS.values())
     for gap in GAPS.values():
-        assert gap.raises in {AssertionError, ThreadManagementModeError, FakeMaestroRejected}
+        assert gap.raises in {AssertionError, ThreadManagementModeError, FakeMaestroRejected, MaestroAgentApiError}
         assert (gap.match is None) == (gap.raises is AssertionError)
         # Only the AgentServer ingress and WhatsApp (plan 5), the public chat (plan 6) and the scenarios that differ
         # by a permanent declared difference alone are left.
@@ -135,7 +136,7 @@ async def test_send_function_refused_by_the_sink_leaves_only_the_user_message(mo
     assert result.deliveries == [{"status": 200, "state": "failed", "reason_code": "unsupported_capability"}]
 
 
-@pytest.mark.parametrize("name", ["server_dispatch", "repository_crud", "chat_upload", "whatsapp_text"])
+@pytest.mark.parametrize("name", ["server_dispatch", "chat_upload", "whatsapp_text"])
 async def test_agent_server_ingress_reaches_the_maestro_mode_guard(name):
     with pytest.raises(ThreadManagementModeError, match="THREAD_MANAGEMENT_MISMATCH"):
         await run_maestro(name)

@@ -16,7 +16,14 @@ sequence and ``client_event_id``, participants, runs, uploaded files and channel
 ``idempotent`` commands keep a receipt per ``Idempotency-Key``: the same key with the same request
 replays the stored answer (200); another request with the key is ``IDEMPOTENCY_CONFLICT``.
 
-Knobs for tests: ``delete_thread_state`` (thread in deletion: reads answer ``THREAD_DELETING``),
+Like Maestro, ``GET /agent/events/:id`` finds any event type by ``event_id`` (or an agent publication by its
+``client_event_id``) and ``DELETE .../events/:eventId`` removes only content events (``removableTypes`` of
+``events.ts``); a query key a route does not know is ``INVALID_REQUEST``; an error with a wait carries
+``Retry-After``; the thread list defaults to ``order=desc`` (last activity, then id).
+
+Knobs for tests: ``core_people`` (what the core knows about a human: name, e-mail, identity IDs, roles),
+``inject_event`` (an event another writer made: a handler output, ``run.updated``, ``message.updated``),
+``delete_thread_state`` (thread in deletion: reads answer ``THREAD_DELETING``),
 ``corrupt_next`` (the next answer of a path is not contract-valid), ``fail_next`` (the next request of
 a path gets a given error code) and ``requests`` (everything the
 server saw: method, path, query, headers and the JSON body, or the multipart parts).
@@ -64,11 +71,21 @@ _ERRORS = {
     "UNSUPPORTED_CAPABILITY": (422, False),
     "DEPENDENCY_UNAVAILABLE": (503, True),
 }
+_CORE_PERSON_FIELDS = ("display_name", "email", "identity_ids", "system_role", "organization_role", "workspace_role")
 _STATUS_RANK = {"accepted": 1, "sent": 1, "delivered": 2, "read": 3, "failed": 4}
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+#: Content events the agent removes (``removableTypes`` in ``agent-api/events.ts``); control events stay in the history.
+REMOVABLE_TYPES = frozenset(
+    {
+        "message.created",
+        "reasoning.created",
+        "tool_call.created",
+        "tool_result.created",
+        "tool_transaction.created",
+        "chart.created",
+        "form.created",
+        "form.responded",
+    }
+)
 
 
 def _b64(data: bytes) -> str:
@@ -129,7 +146,10 @@ class FakeAgentApi:
         self.fail_next: dict[str, str] = {}
         self.token_scopes = ["threads:manage"]
         self.link_route_enabled = True
+        #: principal id -> what the core knows about that human (``display_name``, ``email``, ``identity_ids`` and the roles).
+        self.core_people: dict[str, dict[str, Any]] = {}
         self._sequence = 0
+        self._last_stamp = 0
         self._runner: web.AppRunner | None = None
         self.port = 0
         self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -197,6 +217,12 @@ class FakeAgentApi:
         self._sequence += 1
         return str(self._sequence)
 
+    def _stamp(self) -> str:
+        """The time of a write: strictly increasing (milliseconds), so the order of activity is the order of writes."""
+        wall = int(time.time() * 1000)
+        self._last_stamp = max(wall, self._last_stamp + 1)
+        return datetime.fromtimestamp(self._last_stamp / 1000, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
     def _thread_by_ref(self, ref: str) -> _Thread:
         found = next((t for t in self.threads.values() if t.external_key == ref), None) or self.threads.get(ref)
         if found is None:
@@ -220,17 +246,14 @@ class FakeAgentApi:
             "state": "active",
         }
 
-    @staticmethod
-    def _participant(spec: dict[str, Any], role: str = "member") -> dict[str, Any]:
+    def _participant(self, spec: dict[str, Any], role: str = "member") -> dict[str, Any]:
         base = {"joined_sequence": "1", "left_sequence": None, "participant_id": str(uuid4()), "role": role, "state": "active"}
         if spec["kind"] == "human":
             return {
                 **base,
                 "kind": "human",
                 "principal_id": spec["principal_id"],
-                "display_name": "Pessoa",
-                "email": "pessoa@example.test",
-                "identity_ids": ["auth0|fixture"],
+                **self._core_person(spec["principal_id"]),
             }
         if spec["kind"] == "agent":
             return {
@@ -249,6 +272,13 @@ class FakeAgentApi:
             "external_id": spec["external_id"],
             **({"display_name": spec["display_name"]} if "display_name" in spec else {}),
         }
+
+    def _core_person(self, principal_id: str) -> dict[str, Any]:
+        """The core's view of a human; one the core does not know has the placeholder name Maestro shows (and no e-mail)."""
+        known = self.core_people.get(principal_id)
+        if known is None:
+            return {"display_name": "Humano", "email": None, "identity_ids": []}
+        return {key: value for key, value in known.items() if key in _CORE_PERSON_FIELDS}
 
     def _view(self, thread: _Thread) -> dict[str, Any]:
         view = deepcopy(_FIXTURES["public.AgentThread.valid"])
@@ -282,14 +312,16 @@ class FakeAgentApi:
                 "principal_id": self.agent_id,
             }
         if spec["kind"] == "human":
-            return {
-                "display_name": spec.get("display_name", "Pessoa"),
-                "kind": "human",
-                "participant_id": None,
-                "principal_id": spec["principal_id"],
-                **({"email": spec["email"]} if "email" in spec else {}),
-                **({"identity_ids": spec["identity_ids"]} if "identity_ids" in spec else {}),
-            }
+            core = self._core_person(spec["principal_id"])
+            actor = {"kind": "human", "participant_id": None, "principal_id": spec["principal_id"], **core}
+            # What the publisher declared wins (it comes back only to the agent that published it).
+            actor["display_name"] = spec.get("display_name") or core["display_name"]
+            for name in ("email", "identity_ids"):
+                if name in spec:
+                    actor[name] = spec[name]
+            if actor.get("email") is None:
+                del actor["email"]
+            return actor
         match = next((p for p in thread.participants if p["kind"] == "external" and p["external_id"] == spec["external_id"]), None)
         if match is None:
             match = self._participant(spec)
@@ -307,7 +339,7 @@ class FakeAgentApi:
         event = {
             "actor": actor,
             "causation_event_id": None,
-            "created_at": _now(),
+            "created_at": self._stamp(),
             "event_id": event_id,
             "payload": payload,
             "root_event_id": event_id,
@@ -328,9 +360,7 @@ class FakeAgentApi:
     def _event_by_ref(self, ref: str) -> tuple[_Thread, dict[str, Any]]:
         for thread in self.threads.values():
             for event in self._visible_events(thread):
-                if event["type"] != "message.created":
-                    continue
-                if event["event_id"] == ref or (
+                if event["event_id"] == ref.lower() or (
                     event.get("published_by_instance_agent_id") and event["payload"].get("client_event_id") == ref
                 ):
                     if thread.deleting:
@@ -363,7 +393,8 @@ class FakeAgentApi:
         }
         if details:
             error["details"] = details
-        return web.json_response({"error": error}, status=status)
+        headers = {"Retry-After": str(failure.retry_after)} if failure.retry_after is not None else None
+        return web.json_response({"error": error}, status=status, headers=headers)
 
     def _receipt(self, key: str | None, request: Any, build: Any) -> tuple[Any, int, bool]:
         """Idempotent command: ``build() -> (value, created_status)``. Replays answer 200 with the stored value."""
@@ -389,7 +420,8 @@ class FakeAgentApi:
         self.requests.append(record)
         try:
             if path in self.fail_next:
-                raise _Failure(self.fail_next.pop(path))
+                code = self.fail_next.pop(path)
+                raise _Failure(code, retry_after=3 if code == "RATE_LIMITED" else None)
             response = await self._route(request, record)
         except _Failure as failure:
             response = self._error(failure)
@@ -413,6 +445,11 @@ class FakeAgentApi:
         method = request.method
         key = request.headers.get("Idempotency-Key")
         query = dict(request.query)
+        per_thread_list = len(parts) == 3 and parts[0] == "threads" and parts[2] in ("events", "runs")
+        lists = parts in (["threads"], ["channel-deliveries"]) or per_thread_list
+        if query and not (method == "GET" and lists):
+            # Only the list routes read a query; any other key is refused (``z.strictObject`` in the routes).
+            raise _Failure("INVALID_REQUEST")
 
         if parts == ["threads"]:
             if method == "POST":
@@ -500,7 +537,7 @@ class FakeAgentApi:
                 queue=body.get("queue"),
                 channel=body.get("channel", "dooers-platform"),
                 channel_meta=body.get("channel_meta"),
-                created_at=_now(),
+                created_at=self._stamp(),
                 participants=participants,
             )
             self.threads[thread.id] = thread
@@ -518,7 +555,7 @@ class FakeAgentApi:
             items = [t for t in items if t.external_key == query["external_key"]]
         if "queue" in query:
             items = [t for t in items if (t.queue or "") == query["queue"]]
-        items.sort(key=lambda t: (t.updated_at or t.created_at, t.id), reverse=query.get("order") == "desc")
+        items.sort(key=lambda t: (t.updated_at or t.created_at, t.id), reverse=query.get("order", "desc") == "desc")
         offset = int(query["cursor"].split(".")[1]) if "cursor" in query else 0
         limit = int(query.get("limit", "50"))
         page = items[offset : offset + limit]
@@ -542,7 +579,7 @@ class FakeAgentApi:
             if "queue" in body:
                 thread.queue = body["queue"] or None
             thread.version += 1
-            thread.updated_at = _now()
+            thread.updated_at = self._stamp()
             return self._view(thread), 200
 
         value, _status, _ = self._receipt(key, {"ref": ref, **body}, build)
@@ -622,9 +659,11 @@ class FakeAgentApi:
         thread = self._thread_by_ref(ref)
 
         def build() -> tuple[Any, int]:
-            target = next((e for e in self._visible_events(thread) if e["event_id"] == event_id and e["type"] == "message.created"), None)
+            target = next((e for e in self._visible_events(thread) if e["event_id"] == event_id), None)
             if target is None:
                 raise _Failure("NOT_FOUND")
+            if target["type"] not in REMOVABLE_TYPES:
+                raise _Failure("VALIDATION_FAILED", reason_code="event_not_removable")
             return self._append(thread, "message.removed", self._actor(thread, {"kind": "self"}), {"event_id": event_id}), 200
 
         value, _status, _ = self._receipt(key, {"ref": thread.id, "event": event_id}, build)
@@ -703,10 +742,10 @@ class FakeAgentApi:
         """Test setup: a run of ``thread_id`` (the fake does not execute handlers)."""
         run = {
             "agent_id": self.agent_id,
-            "ended_at": None if status == "running" else _now(),
+            "ended_at": None if status == "running" else self._stamp(),
             "error": "content_policy" if status == "failed" else None,
             "run_id": run_id or str(uuid4()),
-            "started_at": _now(),
+            "started_at": self._stamp(),
             "status": status,
             "thread_id": thread_id,
             "trigger_event_id": str(uuid4()),
@@ -725,7 +764,8 @@ class FakeAgentApi:
     def _get_run(self, run_id: str, path: str) -> web.Response:
         self._request_valid("Public.AgentRunPath", {"id": run_id})
         run = next((r for r in self.runs if r["run_id"] == run_id.lower()), None)
-        if run is None:
+        # ``agentVisibleThreads``: a thread in deletion is not one of the agent's threads, so its run is not found.
+        if run is None or self.threads[run["thread_id"]].deleting:
             raise _Failure("NOT_FOUND")
         return self._reply("Public.AgentRun", run, 200, path)
 
@@ -774,6 +814,14 @@ class FakeAgentApi:
         return self._reply("Public.AgentChannelDelivery", value, 200, path)
 
     # -- test setup --
+
+    def inject_event(self, thread_id: str, type_: str, payload: dict[str, Any], *, actor: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Test setup: an event that another writer made (a handler output, ``run.updated``, ``message.updated``).
+
+        It has no ``client_event_id`` and no ``published_by_instance_agent_id``: the agent API did not publish it.
+        """
+        thread = self.threads[thread_id]
+        return self._append(thread, type_, actor or self._actor(thread, {"kind": "self"}), payload)
 
     def delete_thread_state(self, thread_id: str) -> None:
         """The thread is in deletion: every read of it answers ``THREAD_DELETING``."""

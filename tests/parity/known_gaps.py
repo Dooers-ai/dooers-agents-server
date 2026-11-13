@@ -22,6 +22,9 @@ execution scenario matches, except the ones below that need Core's connection co
 (plan 5). The other gaps are the ``AgentServer`` ingress (plan 5: WhatsApp, ``Repository``,
 ``dispatch`` outside a delivery) and the public chat (plan 6).
 
+Task 5c (2026-11-13): ``AgentServer.repository()`` and ``memory(thread_id)`` no longer raise in Maestro mode; ``repository_crud``
+ends at the first agent API call (see its entry).
+
 Measured again on 2026-11-13 (plan 5, task 5a). The delivery context carries Core's person data (name,
 e-mail, identity IDs and the three roles), the workspace queue catalog and the thread view, and the SDK
 reads them. The three ``send.*`` scenarios that waited for them match (``update_thread_title``,
@@ -37,6 +40,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 
 from dooers.agents.server.exceptions import ThreadManagementModeError
+from dooers.agents.server.maestro.agent_api import MaestroAgentApiError
 from tests.parity.model import ParityResult
 from tests.parity.scenarios_server import WHATSAPP_SENDS
 
@@ -125,7 +129,16 @@ GAPS: dict[str, Gap] = {
     # AgentServer ingress (plan 5) and public chat (plan 6)
     "server_dispatch": _server_blocked("dispatch"),
     "server_ingest": _server_blocked("ingest"),
-    "repository_crud": _server_blocked("repository"),
+    # ``AgentServer.repository()`` runs over the agent API (plan 5, task 5c): ``tests/test_maestro_agent_persistence.py`` runs this
+    # scenario's calls on production and on Maestro and compares them. This harness serves only the delivery routes (FakeMaestro),
+    # so the Maestro run ends at the first agent API call, which has no Core credential: the scenario joins the harness
+    # with the agent API server (``tests/parity/fake_agent_api.py``) when the WhatsApp tasks need it (plan 5, task 8).
+    "repository_crud": Gap(
+        "plan 5: Repository runs over the agent API (compared in test_maestro_agent_persistence.py); this harness has no agent API "
+        "server, so the run ends with CREDENTIAL_UNAVAILABLE at the first call",
+        raises=MaestroAgentApiError,
+        match="CREDENTIAL_UNAVAILABLE",
+    ),
     "memory_by_thread_id": _server_blocked("dispatch", " (first call of the script; memory is never reached)"),
     "chat_upload": _server_blocked("chat_upload"),
     **{

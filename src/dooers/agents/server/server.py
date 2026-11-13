@@ -604,12 +604,32 @@ class AgentServer:
             )
         return SqlDatabase(persistence)
 
+    def _maestro_agent_persistence(self) -> Persistence:
+        """``MaestroAgentPersistence`` over the agent API of ``AgentConfig.maestro`` (Maestro mode only).
+
+        The database is the local persistence for settings, secrets, analytics and the worker seed: it is
+        initialized when one of those is used, never for thread data.
+        """
+        from dooers.agents.server.maestro.agent_api import MaestroAgentApi
+        from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
+
+        assert self._config.maestro is not None  # validated at construction
+        return MaestroAgentPersistence(
+            MaestroAgentApi(self._config.maestro),
+            assistant_name=self._config.assistant_name,
+            local=self._ensure_initialized,
+        )
+
     async def repository(self) -> Repository:
+        if self._config.thread_management == "maestro":
+            return Repository(self._maestro_agent_persistence())
         self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
         return Repository(persistence)
 
     async def memory(self, thread_id: str) -> AgentMemory:
+        if self._config.thread_management == "maestro":
+            return AgentMemory(thread_id=thread_id, persistence=self._maestro_agent_persistence())
         self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
         return AgentMemory(thread_id=thread_id, persistence=persistence)

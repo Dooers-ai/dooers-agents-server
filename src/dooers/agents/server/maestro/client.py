@@ -308,8 +308,10 @@ async def resolve_instance_credential(
         config.runtime_id,
         scopes,
     )
+    resolved = False
     try:
         credential = await config.credential_resolver(request)
+        resolved = True
         if (
             not isinstance(credential, MaestroInstanceCredential)
             or not isinstance(credential.token, str)
@@ -335,4 +337,8 @@ async def resolve_instance_credential(
             raise ValueError
         return MaestroInstanceCredential(credential.token, min(claims["exp"], credential.expires_at))
     except Exception:
-        raise MaestroContextError("ACCESS_REVOKED") from None
+        error = MaestroContextError("ACCESS_REVOKED")
+        # The resolver itself failed (the exchange with the core did not answer): worth repeating. A credential that
+        # came back but does not hold (claims, scope, expiry) is refused for good. Callers that only read ``code`` see no change.
+        error.resolver_failed = not resolved
+        raise error from None

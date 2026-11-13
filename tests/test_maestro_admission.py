@@ -360,19 +360,31 @@ async def test_semantic_json_order_unicode_and_integral_numbers(private_key):
     assert (await request(adapter, wire, headers)).status_code == 200
 
 
-@pytest.mark.parametrize("method", ["dispatch", "ingest", "memory", "repository", "chat_upload"])
+@pytest.mark.parametrize("method", ["dispatch", "ingest", "chat_upload"])
 async def test_legacy_entries_reject_before_persistence(private_key, method):
     server = AgentServer(AgentConfig(database_type="postgres", thread_management="maestro", maestro=config_for(private_key)))
     server._ensure_initialized = AsyncMock(side_effect=AssertionError("DB must not initialize"))
     kwargs = {
         "dispatch": {"handler": None, "agent_id": "a", "message": "persisted"},
         "ingest": {"agent_id": "a", "message": "persisted"},
-        "memory": {"thread_id": "legacy-text-id"},
-        "repository": {},
         "chat_upload": {"agent_id": "a", "data": b"secret", "filename": "a", "mime_type": "text/plain"},
     }[method]
     with pytest.raises(ThreadManagementModeError, match="^THREAD_MANAGEMENT_MISMATCH$"):
         await getattr(server, method)(**kwargs)
+    server._ensure_initialized.assert_not_called()
+
+
+async def test_repository_and_memory_are_served_by_the_agent_api_not_the_database(private_key):
+    # Plan 5: in Maestro mode ``repository()`` and ``memory(thread_id)`` read and write through the agent API
+    # (``tests/test_maestro_agent_persistence.py``); the database is not touched for thread data.
+    from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
+
+    server = AgentServer(AgentConfig(database_type="postgres", thread_management="maestro", maestro=config_for(private_key)))
+    server._ensure_initialized = AsyncMock(side_effect=AssertionError("DB must not initialize"))
+    repository = await server.repository()
+    memory = await server.memory("legacy-text-id")
+    assert isinstance(repository._persistence, MaestroAgentPersistence)
+    assert isinstance(memory._persistence, MaestroAgentPersistence) and memory._thread_id == "legacy-text-id"
     server._ensure_initialized.assert_not_called()
 
 

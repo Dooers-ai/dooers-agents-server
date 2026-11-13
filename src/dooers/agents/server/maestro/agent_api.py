@@ -39,7 +39,7 @@ import httpx
 from dooers.agents.server.protocol.maestro import MaestroContractError, MaestroContracts, default_contracts
 
 from .artifacts import artifact_type_allowed
-from .client import MAX_CONTEXT_PAGE_BYTES, MAX_RESPONSE_BYTES, resolve_instance_credential
+from .client import MAX_CONTEXT_PAGE_BYTES, MAX_RESPONSE_BYTES, MaestroContextError, resolve_instance_credential
 from .config import MaestroConfig, MaestroConfigurationError
 from .links import ArtifactLinkMissing, LinkResolver
 from .security import strict_json
@@ -227,15 +227,18 @@ class MaestroAgentApi:
         """
         self.check_scope(organization_id=organization_id, workspace_id=workspace_id)
         key = self._key("thread.create", idempotency_key if idempotency_key is not None else self.thread_idempotency_key())
-        # A UUID is not identifying: the SDK thread id is the external key of a thread made by ``Repository.create_thread`` (F8).
-        identifying = {
-            value
-            for value in (external_key, *(p.get("external_id") for p in participants if p.get("kind") == "external"))
-            if value and not _is_uuid(value)
-        }
-        identifying |= {value.lstrip("+") for value in identifying if value.lstrip("+")}
-        if any(value in key for value in identifying):
-            raise ValueError("the idempotency key must not hold an external key or a contact id")
+        if idempotency_key is not None:
+            # Only a key the caller chose can hold identifying text; the one made here is ``thread.create:{uuid}``, and a
+            # short external key (or a phone digit) may match a character of a random UUID.
+            # A UUID is not identifying: the SDK thread id is the external key of a thread made by ``Repository.create_thread`` (F8).
+            identifying = {
+                value
+                for value in (external_key, *(p.get("external_id") for p in participants if p.get("kind") == "external"))
+                if value and not _is_uuid(value)
+            }
+            identifying |= {value.lstrip("+") for value in identifying if value.lstrip("+")}
+            if any(value in key for value in identifying):
+                raise ValueError("the idempotency key must not hold an external key or a contact id")
         body: dict[str, Any] = {**self._scope_body(), "participants": [dict(p) for p in participants]}
         for name, value in (("external_key", external_key), ("title", title), ("channel", channel), ("queue", queue)):
             if value is not None:
@@ -623,6 +626,9 @@ class MaestroAgentApi:
             }
             headers.update(await self.config.transport_headers(url))
             return headers
+        except MaestroContextError as error:
+            # A resolver that did not answer is worth repeating; a credential that does not hold is not.
+            raise MaestroAgentApiError("CREDENTIAL_UNAVAILABLE", retryable=bool(getattr(error, "resolver_failed", False))) from None
         except Exception:
             raise MaestroAgentApiError("CREDENTIAL_UNAVAILABLE") from None
 

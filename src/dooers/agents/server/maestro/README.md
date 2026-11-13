@@ -22,8 +22,10 @@ conservar entradas legadas no mesmo processo, use outra instância configurada
 `agent` e mantenha seus endpoints separados. Configuração Maestro presente em
 modo `agent` não muda os fluxos legados nem monta endpoint automaticamente.
 
-No servidor Maestro, `dispatch`, `ingest`, `memory`, `repository` e `chat_upload`
+No servidor Maestro, `dispatch`, `ingest` e `chat_upload`
 retornam `ThreadManagementModeError` antes de inicializar/acessar persistência.
+`repository()` e `memory(thread_id)` funcionam: leem e gravam pela API do agente
+(ver "Repository e memory(thread_id) pela API do agente").
 O guard de `HandlerPipeline.setup` é uma defesa complementar. O router WS rejeita
 thread list/subscribe/unsubscribe/delete/participants.add, event create/list,
 thread artifacts e feedback antes de ler/escrever histórico. Settings, analytics,
@@ -31,9 +33,9 @@ connect e ping continuam com as validações/autorização existentes. Não inic
 cleanup de threads convidadas no modo novo.
 
 `database_type` ainda é obrigatório: `server.database()`, `server.settings()` e
-`server.analytics()` conservam a persistência privada. `repository()` também
-oferecia settings; no modo novo use `server.settings()` com `settings_schema`,
-ou `server.database()` para dados privados de aplicação. `upload()` é privado;
+`server.analytics()` conservam a persistência privada. `repository()` continua
+com `get_settings`/`update_settings`: eles vão para essa persistência privada,
+que só é aberta quando um deles é usado. `upload()` é privado;
 `chat_upload()` não é upload de artefato Maestro. Não há gravação de thread/evento/
 run canônico local pela admissão. APIs privadas de baixo nível não são uma barreira
 contra código arbitrário da própria aplicação operadora.
@@ -712,6 +714,67 @@ sucesso após ACK de complete perdido, separado do checkout e sem pytest/Uvicorn
 
 Execução entre réplicas, retry e efeitos exigem a composição durável E05-09 em [journal.md](journal.md). A factory textual E05-08 conserva seu comportamento de ensaio; seu guard em memória não reserva invocação entre processos.
 
+## Repository e memory(thread_id) pela API do agente
+
+No modo Maestro, `AgentServer.repository()` devolve `Repository(MaestroAgentPersistence)` e
+`AgentServer.memory(thread_id)` devolve `AgentMemory(thread_id, MaestroAgentPersistence)`.
+As classes de produção não mudam. A persistência usa `MaestroAgentApi` (`/v1/agent/*`) e
+devolve os modelos de produção (`Thread`, `ThreadEvent`, `Run`), convertidos como a memória
+do handler. `tests/test_maestro_agent_persistence.py` roda as mesmas chamadas na persistência
+de produção e no Maestro e compara o resultado.
+
+Regras:
+
+- **Id da thread.** `create_thread` manda `external_key` igual ao id do SDK. Um `thread_id`
+  que não é UUID é uma `external_key`. A busca tenta a `external_key` do agente e depois o id
+  do Maestro. A resposta usa o `thread_id` do chamador. Uma lista, `get_event` e `get_run`
+  usam a `external_key` da thread, ou o id do Maestro se ela não tem chave.
+- **Id do evento.** `create_event` manda o id do SDK como `client_event_id`. `get_event` e
+  `remove_event` aceitam esse id ou o `event_id` do Maestro. Um evento que o handler produziu
+  não tem id do SDK: seu id é o `event_id` do Maestro, o mesmo que `list_events` e
+  `get_history_raw` mostram. Por isso `get_event` acha todo id que o handler pode ler.
+- **Dono.** `Repository.create_thread(user=...)` manda esse humano como `owner`.
+- **Escopo.** O token vale para uma organização e um workspace. `workspace_id=""` é pessoal.
+  Outro escopo não vazio, e `""` com um token de workspace, levanta
+  `MaestroAgentScopeError` (erro de configuração). Um agente que serve vários workspaces
+  falha de forma visível. O escopo `admin` de `list_threads` não filtra organização nem workspace.
+- **Filtros de `list_threads`.** O servidor filtra `queue` (`__none__` vira `queue=""`).
+  O SDK aplica `user_id`, `user_email`, `identity_ids`, `title_query` e `scope`, e pagina até
+  o limite. `count_threads` usa a mesma varredura.
+- **Filtros de `list_events`.** O SDK aplica `type`, `actor`, `user_id` e `run_id` depois de
+  juntar os eventos (edição, remoção, `run_id` do evento de entrada). Um filtro no servidor
+  mostraria conteúdo antigo, porque a edição é outro evento. A leitura vai de trás para a
+  frente e para quando a seleção é a mesma da thread inteira. Ela lê no máximo
+  `MaestroConfig.max_history_pages` páginas e depois levanta `MaestroHistoryLimitError`.
+- **Não encontrado.** `NOT_FOUND` e `THREAD_DELETING` viram `None` ou lista vazia. Apagar uma
+  thread, um evento ou um run que não existe não faz nada. `remove_event` apaga qualquer evento
+  de conteúdo; um evento de controle não é apagado. A memória de uma thread que não existe
+  é vazia.
+- **Configurações, segredos, analytics e semente do worker** vão para a persistência local.
+  `delete_idle_guest_threads` devolve 0: a limpeza de convidados é do Maestro (plano 6).
+
+Diferenças declaradas (produção -> Maestro):
+
+- Os horários são os do servidor Maestro.
+- `Thread.users` inclui o agente (ele é sempre participante). `Repository.create_thread` de
+  produção guarda só o dono. O `Thread` que `create_thread` devolve é o que o `Repository` monta.
+- `Thread.agent_id` e `organization_id` são os do Maestro (o id da instância do agente e o UUID da
+  organização), não o texto que o chamador escolheu.
+- O autor de uma mensagem de usuário vem da pessoa (como o `HandlerPipeline` grava). Uma
+  mensagem do assistente sem autor tem `assistant_name`.
+- Uma pessoa chamada "Humano" tem `user_name=None` (regra do nome genérico do Maestro).
+- `create_thread` com uma `external_key` que já existe devolve a thread (o Maestro não duplica);
+  produção falha com chave duplicada. `create_event` numa thread que não existe levanta erro.
+- `create_event` publica só `message` (`assistant` como o agente, `user` como o humano de
+  `event.user`; partes de texto, contato e arquivo por URL). Outro tipo, outro ator e uma parte
+  de arquivo sem URL levantam `MaestroAgentUnsupported`. Um arquivo por URL volta como
+  `media_link`: sem `size_bytes`, `width`, `height` e `ref_id`.
+- Sem rota no Maestro: `update_event`, `create_run`, `update_run` e `upsert_thread_participant`
+  levantam `MaestroAgentUnsupported`. `list_runs` sem `thread_id` lê as threads do agente, uma
+  rota por thread, até 1000 threads (`MaestroAgentLimitError`).
+- `list_threads` e `count_threads` ignoram `agent_id`: o token já nomeia o agente.
+- `update_thread` muda título e fila; fila inválida é decisão do servidor (produção não valida).
+
 ## Paridade com a produção (`tests/parity`)
 
 A suíte de paridade roda cada cenário duas vezes: no caminho de produção
@@ -754,7 +817,8 @@ Diferenças declaradas:
 - URL de mídia com esquema diferente de `http`/`https` falha a execução (ver acima).
 
 Lacunas abertas (`tests/parity/known_gaps.py`): a entrada pelo `AgentServer` (`dispatch`,
-`ingest`, `repository`, `memory(thread_id)`, `chat_upload`) e o WhatsApp ficam para o plano 5.
+`ingest`, `chat_upload`) e o WhatsApp ficam para o plano 5. `repository()` e `memory(thread_id)`
+já funcionam; o cenário `repository_crud` fica como lacuna até este harness servir a API do agente.
 O chat público fica para o plano 6. Cada lacuna diz o plano que a fecha. Três cenários
 (`form_response_submit`, `form_response_cancel`, `incoming_fields`) diferem só por uma
 diferença declarada permanente (os acks do WebSocket legado; o tamanho de um documento por

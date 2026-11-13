@@ -588,3 +588,75 @@ async def test_an_answer_that_is_not_json_is_refused(fake):
     with pytest.raises(MaestroAgentApiError) as error:
         await api.list_threads()
     assert (error.value.code, error.value.retryable) == ("INVALID_RESPONSE", False)
+
+
+# -- slice 5c carries (5b review: Minor 1, 4, 6) --
+
+
+async def test_a_generated_create_key_is_never_checked_for_identifying_text(api, fake):
+    # Minor 1: a short external key (or a phone digit) appears in a random UUID. Only a key the caller chose is checked.
+    for key in ("1", "a", "0", "-", "e"):
+        thread = await api.create_thread(external_key=key, participants=[{"kind": "external", "channel": "whatsapp", "external_id": "5"}])
+        assert thread["external_key"] == key
+    with pytest.raises(ValueError):
+        await api.create_thread(external_key="abc", idempotency_key="thread.create:abc")
+
+
+async def test_get_event_finds_any_event_type_by_event_id_only(api, fake):
+    thread = await _thread(api)
+    published = await _message(api, thread["thread_id"], event_id="sdk-1")
+    reasoning = fake.inject_event(thread["thread_id"], "reasoning.created", {"text": "Pensando"})
+    run = fake.inject_event(
+        thread["thread_id"],
+        "run.updated",
+        {"run_id": str(uuid4()), "agent_id": fake.agent_id, "status": "running", "trigger_event_id": published["event"]["event_id"]},
+    )
+    # The Maestro id finds every type; the client id only an agent publication (a handler output has none).
+    assert (await api.get_event(reasoning["event_id"]))["type"] == "reasoning.created"
+    assert (await api.get_event(run["event_id"]))["type"] == "run.updated"
+    assert (await api.get_event("sdk-1"))["event_id"] == published["event"]["event_id"]
+    with pytest.raises(MaestroAgentNotFound):
+        await api.get_event("sdk-2")
+    # remove: content events only (``removableTypes``); a control event is VALIDATION_FAILED event_not_removable.
+    assert (await api.remove_event(thread["thread_id"], reasoning["event_id"]))["type"] == "message.removed"
+    with pytest.raises(MaestroAgentApiError) as error:
+        await api.remove_event(thread["thread_id"], run["event_id"])
+    assert (error.value.code, error.value.reason_code) == ("VALIDATION_FAILED", "event_not_removable")
+    with pytest.raises(MaestroAgentNotFound):
+        await api.get_event(reasoning["event_id"])  # removed
+
+
+async def test_the_fake_refuses_a_query_key_a_route_does_not_know(api, fake):
+    thread = await _thread(api)
+    token = (await fake.credential(None)).token
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient() as http:
+        known = await http.get(f"{fake.base_url}/agent/threads/{thread['thread_id']}", headers=headers)
+        unknown = await http.get(f"{fake.base_url}/agent/threads/{thread['thread_id']}", params={"foo": "1"}, headers=headers)
+        listed = await http.get(f"{fake.base_url}/agent/threads", params={"foo": "1"}, headers=headers)
+    assert (known.status_code, unknown.status_code, listed.status_code) == (200, 400, 400)
+
+
+async def test_retry_after_travels_with_a_rate_limit(api, fake):
+    thread = await _thread(api)
+    fake.fail_next[f"{PREFIX}/agent/threads/{thread['thread_id']}"] = "RATE_LIMITED"
+    with pytest.raises(MaestroAgentApiError) as error:
+        await api.get_thread(thread["thread_id"])
+    assert (error.value.code, error.value.retryable, error.value.retry_after_seconds) == ("RATE_LIMITED", True, 3)
+    assert fake.requests[-1].status == 429
+
+
+async def test_credential_unavailable_is_retryable_only_when_the_exchange_failed(fake):
+    # Minor 6: the core did not answer (the resolver raised) is worth repeating; a credential that does not hold is not.
+    async def down(request):
+        raise ConnectionError("core down")
+
+    with pytest.raises(MaestroAgentApiError) as error:
+        await MaestroAgentApi(fake.config(credential_resolver=down)).list_threads()
+    assert (error.value.code, error.value.retryable) == ("CREDENTIAL_UNAVAILABLE", True)
+
+    fake.token_scopes = []  # the credential comes back without the scope: refused for good
+    with pytest.raises(MaestroAgentApiError) as error:
+        await MaestroAgentApi(fake.config()).list_threads()
+    assert (error.value.code, error.value.retryable) == ("CREDENTIAL_UNAVAILABLE", False)
+    assert fake.requests == []
