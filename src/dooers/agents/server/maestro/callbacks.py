@@ -241,7 +241,12 @@ class MaestroCallbackClient(MaestroContextClient):
                                             error_code = error
                                     except Exception:
                                         pass
-                                    if action == "outputs" and response.status_code == 422 and error != "UNSUPPORTED_CAPABILITY":
+                                    if (
+                                        action == "outputs"
+                                        and response.status_code == 422
+                                        and error_code == "UNSUPPORTED_CAPABILITY"
+                                        and error != error_code
+                                    ):
                                         # Maestro refused the content (``VALIDATION_FAILED``): a contract error of the
                                         # handler's output, not a missing capability.
                                         error_code = "INVALID_REQUEST"
