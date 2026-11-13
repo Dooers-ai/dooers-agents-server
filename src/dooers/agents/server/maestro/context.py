@@ -543,6 +543,22 @@ async def maestro_handler_context(
         from .persistence import MaestroAgentMemory
 
         agent_memory = MaestroAgentMemory(memory, assistant_name=assistant_name, published=published)
+        if published is not None:
+            # Plano 5, Tarefa 7: o sink manda pelo WhatsApp as mensagens de uma thread de WhatsApp
+            # (F6) com os mesmos ``create_dooers_whatsapp_outbound``/``MaestroAgentApi`` de produção.
+            bind_whatsapp_route = getattr(published, "bind_whatsapp_route", None)
+            if bind_whatsapp_route is not None:
+                from dooers.agents.server.features.channels.whatsapp.outbound import (
+                    create_dooers_whatsapp_outbound,
+                )
+
+                from .agent_api import MaestroAgentApi
+
+                bind_whatsapp_route(
+                    incoming.context,
+                    outbound=create_dooers_whatsapp_outbound(resources.persistence),
+                    agent_api=MaestroAgentApi(memory._client.config, contracts=memory._client._contracts),
+                )
         previous = _active.get(task)
         tokens = None
         guard_token = None

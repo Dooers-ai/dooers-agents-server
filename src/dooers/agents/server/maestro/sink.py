@@ -88,7 +88,7 @@ class MaestroSend(AgentSend):
     """Superfície do handler Maestro: a de produção mais os extras do Maestro.
 
     ``update_user_event``, ``update_thread`` e ``add_participant`` são os de
-    ``AgentSend``. ``send.whatsapp.*`` falha no sink (plano 5).
+    ``AgentSend``. ``send.whatsapp.*`` vai pelo WhatsApp como produção (plano 5, Tarefa 7).
     """
 
     def __init__(self, sink: MaestroEventSink | None = None) -> None:
@@ -240,10 +240,69 @@ class MaestroEventSink:
         self._finished = False
         self._failed = False
         self._runs = RunTracker()
+        #: Thread's ``channel``/``channel_meta`` and ``agent_id`` (an ``AgentContext``-shaped object), the
+        #: outbound callback and the agent API: see :meth:`bind_whatsapp_route` (plano 5, Tarefa 7).
+        self._whatsapp_context: Any = None
+        self._whatsapp_outbound: Any = None
+        self._whatsapp_api: Any = None
 
     def bind_queues(self, allowed_queues: tuple[str, ...]) -> None:
         """The workspace catalog slugs (``MaestroExecutionContext.allowed_queues``) that ``send.update_thread`` checks."""
         self._allowed_queues = tuple(allowed_queues)
+
+    def bind_whatsapp_route(self, context: Any, *, outbound: Any, agent_api: Any) -> None:
+        """``maestro_handler_context`` binds this once per execution (``context.py``).
+
+        ``context`` is the handler's own ``on.context`` (an ``AgentContext``): it has the same
+        ``channel``/``channel_meta``/``user.user_id``/``agent_id`` production's own ``HandlerContext``
+        has, so ``HandlerPipeline._resolve_whatsapp_event`` works on it unchanged. ``outbound`` is
+        ``create_dooers_whatsapp_outbound(resources.persistence)`` (production's own factory);
+        ``agent_api`` is a ``MaestroAgentApi`` for ``record_channel_delivery``.
+        """
+        self._whatsapp_context = context
+        self._whatsapp_outbound = outbound
+        self._whatsapp_api = agent_api
+
+    def _resolve_whatsapp_route(self, event: AgentEvent) -> AgentEvent:
+        """F6: production's own ``_resolve_whatsapp_event`` (static, no Maestro-specific logic)."""
+        if self._whatsapp_context is None:
+            return event
+        from dooers.agents.server.handlers.pipeline import HandlerPipeline
+
+        return HandlerPipeline._resolve_whatsapp_event(event, self._whatsapp_context)
+
+    async def _dispatch_whatsapp(self, event: AgentEvent, ordinal: int) -> None:
+        """``pipeline.py`` ``_dispatch_whatsapp_outbound``/``_record_whatsapp_delivery``: same outbound call and
+
+        the same initial ``record_channel_delivery`` write production makes on the thread event. ``ordinal`` is
+        the Maestro output position this message was persisted at (before this call): its ``event_id`` is
+        the delivery's target. A silent skip (no route, no outbound bound, no dict outcome, or a status
+        outside ``{"accepted", "failed"}``) matches production exactly.
+        """
+        if self._whatsapp_outbound is None or self._whatsapp_api is None:
+            return
+        if not event.data.get("whatsapp"):
+            return
+        receipt = self._receipts.get(ordinal)
+        if receipt is None:
+            return
+        outcome = await self._whatsapp_outbound(event, self._whatsapp_context)
+        if not isinstance(outcome, dict):
+            return
+        status = str(outcome.get("status") or "").strip()
+        if status not in {"accepted", "failed"}:
+            return
+        provider_message_id = str(outcome.get("wa_message_id") or "").strip() or None
+        error_code = outcome.get("error_code")
+        message = str(outcome.get("error_message") or "").strip()
+        await self._whatsapp_api.record_channel_delivery(
+            thread_id=self._client._envelope["thread_id"],
+            event_id=receipt["event"]["event_id"],
+            status=status,
+            provider_message_id=provider_message_id,
+            error=message[:500] if message else None,
+            error_code=error_code,
+        )
 
     def _production_thread_update(self, event: AgentEvent) -> AgentEvent | None:
         """``pipeline.py`` ``thread_update``: the queue goes through ``resolve_thread_queue``.
@@ -381,12 +440,19 @@ class MaestroEventSink:
                 raise MaestroCallbackError("INVALID_REQUEST")
             if self._silent is not None and event.send_type != "run_end":
                 raise MaestroCallbackError("INVALID_REQUEST")
-            if event.send_type in _MESSAGE_SENDS and "whatsapp" in event.data:
-                raise MaestroCallbackError("UNSUPPORTED_CAPABILITY")  # send.whatsapp.*: plano 5
+            if event.send_type in _MESSAGE_SENDS:
+                # F6 (plano 5): toda mensagem comum de uma thread de WhatsApp vai pelo WhatsApp,
+                # não só ``send.whatsapp.*`` (que já chega com ``data["whatsapp"]`` preenchido).
+                event = self._resolve_whatsapp_route(event)
             if event.send_type in _DIRECT_SENDS:
+                ordinal = len(self._intents)
                 await self._publish(event)
+                if event.send_type in _MESSAGE_SENDS:
+                    await self._dispatch_whatsapp(event, ordinal)
             elif event.send_type in _MEDIA_SENDS:
+                ordinal = len(self._intents)
                 await self._publish_media(event)
+                await self._dispatch_whatsapp(event, ordinal)
             elif event.send_type == "maestro.handoff":
                 if set(event.data) != {"participant_id", "text"} or len(self._intents) >= MAX_PHASE_OUTPUTS:
                     raise MaestroCallbackError("INVALID_REQUEST")

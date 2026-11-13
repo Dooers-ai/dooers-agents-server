@@ -125,15 +125,22 @@ async def test_dashboard_turn_runs_the_handler_through_a_maestro_delivery():
     assert result.deliveries == [{"status": 200, "state": "responded", "reason_code": "responded"}]
 
 
-async def test_send_function_refused_by_the_sink_leaves_only_the_user_message(monkeypatch):
-    # send.whatsapp.* is the send function the sink still refuses (plan 5).
+async def test_send_whatsapp_publishes_then_fails_without_the_agent_api_scope(monkeypatch):
+    """F6/Task 7 correction: ``send.whatsapp.*`` is no longer refused by the sink; the message publishes.
+
+    This harness's Core credential has no ``threads:manage`` scope, so
+    ``MaestroAgentApi.record_channel_delivery`` (the initial delivery status) fails once the message is
+    already stored: the delivery still ends ``failed``, but for that reason, caught by the executor
+    the same way any handler exception is (``handler_error``), not raised past it.
+    """
+
     async def handler(on, send, memory, analytics, settings):
         yield send.whatsapp.text("Oi", to_e164="+5511999990000", instance_id="instancia-1")
 
     monkeypatch.setitem(SCENARIOS, "text", replace(SCENARIOS["text"], handler=handler))
     result = await run_maestro("text")
-    assert [event["actor"] for event in result.events] == ["user"]
-    assert result.deliveries == [{"status": 200, "state": "failed", "reason_code": "unsupported_capability"}]
+    assert [event["actor"] for event in result.events] == ["user", "assistant"]
+    assert result.deliveries == [{"status": 200, "state": "failed", "reason_code": "handler_error"}]
 
 
 @pytest.mark.parametrize("name", ["server_dispatch", "chat_upload", "whatsapp_text"])

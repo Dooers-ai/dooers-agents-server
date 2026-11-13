@@ -96,19 +96,25 @@ def test_thread_created_is_the_first_event_with_the_sdk_fields():
     assert [p["joined_sequence"] for p in view["participants"]] == ["1", "1"]
 
 
-async def test_send_refused_by_the_sink_completes_failed_without_an_event():
+async def test_send_whatsapp_publishes_then_fails_without_the_agent_api_scope():
+    """F6/Task 7 correction: ``send.whatsapp.*`` is no longer refused by the sink; the message publishes.
+
+    ``FakeMaestro`` fakes the delivery callbacks, not the separate agent API (``threads:manage``):
+    the record of the initial delivery status (``MaestroAgentApi.record_channel_delivery``) has no
+    credential here, so the turn still fails, but only after the message itself was stored —
+    ``tests/test_maestro_whatsapp.py`` covers the agent API wired end to end.
+    """
     fake = FakeMaestro()
 
     async def handler(on, send, memory, analytics, settings):
-        # send.whatsapp.* is the send function the sink still refuses (plan 5).
         yield send.whatsapp.text("Oi", to_e164="+5511999990000", instance_id="instancia-1")
 
     with fake.serving():
         thread_id, delivery, response = await _deliver(fake, handler)
 
     assert response.json()["state"] == "failed"
-    assert (delivery.state, delivery.reason_code) == ("failed", "unsupported_capability")
-    assert [event["actor"]["kind"] for event in _after_creation(fake, thread_id)] == ["human"]
+    assert (delivery.state, delivery.reason_code) == ("failed", "handler_error")
+    assert [event["actor"]["kind"] for event in _after_creation(fake, thread_id)] == ["human", "agent"]
 
 
 def test_publish_outside_the_contract_is_rejected():

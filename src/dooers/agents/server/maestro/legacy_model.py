@@ -44,6 +44,11 @@ from .links import LinkResolver
 #: queue before it (``data.from`` of the production ``thread.update`` event).
 PREVIOUS_QUEUE = "previous_queue"
 
+#: Payload key :func:`fold_events` adds to a message with a ``channel_delivery.updated``: the latest
+#: cumulative ``{status, provider_message_id?, error_code?, error?}`` (plan 5 Task 7). ``_message``
+#: folds it into ``data["delivery"]`` on read-back; never persisted on the Maestro wire itself.
+CHANNEL_DELIVERY_KEY = "_channel_delivery"
+
 #: Text before another agent's message in a thread with several agents (design 7.5).
 AGENT_PREFIX = "[agente: {name}]"
 
@@ -100,6 +105,12 @@ def fold_events(events: list[dict], *, queue: str | None = None) -> list[dict]:
     - A ``thread.updated`` that changed the queue gets :data:`PREVIOUS_QUEUE`. ``queue`` is the queue
       the thread had before the first event of the list (a ``thread.created`` in the list replaces it):
       a list that does not start at the thread's first event passes what it knows.
+    - A ``channel_delivery.updated`` folds onto its target's payload (:data:`CHANNEL_DELIVERY_KEY`),
+      production's cumulative merge of ``_record_whatsapp_delivery``: each one overwrites only the
+      fields it carries (``status`` always; ``provider_message_id``/``error_code``/``error`` only
+      when present), so an earlier field a later update omits stays. It never becomes an event of its
+      own (plan 5 Task 7; production has no event for it either). An update of a missing or removed
+      target (a race with the edit/removal) is dropped, like ``message.updated`` on one.
 
     The input list and its events are not changed; a changed event is a new dict.
     """
@@ -118,6 +129,16 @@ def fold_events(events: list[dict], *, queue: str | None = None) -> list[dict]:
             else:
                 target = folded[position]
                 folded[position] = {**target, "payload": {**target["payload"], "content": deepcopy(payload["content"])}}
+            continue
+        if kind == "channel_delivery.updated" and payload["event_id"] in positions:
+            position = positions[payload["event_id"]]
+            target = folded[position]
+            previous = target["payload"].get(CHANNEL_DELIVERY_KEY) or {}
+            updates = {key: payload[key] for key in ("status", "provider_message_id", "error_code", "error") if key in payload}
+            folded[position] = {
+                **target,
+                "payload": {**target["payload"], CHANNEL_DELIVERY_KEY: {**previous, **updates}},
+            }
             continue
         if kind == "run.updated" and payload["status"] == "running":
             position = positions.get(payload["trigger_event_id"])
@@ -230,23 +251,26 @@ DOOERS_PLATFORM_CHANNEL = "dooers-platform"
 #: ``context._EXTERNAL_CHANNEL`` maps it to this one).
 PUBLIC_CHAT_CHANNEL = "dooers-public-chat"
 
+#: Production's WhatsApp channel (the wire's own short name already is production's own: see
+#: ``context._EXTERNAL_CHANNEL``).
+WHATSAPP_CHANNEL = "whatsapp"
 
-def assistant_delivery_data(channel: str | None, channel_meta: dict[str, Any] | None) -> dict[str, Any] | None:
+
+def assistant_delivery_data(
+    channel: str | None, channel_meta: dict[str, Any] | None, *, user_id: str | None = None
+) -> dict[str, Any] | None:
     """Maestro-mode equivalent of production's ``HandlerPipeline._assistant_delivery_data``.
 
     Production stamps ``data["delivery"]`` on every assistant-authored ``message.created`` it persists
     (origin/main ``handlers/pipeline.py``, around line 1230): ``None`` on an empty channel or on
     ``"dooers-platform"`` (plain web chat); otherwise ``{"channel": channel, ...}`` plus channel-specific
-    fields. Only the ``"dooers-public-chat"`` fields (``public_chat_label``, from ``channel_meta``) are
-    wired here — plan 6, Task 5's job.
+    fields: ``public_chat_label`` (from ``channel_meta``) for ``"dooers-public-chat"`` (plan 6, Task 5);
+    ``to_e164``/``instance_id`` (from ``channel_meta["whatsapp"]``, falling back to ``user_id`` for
+    ``to_e164`` as production falls back to ``context.user.user_id``) for ``"whatsapp"`` (plan 5, Task 7).
 
-    Extension point for plan 5 Task 7 (WhatsApp): production also adds ``to_e164``/``instance_id`` for
-    ``channel == "whatsapp"`` (from ``channel_meta["whatsapp"]``, falling back to the user id) and later
-    folds ``channel_delivery.updated`` into ``data["delivery"]["status"]`` (production's
-    ``_record_whatsapp_delivery``). Add a ``channel == "whatsapp"`` branch *inside this function*
-    (do not duplicate it elsewhere) for the base fields, and fold the status update where a converted
-    event's ``data`` is read back (``_message``, below) the same way production folds it onto the
-    stored row — do not re-derive ``data["delivery"]`` from scratch there.
+    Plan 5 Task 7's other half — folding ``channel_delivery.updated`` into ``data["delivery"]`` on
+    read-back — happens where a converted event's ``data`` is read back (``_message``, below), onto
+    the dict this function returns: it never re-derives ``data["delivery"]`` from scratch there.
     """
     channel = (channel or "").strip()
     if not channel or channel == DOOERS_PLATFORM_CHANNEL:
@@ -257,6 +281,16 @@ def assistant_delivery_data(channel: str | None, channel_meta: dict[str, Any] | 
         label = str(meta.get("public_chat_label") or "").strip()
         if label:
             delivery["public_chat_label"] = label
+    elif channel == WHATSAPP_CHANNEL:
+        meta = channel_meta if isinstance(channel_meta, dict) else {}
+        whatsapp = meta.get("whatsapp")
+        if isinstance(whatsapp, dict):
+            to_e164 = str(whatsapp.get("to_e164") or user_id or "").strip()
+            if to_e164:
+                delivery["to_e164"] = to_e164
+            instance_id = str(whatsapp.get("instance_id") or "").strip()
+            if instance_id:
+                delivery["instance_id"] = instance_id
     return {"delivery": delivery}
 
 
@@ -359,6 +393,21 @@ async def _message(
     # another agent alone in the thread, since both render as ``assistant`` here); never on a person's
     # or another agent's (multi_agent) message.
     delivery = assistant_delivery_data(channel, channel_meta) if legacy_actor == "assistant" else None
+    channel_delivery = payload.get(CHANNEL_DELIVERY_KEY)
+    if delivery is not None and channel_delivery:
+        # F7/Task 7: fold the latest ``channel_delivery.updated`` onto the stored row, as production's
+        # ``_record_whatsapp_delivery`` folds it onto ``thread_event.data["delivery"]`` — never re-derived.
+        merged = dict(delivery["delivery"])
+        merged["status"] = channel_delivery["status"]
+        provider_message_id = str(channel_delivery.get("provider_message_id") or "").strip()
+        if provider_message_id:
+            merged["wa_message_id"] = provider_message_id
+        if channel_delivery.get("error_code") is not None:
+            merged["error_code"] = channel_delivery["error_code"]
+        error_message = str(channel_delivery.get("error") or "").strip()
+        if error_message:
+            merged["error_message"] = error_message[:500]
+        delivery = {"delivery": merged}
     template = payload.get("template")
     data = None
     if template is not None:

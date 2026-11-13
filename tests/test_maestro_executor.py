@@ -282,8 +282,8 @@ async def setup(key, contracts, *, config_change=None, dispatch_change=None):
         await asyncio.gather(*tuple(fixture.tasks), return_exceptions=True)
 
 
-async def execute_fixture(fixture, handler):
-    adapter = create_text_delivery_adapter(fixture.config, handler, private)
+async def execute_fixture(fixture, handler, private_resolver=private):
+    adapter = create_text_delivery_adapter(fixture.config, handler, private_resolver)
     result = await request(adapter, json_bytes(fixture.envelope), fixture.headers)
     assert not [t for t in asyncio.all_tasks() if t.get_name() == "maestro-heartbeat"]
     assert current_maestro_context() is None and current_execution_context() is None
@@ -403,7 +403,13 @@ async def test_production_send_publishes_one_output(private_key, contracts, meth
         assert output["type"] == EXPECTED_OUTPUT_TYPE[method]
 
 
-async def test_whatsapp_send_never_publishes(private_key, contracts):
+async def test_whatsapp_send_publishes_before_the_turn_fails(private_key, contracts):
+    """F6/Task 7 correction: ``send.whatsapp.*`` is no longer refused by the sink; the message publishes.
+
+    This fixture's private persistence has no WhatsApp secrets store, so the real outbound dispatch
+    raises once the message is already published: the turn fails for that reason (``handler_error``),
+    not because the sink rejected the send.
+    """
     async with setup(private_key, contracts) as fixture:
 
         async def handler(_on, send, *_args):
@@ -411,8 +417,8 @@ async def test_whatsapp_send_never_publishes(private_key, contracts):
 
         response = await execute_fixture(fixture, handler)
         assert response.status_code == 200
-        assert response.json()["state"] == "failed"
-        assert not fixture.outputs
+        assert (response.json()["state"], fixture.completions[-1]["reason_code"]) == ("failed", "handler_error")
+        assert fixture.outputs
 
 
 async def test_output_ack_loss_reuses_same_bytes_key_and_event(private_key, contracts):

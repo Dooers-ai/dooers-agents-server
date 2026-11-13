@@ -52,6 +52,74 @@ def _as_dict(raw: bytes) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _maestro_agent_api(server: Any) -> Any:
+    """``server._maestro_api()`` when ``server`` (found by :func:`bind_agent_server`) runs Maestro mode.
+
+    ``None`` in legacy mode, or when no server was bound for this ``persistence`` yet (a webhook that
+    arrives before the server finishes setting up): the caller then falls back to the local path, as
+    before this branch existed — the local path returns ``False`` too (no ``persistence`` method), so
+    the receipt is only lost if it truly arrives before the server is up, same as today.
+    """
+    if server is None:
+        return None
+    config = getattr(server, "_config", None)
+    if config is None or getattr(config, "thread_management", None) != "maestro":
+        return None
+    get_api = getattr(server, "_maestro_api", None)
+    return get_api() if get_api is not None else None
+
+
+async def _apply_maestro_delivery_receipt(agent_api: Any, agent_id: str, wa_message_id: str, data: dict[str, Any]) -> bool:
+    """Maestro-mode body of :func:`apply_whatsapp_delivery_receipt` (plan 5, Task 7).
+
+    ``find_channel_delivery``/``record_channel_delivery`` (``MaestroAgentApi``, plan 5 Task 5b) replace
+    the local ``persistence`` the legacy path reads/writes; ``_receipt_moves_forward`` (F15) is the same
+    status-ordering rule, applied here against the status ``find_channel_delivery`` returns before
+    writing, so a stale receipt never reaches the agent API. An unknown ``wa_message_id``
+    (``MaestroAgentNotFound``, the agent API's 404) is production's own "pending" case: ``False``, so
+    the caller retries, same as the legacy path's unknown wamid. Once found, this always returns
+    ``True``: a status that does not move forward is kept locally (nothing to retry), and a
+    ``record_channel_delivery`` the agent API itself did not apply (a race already moved the status
+    further) needs no retry either — both are "nothing left to do", not failures.
+    """
+    from dooers.agents.server.maestro.agent_api import MaestroAgentNotFound
+
+    try:
+        current = await agent_api.find_channel_delivery(wa_message_id)
+    except MaestroAgentNotFound:
+        logger.info("delivery receipt pending (maestro) wa_message_id=%s agent_id=%s", wa_message_id, agent_id)
+        return False
+    status = _canonical_status(str(data.get("status") or "failed"))
+    if not _receipt_moves_forward(str(current.get("status") or ""), status):
+        logger.info(
+            "delivery receipt kept (maestro) wa_message_id=%s status=%s incoming=%s thread=%s",
+            wa_message_id,
+            current.get("status"),
+            status,
+            current.get("thread_id"),
+        )
+        return True
+    error_code = data.get("error_code")
+    message = str(data.get("error_message") or "").strip()
+    result = await agent_api.record_channel_delivery(
+        thread_id=current["thread_id"],
+        event_id=current["event_id"],
+        status=status,
+        provider_message_id=wa_message_id,
+        error=message[:500] if message else None,
+        error_code=error_code if error_code is not None else None,
+    )
+    logger.info(
+        "delivery receipt applied (maestro)=%s wa_message_id=%s status=%s error_code=%s thread=%s",
+        bool(isinstance(result, dict) and result.get("applied")),
+        wa_message_id,
+        status,
+        error_code,
+        current.get("thread_id"),
+    )
+    return True
+
+
 async def apply_whatsapp_delivery_receipt(
     persistence: Persistence,
     agent_id: str,
@@ -64,6 +132,11 @@ async def apply_whatsapp_delivery_receipt(
     the insert of the id. A stale status returns True, because retrying will not
     change it. Agents that only check ``connectivity_check`` never dispatch this
     payload.
+
+    In Maestro mode (plan 5, Task 7) — the server :func:`bind_agent_server` remembered for this
+    ``persistence`` has ``AgentConfig.thread_management == "maestro"`` — the same rule runs over
+    ``MaestroAgentApi.find_channel_delivery``/``record_channel_delivery`` instead of ``persistence``;
+    legacy mode is byte-for-byte unchanged below.
     """
     data = _as_dict(body)
     if not data or not data.get("delivery_receipt"):
@@ -71,6 +144,9 @@ async def apply_whatsapp_delivery_receipt(
     wa_message_id = str(data.get("wa_message_id") or "").strip()
     if not wa_message_id:
         return False
+    maestro_api = _maestro_agent_api(_servers.get(persistence))
+    if maestro_api is not None:
+        return await _apply_maestro_delivery_receipt(maestro_api, agent_id, wa_message_id, data)
     finder = getattr(persistence, "find_event_by_whatsapp_message_id", None)
     if finder is None:
         logger.warning("delivery receipt ignored: persistence cannot look up wa_message_id")

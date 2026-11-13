@@ -547,7 +547,14 @@ async def test_text_author_is_recorded(private_key, contracts):
         assert output["payload"] == {"content": [{"type": "text", "text": "Olá"}], "mentions": [], "author": "Assistente"}
 
 
-async def test_whatsapp_sends_stay_refused(private_key, contracts):
+async def test_whatsapp_send_publishes_with_the_whatsapp_field(private_key, contracts):
+    """F6/Task 7 correction: ``send.whatsapp.*`` is no longer refused by the sink; the message publishes.
+
+    This fixture's private persistence (``tests.test_maestro_context.private``) has no WhatsApp secrets
+    store, so the real outbound dispatch (``create_dooers_whatsapp_outbound``, production's own factory)
+    raises past it once the message is already published: the turn still fails, but for that reason, not
+    ``unsupported_capability`` — ``tests/test_maestro_whatsapp.py`` covers a wired outbound end to end.
+    """
     async with setup(private_key, contracts) as fixture:
 
         async def handler(_on, send, *_args):
@@ -555,8 +562,9 @@ async def test_whatsapp_sends_stay_refused(private_key, contracts):
 
         response = await execute_fixture(fixture, handler)
         assert response.status_code == 200
-        assert (response.json()["state"], fixture.completions[-1]["reason_code"]) == ("failed", "unsupported_capability")
-        assert not fixture.outputs
+        assert (response.json()["state"], fixture.completions[-1]["reason_code"]) == ("failed", "handler_error")
+        (output,) = published(fixture)
+        assert output["payload"]["whatsapp"] == {"to_e164": "+5511111111111", "instance_id": "inst"}
 
 
 def test_form_without_suspension_is_the_production_form():
