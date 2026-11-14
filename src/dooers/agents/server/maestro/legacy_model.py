@@ -392,7 +392,14 @@ async def _message(
     # F7: production's ``_assistant_delivery_data(context)`` on every assistant message (own agent, or
     # another agent alone in the thread, since both render as ``assistant`` here); never on a person's
     # or another agent's (multi_agent) message.
-    delivery = assistant_delivery_data(channel, channel_meta) if legacy_actor == "assistant" else None
+    # Final review fix 1: outside a delivery there is no live ``context.user.user_id`` to fall back to for
+    # ``to_e164`` (only the thread's own, inbound ``channel_meta``, which has no reason to carry it); the
+    # event's own ``payload["whatsapp"]`` — set at publish time from the handler's own
+    # ``send.whatsapp.*(to_e164=..., instance_id=...)`` call (``sink.py``'s ``_resolve_whatsapp_route``) — is
+    # the one value read-back can use instead, so the fallback stays ``user_id`` in name only.
+    whatsapp_route = payload.get("whatsapp")
+    whatsapp_to_e164 = whatsapp_route.get("to_e164") if isinstance(whatsapp_route, dict) else None
+    delivery = assistant_delivery_data(channel, channel_meta, user_id=whatsapp_to_e164) if legacy_actor == "assistant" else None
     channel_delivery = payload.get(CHANNEL_DELIVERY_KEY)
     if delivery is not None and channel_delivery:
         # F7/Task 7: fold the latest ``channel_delivery.updated`` onto the stored row, as production's

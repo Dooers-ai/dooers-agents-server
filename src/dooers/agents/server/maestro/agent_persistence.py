@@ -90,10 +90,19 @@ class _AgentWindow:
     ``events`` is the window, oldest first: the newest page first, then one older page per ``read_back``.
     """
 
-    def __init__(self, api: MaestroAgentApi, ref: str, participants: list[dict[str, Any]], *, page_size: int, max_pages: int) -> None:
+    def __init__(
+        self,
+        api: MaestroAgentApi,
+        ref: str,
+        participants: list[dict[str, Any]],
+        *,
+        page_size: int,
+        max_pages: int,
+        thread_view: dict[str, Any] | None = None,
+    ) -> None:
         self._api, self._ref, self._page_size = api, ref, page_size
         self.max_pages = max_pages
-        self._head = {"participants": participants}
+        self._head = {"participants": participants, **({"thread": thread_view} if thread_view is not None else {})}
         self._events: list[dict[str, Any]] = []
         self._next: str | None = None
         self._loaded = False
@@ -356,7 +365,7 @@ class MaestroAgentPersistence(Persistence):
         if view is None:
             return None
         self._thread(view)
-        window = _AgentWindow(self._api, ref, view["participants"], page_size=self._page_size, max_pages=self._max_pages)
+        window = _AgentWindow(self._api, ref, view["participants"], page_size=self._page_size, max_pages=self._max_pages, thread_view=view)
         links = self._links.setdefault(view["thread_id"], self._api.link_resolver(view["thread_id"]))
         return _ThreadReads(_Reader(self._api, ref, window, links), assistant_name=self._assistant_name)  # type: ignore[arg-type]
 

@@ -380,6 +380,10 @@ async def test_memory_by_external_thread_id(world):
         )
     )  # fmt: skip
     for index, (actor, text) in enumerate(texts):
+        # Final review fix 1: production stamps data.delivery on every assistant message of a whatsapp thread
+        # at persist time (HandlerPipeline._assistant_delivery_data); this channel_meta has no "whatsapp" key
+        # (only "instance_id" flat, as the Maestro side below), so delivery carries just the channel.
+        data = {"delivery": {"channel": "whatsapp"}} if actor == "assistant" else None
         await world.prod_db.create_event(
             ThreadEvent(
                 id=f"e{index}",
@@ -389,6 +393,7 @@ async def test_memory_by_external_thread_id(world):
                 author=ASSISTANT if actor == "assistant" else "Maria",
                 user=contact if actor == "user" else User(user_id=""),
                 content=[WireS2C_TextPart(text=text)],
+                data=data,
                 created_at=now + timedelta(seconds=index),
             )
         )

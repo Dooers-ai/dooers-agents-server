@@ -54,6 +54,12 @@ agent-api thread always has the agent as a participant), ``chat_upload`` (an att
 a real temporary link outside a delivery), and every ``whatsapp_<send type>``/``whatsapp_receipt`` (no
 ``data.delivery`` outside a delivery — ``MaestroExecutionPersistence._channel_state``'s own docstring states
 it has no thread view over the agent API).
+
+Final review of plan 5 (fix 1, 2026-11-14): that last gap was never the extra read the docstring blamed —
+``MaestroAgentPersistence._reads`` already pays for ``get_thread`` once per call and was discarding its
+result. ``_reads`` now passes that ``view`` into ``_AgentWindow``'s head (the ``thread`` key
+``_channel_state`` looks for), so ``data.delivery`` is populated outside a delivery too. The 7
+``whatsapp_<send type>``/``whatsapp_receipt`` scenarios match exactly now and are gone from ``GAPS``.
 """
 
 from __future__ import annotations
@@ -63,7 +69,6 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 
 from tests.parity.model import AGENT_ID, ParityResult
-from tests.parity.scenarios_server import WHATSAPP_SENDS
 
 Outcome = tuple[int, str, str | None]
 
@@ -96,18 +101,6 @@ def _agent_api_thread_has_agent(result: ParityResult) -> None:
                 strip(child)
 
     strip(result.outputs)
-
-
-def _agent_api_no_delivery_data(result: ParityResult) -> None:
-    for event in result.events:
-        data = event.get("data")
-        if isinstance(data, dict) and "delivery" in data:
-            event["data"] = {key: value for key, value in data.items() if key != "delivery"} or None
-    receipts = result.outputs.get("receipts")
-    if isinstance(receipts, list):
-        for receipt in receipts:
-            if isinstance(receipt, dict) and isinstance(receipt.get("delivery"), list):
-                receipt["delivery"] = [MASK for _ in receipt["delivery"]]
 
 
 def _agent_api_attachment_url(result: ParityResult) -> None:
@@ -146,12 +139,6 @@ DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
         "(Public.AgentThreadCreateRequest/FakeAgentApi, test_maestro_agent_persistence.py's own "
         "'the same users except the agent'); Repository.create_thread only ever adds the explicit owner/users",
         _agent_api_thread_has_agent,
-    ),
-    "agent_api_no_delivery_data": (
-        "declared, permanent: reading a thread's events through the agent API outside a delivery has no "
-        "thread view (MaestroExecutionPersistence._channel_state, agent_persistence's _AgentWindow), so an "
-        "assistant message never gets data.delivery there; legacy stores it at persist time",
-        _agent_api_no_delivery_data,
     ),
     "agent_api_attachment_url": (
         "declared, permanent: an attachment read back through the agent API outside a delivery resolves to a "
@@ -218,11 +205,9 @@ GAPS: dict[str, Gap] = {
     # real temporary link once read back through the agent API outside a delivery (``MaestroAgentApi.link_resolver``);
     # the local ``ref_id`` legacy stores keeps ``url=None``.
     "chat_upload": _declared("agent_api_attachment_url", deliveries=_RESPONDED),
-    # Every ``send.whatsapp.*`` matches except a permanent declared difference: ``data.delivery`` is never
-    # populated when the thread is read outside a delivery (``MaestroExecutionPersistence._channel_state`` has no
-    # thread view over the agent API); legacy stores it at persist time.
-    **{f"whatsapp_{send_type}": _declared("agent_api_no_delivery_data", deliveries=_RESPONDED) for send_type in WHATSAPP_SENDS},
-    "whatsapp_receipt": _declared("agent_api_no_delivery_data", deliveries=_RESPONDED),
+    # Final review fix 1: ``_reads()`` now passes the thread ``view`` it already read into ``_AgentWindow``'s head,
+    # so ``_channel_state`` has a thread view outside a delivery too; every ``send.whatsapp.*`` and the receipt
+    # scenario now match exactly (``agent_api_no_delivery_data`` is gone — see git history for the closed gap).
     # Public chat (plan 6).
     "public_chat_guest": _PUBLIC_CHAT,
     "public_chat_authenticated": _PUBLIC_CHAT,
