@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] — 2026-11-13
+
+### Changed
+
+- Reading other people's threads (supervision) now follows the platform permission
+  `thread:view_others`, which the organization grants through a custom role. Being an org
+  manager or a workspace manager is no longer enough. The core sends the permission list
+  in the connection context (`user.permissions`); with it present and without the
+  permission, the runtime never elevates, whatever the roles say. Cores that predate
+  permissions keep the previous role rules.
+- Creator settings follow the member's actual org role (`organization.member_role`),
+  since `organization.role` may now be lowered for thread supervision.
+
 ## [0.25.2] — 2026-11-03
 
 ### Fixed
