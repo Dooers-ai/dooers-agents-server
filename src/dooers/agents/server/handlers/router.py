@@ -143,7 +143,8 @@ def _resolve_channel(metadata: dict[str, Any] | None) -> tuple[str, dict[str, An
 
 def _can_access_creator_settings(user: User, *, agent_owner_user_id: str | None) -> bool:
     """Creator-level settings: org owner/manager, or the platform agent owner user."""
-    if user.organization_role in ("owner", "manager"):
+    # The actual org role: ``organization_role`` may be lowered for thread supervision.
+    if (user.organization_member_role or user.organization_role) in ("owner", "manager"):
         return True
     if agent_owner_user_id and user.user_id == agent_owner_user_id:
         return True
