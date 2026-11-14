@@ -5,6 +5,240 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] — 2026-11-13
+
+### Changed
+
+- Reading other people's threads (supervision) now follows the platform permission
+  `thread:view_others`, which the organization grants through a custom role. Being an org
+  manager or a workspace manager is no longer enough. The core sends the permission list
+  in the connection context (`user.permissions`); with it present and without the
+  permission, the runtime never elevates, whatever the roles say. Cores that predate
+  permissions keep the previous role rules.
+- Creator settings follow the member's actual org role (`organization.member_role`),
+  since `organization.role` may now be lowered for thread supervision.
+
+## [0.25.2] — 2026-11-03
+
+### Fixed
+
+- Turns are exported again when the agent runs on FastAPI 0.162 or newer. That FastAPI
+  traces every WebSocket connection by default ("WS /ws"), so the turn span became its
+  child; export only fires when a root span ends, so every turn waited for the socket to
+  close and was then dropped under a root without `agent.id` ("turn missing agent.id"),
+  silently and with the LLM spans and their key-source marks. The turn span is now always
+  the root of its own trace, whatever span is open around it.
+
+## [0.25.1] — 2026-11-01
+
+### Fixed
+
+- A WhatsApp delivery receipt no longer walks a bubble backwards. `read` stays
+  `read` when a late `delivered` arrives, and `failed` is not cleared by a later
+  progress status. `delivered` and `read` still advance an `accepted` send.
+
+## [0.25.0] — 2026-10-29
+
+### Added
+
+- `thread.search` (C2S) / `thread.search.result` (S2C): search every thread the
+  connection may see by title, not just the page already loaded. Same scope,
+  queue filter and `last_event_at|id` cursor as `thread.list`; case-insensitive
+  substring match (`ILIKE` on Postgres/AlloyDB with `%`/`_` matched literally,
+  `CONTAINS(..., true)` on Cosmos). The query is trimmed and must have 1 to 200
+  characters, otherwise the server acks `ok=false` with `INVALID_QUERY`; a search
+  that fails in the database acks `SEARCH_FAILED` instead of closing the socket. The
+  result echoes `query` so clients can drop answers to an older search.
+  Clients must check the server version first: servers before 0.25.0 close the
+  socket on an unknown frame type.
+
+## [0.24.5] — 2026-10-29
+
+### Fixed
+
+- A long turn no longer loses the attributes that say which key paid for each
+  LLM call. OTel caps a span at 128 attributes by default and evicts the oldest
+  one when it fills up, so `dooers.llm.key_source`, `dooers.llm.endpoint`,
+  `llm.system` and `input.value` were dropped from the later calls of turns with
+  many messages and tools — the usage screen then read the turn as "mixed
+  origin" and had no request/response payload to show. Spans now allow 512
+  attributes.
+
+## [0.24.4] — 2026-10-28
+
+### Added
+
+- WhatsApp outbound records `delivery.status` and `delivery.wa_message_id` on the
+  thread event. A synchronous tools error (for example Meta 131047, outside the
+  24h window) is stored before the console broadcast. An asynchronous refusal
+  posted back as a `delivery_receipt` (for example Meta 130497) updates that
+  same event and is pushed to open consoles with `event.append`.
+
+## [0.24.3] — 2026-10-16
+
+### Fixed
+
+- A rejected handshake no longer leaves session state; the socket is closed.
+  Rejections are logged with agent, code and reason.
+- `AgentServer.handle` exits cleanly after a rejected handshake instead of
+  logging an error.
+
+## [0.24.2] — 2026-10-14
+
+### Added
+
+- Managed chat storage (`chat_storage_service="dooers"`) mints a V4 read URL
+  for audio, image, and document replay. Signing uses the runtime service
+  account (`iam.signBlob`), and the object key includes `DOOERS_STORAGE_PREFIX`
+  so the URL stays inside the org's bucket grant. Keys outside that prefix are
+  not signed. Creator-managed `gcp` / `azure` buckets are unchanged.
+
+## [0.24.1] — 2026-10-13
+
+### Fixed
+
+- `thread.upsert` now includes each connection's own `access` (`read` / `write` /
+  `manage`). Live creates, queue moves, and participant changes no longer omit
+  access or copy the actor's flags onto every socket. List and snapshot were
+  already per connection; the wire shape is unchanged.
+
+## [0.24.0] — 2026-10-08
+
+### Added
+
+- Workspace **thread queues**: optional `Thread.queue` slug (null when unset).
+  `thread.list` accepts `queue`. New `thread.update` frame (write/manage)
+  and `send.update_thread(queue=...)`. Core catalog arrives on connect as
+  `workspace.queues` (slug list, unchanged for older SDKs) plus
+  `workspace.queue_catalog` (`slug`, `name`, `members` with `user_id` / name /
+  email / `identity_ids` / primitive SSO `claims`). The roster is copied to
+  `incoming.context.queues` each turn. Unknown slugs are rejected when the
+  catalog is present.
+- Timeline event `thread.update` when the queue changes.
+- `event.create` accepts optional `queue` for a new thread. Omit it (or pass
+  null) to leave the thread unqueued — including in a workspace.
+- `thread.list` `queue=__none__` returns threads with no queue.
+- WhatsApp inbound HMAC may include the same `queues` / `queue_catalog`
+  snapshot. Pass it through `parse_inbound_queue_catalog(body)` into
+  `dispatch(..., queues=)` / `ingest(..., queues=)` so
+  `incoming.context.queues` is populated without a WebSocket handshake.
+
+## [0.23.4] — 2026-10-05
+
+### Security
+
+- **Core tokens are validated only against a trusted core.** Dashboard and
+  public-chat JWTs issued by dooers-service-core are sent to
+  `AGENT_CORE_BASE_URL` when it is set. When it is not set, they go to the
+  Dooers core that issued them, but only if the token's `validation_url` is
+  exactly a known Dooers core endpoint; anything else goes to the platform
+  default `https://api.dooers.ai`. Upgrading is strongly recommended.
+
+### Compatibility
+
+- No configuration change is required. Agents on production or on the
+  Dooers development core keep validating exactly where they did before.
+- `AuthValidationClient` accepts an optional `core_base_url` argument.
+
+## [0.23.3] — 2026-10-03
+
+### Fixed
+
+- `thread.subscribe` now snapshots the **latest** events (up to 500) and sets
+  `has_more` when older history remains. The previous oldest-first `limit=100`
+  hid the end of long turns (coding tool storms) and broke `event.list` /
+  `loadOlderEvents`, which only pages backward. Reconnect with `after_event_id`
+  still fills only the gap.
+
+## [0.23.2] — 2026-10-03
+
+### Fixed
+
+- Postgres (and Cosmos) `create_event` now strips U+0000 from event `content`/`data` before
+  write. Sandbox tool output can carry a NUL; Postgres `text`/`jsonb` reject it and the turn
+  aborted with `UntranslatableCharacterError`. Existing events without a NUL are unchanged.
+- Treat Starlette `WebSocketDisconnected` as a normal client drop (same as `WebSocketDisconnect`),
+  so a reconnect no longer logs a handle-loop error.
+
+## [0.23.0] — 2026-09-21
+
+### Added
+
+- **Which key paid for each LLM call, for any provider.** Every LLM span now carries:
+  - `dooers.llm.key_source` — `dooers` when the request carries a Dooers key (`dk_live_…`: the call
+    went through the Dooers gateway and is billed to the organization's wallet); `third_party` for
+    anything else — another provider's key, or no key at all (e.g. Vertex with Google credentials).
+  - `dooers.llm.endpoint` — host the request went to (e.g. `llm.dooers.ai`, `api.openai.com`,
+    `generativelanguage.googleapis.com`).
+
+  Read from the outgoing HTTP request itself (httpx, httpx2 and aiohttp), so it does not depend on
+  the provider or client: OpenAI, Anthropic, Gemini (`google-genai`) and the Agents SDK's LiteLLM
+  models (`litellm/gemini/…`, `litellm/anthropic/…`) are all tagged. The key is looked for in
+  `Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, `api-key` and `?key=`. Only LLM spans are
+  tagged (`openinference.span.kind = LLM`, from any instrumentor); a tool's HTTP call is not.
+  The key itself is never recorded, not even partially. Tagging is best-effort: a failure never
+  changes or breaks the LLM call. No agent code changes — it comes with the `observability` extra.
+- `google-genai` calls are now instrumented (`openinference-instrumentation-google-genai`, in the
+  `observability` extra): they get LLM spans with model and tokens like OpenAI and Anthropic.
+
+### Fixed
+
+- An instrumentor whose client library is not installed was reported `active` (openinference only
+  logs a DependencyConflict and patches nothing); it is now reported `skipped`.
+
+### Known limitations
+
+- A call with no LLM span has nothing to tag: LiteLLM called directly (outside the Agents SDK) and
+  other frameworks without an openinference instrumentor here.
+- Clients that do not send over httpx / httpx2 / aiohttp are not tagged: `requests` (e.g.
+  `google-genai` on Vertex with mTLS client certificates, boto3), gRPC, websockets (Realtime).
+
+### Changed
+
+- Dev dependency group now includes `openai`, `anthropic`, `google-genai` and `aiohttp` (the
+  observability tests drive the real clients over a fake HTTP transport or a local server). The
+  lockfile moves `openinference-instrumentation-anthropic` to 2.1.5 — 1.x no longer imports with
+  `anthropic` ≥ 1.0.
+
+## [0.22.1] — 2026-09-11
+
+### Added
+
+- **Thread supervision modes** (`strict` / `operational` / `open`) via seeded
+  `__dooers_thread_supervision_mode` (or `AGENT_THREAD_SUPERVISION_MODE` env).
+  Controls when elevated subscribe requires `access_reason`:
+  - `strict`: always (default)
+  - `operational`: only personal 1:1 (empty `workspace_id`)
+  - `open`: never
+
+## [0.22.0] — 2026-09-10
+
+### Added
+
+- **Thread access capabilities** (`read` / `write` / `manage`) on list/snapshot via `thread.access`.
+- **Org owner/manager supervision** of personal 1:1 threads (empty `workspace_id`): list + read + manage; write only after joining as participant.
+- **`thread.participants.add`** C2S frame and **`send.add_participant()`** for runtime (agent must be in `users`).
+- **Same-day elevated view grants** in-process (`ThreadViewGrantStore`, TTL end of UTC day). Elevated subscribe requires `access_reason` when no grant exists.
+- New threads include the serving **agent_id** in `users`.
+
+### Changed
+
+- **BREAKING (behavior):** Personal inbox no longer forces `member` list scope for org elevated roles. System admin non-participants are read-only. `event.create` on existing threads requires `write`. `thread.delete` requires `manage`.
+- Organization list scope with empty connection workspace lists **personal threads only**.
+
+## [0.21.0] — 2026-09-06
+
+### Added
+
+- **`AgentConfig.whatsapp_peer_message`** (`ignore` | `register` | `dispatch`, default `register`) for WhatsApp human/`fromMe` peer messages on third-party chats.
+- **`AgentServer.ingest(...)`** — persist a channel message on a thread without running the handler (used by `register`).
+
+## [0.20.1] — 2026-08-31
+
+### Added
+
+- **`input_type="date"`** on `send.form_text` / wire `text_input` — native date picker contract; values and defaults use `YYYY-MM-DD`.
+
 ## [0.19.5] — 2026-08-26
 
 ### Added

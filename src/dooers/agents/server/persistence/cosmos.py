@@ -8,6 +8,7 @@ from typing import Any
 
 from dooers.agents.server.config import OnSettingsUpdated
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
+from dooers.agents.server.persistence.sanitize import without_nul
 from dooers.agents.server.protocol.models import (
     Run,
     Thread,
@@ -15,6 +16,7 @@ from dooers.agents.server.protocol.models import (
     User,
     deserialize_s2c_part,
 )
+from dooers.agents.server.thread_queue import is_unqueued_list_filter
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,7 @@ class CosmosPersistence:
             "users": [u.model_dump() for u in thread.users],
             "title": thread.title,
             "metadata": thread.metadata,
+            "queue": thread.queue,
             "created_at": thread.created_at.isoformat(),
             "updated_at": thread.updated_at.isoformat(),
             "last_event_at": thread.last_event_at.isoformat(),
@@ -178,6 +181,7 @@ class CosmosPersistence:
             "users": [u.model_dump() for u in thread.users],
             "title": thread.title,
             "metadata": thread.metadata,
+            "queue": thread.queue,
             "created_at": thread.created_at.isoformat(),
             "updated_at": thread.updated_at.isoformat(),
             "last_event_at": thread.last_event_at.isoformat(),
@@ -240,11 +244,14 @@ class CosmosPersistence:
         if scope == "organization":
             conditions.append("c.organization_id = @organization_id")
             params.append({"name": "@organization_id", "value": organization_id})
-            # When connected inside a workspace, stay in that context so personal
-            # threads (workspace_id='') are never listed via org elevation.
+            # Connected inside a workspace → stay in that workspace.
+            # Personal inbox (empty workspace_id) → only 1:1 threads.
             if (workspace_id or "").strip():
                 conditions.append("c.workspace_id = @workspace_id")
                 params.append({"name": "@workspace_id", "value": workspace_id})
+            else:
+                conditions.append("(NOT IS_DEFINED(c.workspace_id) OR c.workspace_id = @workspace_id)")
+                params.append({"name": "@workspace_id", "value": ""})
         elif scope == "workspace":
             conditions.append("c.organization_id = @organization_id")
             params.append({"name": "@organization_id", "value": organization_id})
@@ -285,6 +292,8 @@ class CosmosPersistence:
         scope: str = "member",
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
+        queue: str | None = None,
+        title_query: str | None = None,
     ) -> int:
         container = self._get_container("threads")
 
@@ -301,6 +310,14 @@ class CosmosPersistence:
             conditions,
             params,
         )
+        if is_unqueued_list_filter(queue):
+            conditions.append("(NOT IS_DEFINED(c.queue) OR c.queue = null OR c.queue = '')")
+        elif queue:
+            conditions.append("c.queue = @queue")
+            params.append({"name": "@queue", "value": queue})
+        if title_query:
+            conditions.append("CONTAINS(c.title, @title_query, true)")
+            params.append({"name": "@title_query", "value": title_query})
 
         where = " AND ".join(conditions)
         query = f"SELECT VALUE COUNT(1) FROM c WHERE {where}"
@@ -326,6 +343,8 @@ class CosmosPersistence:
         scope: str = "member",
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
+        queue: str | None = None,
+        title_query: str | None = None,
     ) -> list[Thread]:
         container = self._get_container("threads")
 
@@ -342,6 +361,14 @@ class CosmosPersistence:
             conditions,
             params,
         )
+        if is_unqueued_list_filter(queue):
+            conditions.append("(NOT IS_DEFINED(c.queue) OR c.queue = null OR c.queue = '')")
+        elif queue:
+            conditions.append("c.queue = @queue")
+            params.append({"name": "@queue", "value": queue})
+        if title_query:
+            conditions.append("CONTAINS(c.title, @title_query, true)")
+            params.append({"name": "@title_query", "value": title_query})
 
         if cursor:
             if "|" in cursor:
@@ -382,7 +409,7 @@ class CosmosPersistence:
         container = self._get_container("events")
         content_json = None
         if event.content:
-            content_json = [self._serialize_content_part(p) for p in event.content]
+            content_json = without_nul([self._serialize_content_part(p) for p in event.content])
 
         doc = {
             "id": event.id,
@@ -396,7 +423,7 @@ class CosmosPersistence:
             "user_name": event.user.user_name,
             "user_email": event.user.user_email,
             "content": content_json,
-            "data": event.data,
+            "data": without_nul(event.data),
             "created_at": event.created_at.isoformat(),
         }
         await container.create_item(doc)
@@ -502,6 +529,7 @@ class CosmosPersistence:
             users=[User(**u) for u in users_data],
             title=row.get("title"),
             metadata=row.get("metadata"),
+            queue=row.get("queue"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             last_event_at=datetime.fromisoformat(row["last_event_at"]),
@@ -577,6 +605,18 @@ class CosmosPersistence:
             return None
         return self._row_to_event(items[0])
 
+    async def find_event_by_whatsapp_message_id(self, wa_message_id: str) -> ThreadEvent | None:
+        wanted = (wa_message_id or "").strip()
+        if not wanted:
+            return None
+        container = self._get_container("events")
+        query = "SELECT * FROM c WHERE c.data.delivery.wa_message_id = @id"
+        params = [{"name": "@id", "value": wanted}]
+        items = [item async for item in container.query_items(query, parameters=params)]
+        if not items:
+            return None
+        return self._row_to_event(items[0])
+
     async def update_event(self, event: ThreadEvent) -> None:
         agent_id = await self._get_agent_id(event.thread_id)
         if not agent_id:
@@ -596,6 +636,8 @@ class CosmosPersistence:
         doc["content"] = content_json
         doc["run_id"] = event.run_id
         doc["author"] = event.author
+        if event.data is not None:
+            doc["data"] = event.data
 
         await container.upsert_item(doc)
 

@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from dooers.agents.server.auth_validation import AuthValidationClient
-from dooers.agents.server.broadcast import BroadcastManager
+from dooers.agents.server.broadcast import BroadcastManager, broadcast_thread_upsert
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
@@ -25,10 +25,14 @@ from dooers.agents.server.protocol.frames import (
     RunUpsertPayload,
     S2C_EventAppend,
     S2C_RunUpsert,
-    S2C_ThreadUpsert,
-    ThreadUpsertPayload,
 )
-from dooers.agents.server.protocol.models import Thread, ThreadEvent, User, WireC2S_ContentPart
+from dooers.agents.server.protocol.models import (
+    Thread,
+    ThreadEvent,
+    User,
+    WireC2S_ContentPart,
+    WorkspaceQueueCatalog,
+)
 from dooers.agents.server.protocol.parser import parse_frame, serialize_frame
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.repository import Repository
@@ -41,11 +45,17 @@ from dooers.agents.server.storage.chat_upload_file_policy import (
     PERSIST_CHAT_ATTACHMENTS_FIELD,
     enforce_allowed_chat_file_kind,
 )
+from dooers.agents.server.thread_access import ThreadViewGrantStore
 from dooers.agents.server.upload_store import UploadStore
 
 logger = logging.getLogger(__name__)
 # Same namespace the Router uses, so handle-loop diagnostics show up in apps that tune `agents`.
 _agents = logging.getLogger("agents")
+
+
+def _catalog_slugs(queues: list[WorkspaceQueueCatalog] | None) -> list[str] | None:
+    slugs = [queue.slug for queue in (queues or []) if queue.slug]
+    return slugs or None
 
 
 def _build_persistence(config: AgentConfig) -> Persistence:
@@ -102,6 +112,7 @@ class AgentServer:
 
         self._registry = ConnectionRegistry()
         self._subscriptions: dict[str, set[str]] = {}  # ws_id -> set of thread_ids
+        self._view_grants = ThreadViewGrantStore()
 
         self._analytics_subscriptions: dict[str, set[str]] = {}  # agent_id -> set of ws_ids
         self._settings_subscriptions: dict[str, set[str]] = {}  # agent_id -> set of ws_ids
@@ -303,6 +314,8 @@ class AgentServer:
         self._auth_validator = AuthValidationClient(
             url=self._config.auth_validation_url or "",
             timeout=self._config.auth_validation_timeout,
+            # None → platform default plus known Dooers cores (see auth_validation).
+            core_base_url=self._config.agent_core_base_url or None,
         )
 
         if self._config.guest_thread_cleanup_interval_seconds > 0:
@@ -327,6 +340,9 @@ class AgentServer:
         )
 
         self._initialized = True
+        from dooers.agents.server.features.channels.whatsapp.delivery_receipt import bind_agent_server
+
+        bind_agent_server(self)
         return self._persistence
 
     async def _run_guest_cleanup_loop(self) -> None:
@@ -395,6 +411,7 @@ class AgentServer:
             hydrate_thread_events_for_client=self._hydrate_thread_events_impl,
             agent_config=self._config,
             whatsapp_outbound=self._resolve_whatsapp_outbound(persistence),
+            view_grants=self._view_grants,
         )
 
         try:
@@ -411,9 +428,16 @@ class AgentServer:
                     )
                     raise
                 await router.route(websocket, frame)
+                if router.closed:
+                    break
         except Exception as e:
             name = type(e).__name__
-            if name in ("WebSocketDisconnect", "ConnectionClosedOK", "ConnectionClosedError"):
+            if name in (
+                "WebSocketDisconnect",
+                "WebSocketDisconnected",
+                "ConnectionClosedOK",
+                "ConnectionClosedError",
+            ):
                 logger.debug("websocket client disconnected (%s)", name)
             else:
                 _agents.warning(
@@ -438,6 +462,7 @@ class AgentServer:
         content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
         channel: str = "dooers-platform",
         channel_meta: dict[str, Any] | None = None,
+        queues: list[WorkspaceQueueCatalog] | None = None,
     ) -> DispatchStream:
         persistence = await self._ensure_initialized()
 
@@ -467,6 +492,8 @@ class AgentServer:
             thread_id=thread_id,
             thread_title=thread_title,
             content=content,
+            queues=list(queues or []),
+            allowed_queues=_catalog_slugs(queues),
         )
 
         result = await pipeline.setup(context)
@@ -491,6 +518,72 @@ class AgentServer:
         )
 
         return DispatchStream(pipeline=pipeline, context=context, result=result, tracker=tracker)
+
+    async def ingest(
+        self,
+        agent_id: str,
+        message: str,
+        user: User | None = None,
+        organization_id: str = "",
+        workspace_id: str = "",
+        thread_id: str | None = None,
+        thread_title: str | None = None,
+        content: list[WireC2S_ContentPart | dict[str, Any]] | None = None,
+        channel: str = "dooers-platform",
+        channel_meta: dict[str, Any] | None = None,
+        queues: list[WorkspaceQueueCatalog] | None = None,
+        *,
+        actor: str = "assistant",
+        author: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> str:
+        """Persist a channel message on the thread without running the agent handler.
+
+        Used for WhatsApp human/peer outbound (``whatsapp_peer_message="register"``).
+        Returns ``thread_id``.
+        """
+
+        async def _noop_handler(*_args: Any, **_kwargs: Any):
+            if False:  # pragma: no cover
+                yield None
+
+        persistence = await self._ensure_initialized()
+        pipeline = HandlerPipeline(
+            persistence=persistence,
+            broadcast_callback=self._broadcast_dict_to_agent,
+            analytics_collector=self._analytics_collector,
+            settings_broadcaster=self._settings_broadcaster,
+            settings_schema=self._config.settings_schema,
+            assistant_name=self._config.assistant_name,
+            upload_store=self._upload_store,
+            allowed_content_types=self._allowed_content_types,
+            content_policy_denial_message=self._content_policy_denial_message,
+            agent_config=self._config,
+            whatsapp_outbound=None,
+        )
+        context = HandlerContext(
+            handler=_noop_handler,
+            agent_id=agent_id,
+            message=message,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            channel=(channel or "dooers-platform"),
+            channel_meta=channel_meta,
+            user=user or User(user_id=""),
+            thread_id=thread_id,
+            thread_title=thread_title,
+            content=content,
+            data=data,
+            persist_actor=actor,
+            persist_author=author,
+            queues=list(queues or []),
+            allowed_queues=_catalog_slugs(queues),
+        )
+        result = await pipeline.setup(context)
+        resolved_user = user or User(user_id="")
+        if not result.is_new_thread and (resolved_user.user_id or resolved_user.user_email):
+            await persistence.upsert_thread_participant(result.thread.id, resolved_user)
+        return result.thread.id
 
     async def database(self) -> SqlDatabase:
         """Return app SQL access backed by the SDK-owned persistence pool.
@@ -593,10 +686,8 @@ class AgentServer:
         payload_type = payload.get("type")
 
         if payload_type == "thread.upsert":
-            frame = S2C_ThreadUpsert(
-                id=str(uuid.uuid4()),
-                payload=ThreadUpsertPayload(thread=payload["thread"]),
-            )
+            await broadcast_thread_upsert(self._registry, agent_id, payload["thread"])
+            return
         elif payload_type == "event.append":
             evs = payload["events"]
             tid = payload["thread_id"]

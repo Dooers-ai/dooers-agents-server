@@ -10,6 +10,7 @@ import asyncpg
 
 from dooers.agents.server.config import OnSettingsUpdated
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
+from dooers.agents.server.persistence.sanitize import without_nul
 from dooers.agents.server.protocol.models import (
     Run,
     Thread,
@@ -17,8 +18,15 @@ from dooers.agents.server.protocol.models import (
     User,
     deserialize_s2c_part,
 )
+from dooers.agents.server.thread_queue import is_unqueued_list_filter
 
 logger = logging.getLogger(__name__)
+
+
+def _ilike_pattern(query: str) -> str:
+    """Substring pattern for ``ILIKE ... ESCAPE '\\'`` that matches ``%`` and ``_`` literally."""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _build_ssl_context(ssl_config: bool | str) -> ssl_module.SSLContext | str | None:
@@ -215,6 +223,14 @@ class PostgresPersistence:
                 ALTER TABLE {threads_table} ADD COLUMN IF NOT EXISTS metadata JSONB
             """)
 
+            await conn.execute(f"""
+                ALTER TABLE {threads_table} ADD COLUMN IF NOT EXISTS queue TEXT
+            """)
+            await conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._prefix}threads_queue
+                    ON {threads_table}(agent_id, workspace_id, queue)
+            """)
+
             # Migrate legacy user_id column for existing databases
             await conn.execute(f"""
                 ALTER TABLE {threads_table} DROP COLUMN IF EXISTS user_id
@@ -329,8 +345,8 @@ class PostgresPersistence:
             await conn.execute(
                 f"""
                 INSERT INTO {table}
-                    (id, agent_id, organization_id, workspace_id, owner, users, title, metadata, created_at, updated_at, last_event_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    (id, agent_id, organization_id, workspace_id, owner, users, title, metadata, queue, created_at, updated_at, last_event_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 thread.id,
                 thread.agent_id,
@@ -340,6 +356,7 @@ class PostgresPersistence:
                 users_json,
                 thread.title,
                 metadata_json,
+                thread.queue,
                 thread.created_at,
                 thread.updated_at,
                 thread.last_event_at,
@@ -383,6 +400,7 @@ class PostgresPersistence:
             users=[User(**u) for u in users_data],
             title=row["title"],
             metadata=metadata_raw,
+            queue=row["queue"] if "queue" in row.keys() else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_event_at=row["last_event_at"],
@@ -401,14 +419,15 @@ class PostgresPersistence:
                 f"""
                 UPDATE {table}
                 SET organization_id = $1, workspace_id = $2, owner = $3, users = $4,
-                    title = $5, updated_at = $6, last_event_at = $7
-                WHERE id = $8
+                    title = $5, queue = $6, updated_at = $7, last_event_at = $8
+                WHERE id = $9
                 """,
                 thread.organization_id,
                 thread.workspace_id,
                 owner_json,
                 users_json,
                 thread.title,
+                thread.queue,
                 thread.updated_at,
                 thread.last_event_at,
                 thread.id,
@@ -480,11 +499,16 @@ class PostgresPersistence:
             conditions.append(f"organization_id = ${idx}")
             params.append(organization_id)
             idx += 1
-            # When connected inside a workspace, stay in that context so personal
-            # threads (workspace_id='') are never listed via org elevation.
+            # Connected inside a workspace → stay in that workspace.
+            # Personal inbox (empty workspace_id) → only 1:1 threads so workspace
+            # chats are not mixed into elevated org supervision lists.
             if (workspace_id or "").strip():
                 conditions.append(f"workspace_id = ${idx}")
                 params.append(workspace_id)
+                idx += 1
+            else:
+                conditions.append(f"(workspace_id = ${idx} OR workspace_id IS NULL)")
+                params.append("")
                 idx += 1
         elif scope == "workspace":
             # Audited 2026-04-14: workspace-scope filters by organization+workspace
@@ -540,6 +564,8 @@ class PostgresPersistence:
         scope: str = "member",
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
+        queue: str | None = None,
+        title_query: str | None = None,
     ) -> int:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -560,6 +586,16 @@ class PostgresPersistence:
             params,
             idx,
         )
+        if is_unqueued_list_filter(queue):
+            conditions.append("(queue IS NULL OR queue = '')")
+        elif queue:
+            conditions.append(f"queue = ${idx}")
+            params.append(queue)
+            idx += 1
+        if title_query:
+            conditions.append(f"title ILIKE ${idx} ESCAPE '\\'")
+            params.append(_ilike_pattern(title_query))
+            idx += 1
 
         where = " AND ".join(conditions)
         query = f"SELECT COUNT(*) FROM {table} WHERE {where}"
@@ -578,6 +614,8 @@ class PostgresPersistence:
         scope: str = "member",
         user_email: str | None = None,
         identity_ids: list[str] | None = None,
+        queue: str | None = None,
+        title_query: str | None = None,
     ) -> list[Thread]:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -598,6 +636,16 @@ class PostgresPersistence:
             params,
             idx,
         )
+        if is_unqueued_list_filter(queue):
+            conditions.append("(queue IS NULL OR queue = '')")
+        elif queue:
+            conditions.append(f"queue = ${idx}")
+            params.append(queue)
+            idx += 1
+        if title_query:
+            conditions.append(f"title ILIKE ${idx} ESCAPE '\\'")
+            params.append(_ilike_pattern(title_query))
+            idx += 1
 
         if cursor:
             if "|" in cursor:
@@ -633,9 +681,11 @@ class PostgresPersistence:
         table = f"{self._prefix}events"
         content_json = None
         if event.content:
-            content_json = json.dumps([self._serialize_content_part(p) for p in event.content])
+            content_json = json.dumps(
+                without_nul([self._serialize_content_part(p) for p in event.content])
+            )
 
-        data_json = json.dumps(event.data) if event.data else None
+        data_json = json.dumps(without_nul(event.data)) if event.data else None
 
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -837,6 +887,27 @@ class PostgresPersistence:
             return None
         return self._row_to_event(row)
 
+    async def find_event_by_whatsapp_message_id(self, wa_message_id: str) -> ThreadEvent | None:
+        if not self._pool:
+            raise RuntimeError("Not connected")
+        wanted = (wa_message_id or "").strip()
+        if not wanted:
+            return None
+        table = f"{self._prefix}events"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT * FROM {table}
+                WHERE data->'delivery'->>'wa_message_id' = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                wanted,
+            )
+        if not row:
+            return None
+        return self._row_to_event(row)
+
     async def update_event(self, event: ThreadEvent) -> None:
         if not self._pool:
             raise RuntimeError("Not connected")
@@ -846,17 +917,20 @@ class PostgresPersistence:
         if event.content:
             content_json = json.dumps([self._serialize_content_part(p) for p in event.content])
 
+        data_json = json.dumps(without_nul(event.data)) if event.data is not None else None
+
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
                 UPDATE {table}
-                SET content = $1, run_id = $2, author = $3
+                SET content = $1, run_id = $2, author = $3, data = COALESCE($5::jsonb, data)
                 WHERE id = $4
                 """,
                 content_json,
                 event.run_id,
                 event.author,
                 event.id,
+                data_json,
             )
 
     async def delete_event(self, event_id: str) -> None:

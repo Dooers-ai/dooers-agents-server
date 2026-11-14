@@ -131,6 +131,9 @@ incoming.context.organization_id     # str
 incoming.context.workspace_id        # str
 incoming.context.thread_title        # str | None
 incoming.context.thread_created_at   # datetime | None
+incoming.context.queue               # str | None — current thread queue slug
+incoming.context.queues              # list[WorkspaceQueueCatalog] — handshake roster
+incoming.context.members_for_queue() # members of the current queue (or pass a slug)
 
 # User (incoming.context.user)
 incoming.context.user.user_id             # str
@@ -470,7 +473,7 @@ agent_server = AgentServer(AgentConfig(
 | `database_password` | `AGENT_DATABASE_PASSWORD` |
 | `database_key` | `AGENT_DATABASE_KEY` |
 | `database_ssl` | `AGENT_DATABASE_SSL` |
-| `agent_core_base_url` | `AGENT_CORE_BASE_URL` (optional override; default `https://api.dooers.ai`) |
+| `agent_core_base_url` | `AGENT_CORE_BASE_URL` (optional; default `https://api.dooers.ai`). When set, it is the only core used to validate dashboard and public-chat tokens. |
 | `otel_service_url` | `AGENT_OTEL_SERVICE_URL` (optional override; default `https://observability.dooers.ai`) |
 | `otel_service_name` | `OTEL_SERVICE_NAME` (optional override; default `dooers-agent`) |
 
@@ -486,6 +489,15 @@ pip install "dooers-agents-server[observability]"
 Tracing uses Dooers platform defaults automatically (same idea as the baked analytics webhook URL). Creators do not need to set Core/otel URLs. Ensure `AGENT_SEED_SECRET` / core `settings.seed` so the runtime API key is available for export auth.
 
 Each agent turn is exported as a trace with `agent.id`, `thread.id`, `event.id`, `user.id`, `org.id`, `workspace.id`, and `agent.channel` attributes. LLM calls are auto-instrumented as child spans (model + tokens) via openinference. If an instrumentor fails to load, the SDK logs a **WARNING** — turn requests may still appear without LLM metrics.
+
+Each LLM span also says which kind of key paid for the call, whatever the provider (the key itself is never recorded):
+
+| Attribute | Value |
+|-----------|-------|
+| `dooers.llm.key_source` | `dooers` — a Dooers key (`dk_live_…`): the call went through the Dooers gateway and is billed to the organization's wallet. `third_party` — anything else: another provider's key, or no key at all (e.g. Vertex with Google credentials). |
+| `dooers.llm.endpoint` | Host the request went to, e.g. `llm.dooers.ai`, `api.openai.com`, `generativelanguage.googleapis.com`. |
+
+Both come from the outgoing HTTP request (httpx, httpx2 or aiohttp), so OpenAI, Anthropic, Gemini (`google-genai`) and the Agents SDK's LiteLLM models (`litellm/gemini/…`, `litellm/anthropic/…`) are all covered. Not covered: calls with no LLM span (e.g. LiteLLM called directly, outside the Agents SDK) and clients on other transports (`requests`, gRPC, websockets).
 
 The agent never talks to GCP directly. Instead, at the end of each turn it exchanges its `dooers_runtime_api_key` (persisted into `service_secrets` from the plaintext `seed_secret` / `next_seed_secret` on successful `settings.seed` from dooers-service-core) for a short-lived service token (`POST /identity/service-token/agent`, audience `otel-service`, scope `otel:write`), then POSTs that turn's spans over OTLP/HTTP to `dooers-service-otel`. Personal 1:1 chats omit `workspaceId` and mint an org-scoped write token.
 
@@ -507,16 +519,24 @@ user = User(
 )
 ```
 
-When listing threads, the SDK resolves the user's highest scope and filters accordingly:
+When listing threads, the SDK resolves the user's highest scope and attaches per-thread
+``access`` (`read` / `write` / `manage`):
 
-| Scope | Condition | Sees |
-|-------|-----------|------|
-| `admin` | `system_role == "admin"` | All threads |
-| `organization` | `organization_role` is `"owner"` or `"manager"` | All threads in the organization |
-| `workspace` | `workspace_role == "manager"` | All threads in the workspace |
-| `member` | Default | Only threads where they are a participant |
+| Scope / access | Condition | Sees / can do |
+|----------------|-----------|---------------|
+| `admin` list | `system_role == "admin"` | All threads (read-only unless participant) |
+| `organization` list | `organization_role` is `"owner"` or `"manager"` | Org threads; personal inbox lists 1:1 only |
+| `workspace` list | `workspace_role == "manager"` | Threads in the connected workspace |
+| `member` list | Default | Only threads where they are a participant |
+| Participant | `user_id` or `agent_id` in `users` | `read` + `write` + `manage` |
+| Org elevated, not participant | owner/manager | `read` + `manage` (write after self-add) |
+| System admin, not participant | `system_role == admin` | `read` only |
 
-Threads track participants automatically — each user who sends a message is added to the thread's `users` list.
+Elevated (non-participant) `thread.subscribe` requires `access_reason` once per UTC day
+(in-memory grant on the agent process). Use `thread.participants.add` or
+`send.add_participant()` to join and gain write.
+
+Threads track participants automatically — each user who sends a message is added to the thread's `users` list. New threads also include the serving agent id.
 
 ## Thread Privacy
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from dooers.agents.server.handlers.send import AgentEvent
 from dooers.tools.whatsapp.events import body_for_event
 from dooers.tools.whatsapp.transport import WhatsAppTransport
@@ -11,10 +13,14 @@ async def deliver_send_event(
     transport: WhatsAppTransport,
     agent_id: str,
     event: AgentEvent,
-) -> bool:
-    """Deliver a handler ``send.whatsapp.*`` event via ``/messages`` (outbound path)."""
+) -> dict[str, Any] | None:
+    """Deliver a handler ``send.whatsapp.*`` event via ``/messages`` (outbound path).
+
+    Returns the tools JSON (``ok``, ``message_id``, ``error_code``) or ``None``
+    when the event has no WhatsApp route.
+    """
     payload = body_for_event(event)
     if not payload:
-        return False
-    await transport.send_message_payload(agent_id, payload)
-    return True
+        return None
+    data = await transport.send_message_payload(agent_id, payload)
+    return data if isinstance(data, dict) else {"ok": True}

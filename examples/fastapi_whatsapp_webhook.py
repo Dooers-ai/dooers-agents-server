@@ -14,7 +14,14 @@ import os
 
 from fastapi import FastAPI, Request, WebSocket
 
-from dooers.agents.server import AgentConfig, AgentServer, User, normalize_e164, whatsapp_thread_id
+from dooers.agents.server import (
+    AgentConfig,
+    AgentServer,
+    User,
+    normalize_e164,
+    parse_inbound_queue_catalog,
+    whatsapp_thread_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +111,7 @@ async def webhook(agent_id: str, request: Request):
         thread_id=thread_id,
         thread_title=f"WhatsApp: {display_name}",
         content=content,
+        queues=parse_inbound_queue_catalog(body),
     )
 
     async for _ in stream:

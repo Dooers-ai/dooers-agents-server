@@ -74,8 +74,9 @@ class AgentConfig:
     analytics_batch_size: int | None = None
     analytics_flush_interval: float | None = None
 
-    # Validation URL for public-chat opaque session tokens only. Dashboard (JWT)
-    # tokens carry their own validation URL in the token payload and bypass this.
+    # Validation URL for non-core opaque tokens only. Core-issued JWTs (dashboard
+    # and public-chat) are verified against ``agent_core_base_url`` when set,
+    # otherwise against a known Dooers core.
     auth_validation_url: str | None = None
     auth_validation_timeout: float = 5.0
 
@@ -120,6 +121,12 @@ class AgentConfig:
     )
     # When True, ``HandlerPipeline`` runs the built-in Dooers WhatsApp tools HTTP outbound.
     dooers_whatsapp_service: bool = False
+
+    #: How to handle WhatsApp ``fromMe`` peer messages (human outbound on a third-party chat).
+    #: ``ignore`` — drop; ``register`` — persist on the thread without running the handler;
+    #: ``dispatch`` — persist and run the handler (may reply). Self-chat and customer inbound
+    #: always dispatch. Bot echoes are dropped in dooers-service-whatsapp.
+    whatsapp_peer_message: Literal["ignore", "register", "dispatch"] = "register"
 
     #: Base URL of dooers-service-core for minting short-lived ``otel:write`` tokens
     #: (env ``AGENT_CORE_BASE_URL``). Empty → platform default (same pattern as analytics webhook).

@@ -287,10 +287,36 @@ class AgentSend:
             data={"event_id": event_id, "content": content},
         )
 
-    def update_thread(self, *, title: str | None = None) -> AgentEvent:
+    def update_thread(self, *, title: str | None = None, queue: str | None = None) -> AgentEvent:
+        data: dict[str, Any] = {}
+        if title is not None:
+            data["title"] = title
+        if queue is not None:
+            data["queue"] = queue
         return AgentEvent(
             send_type="thread_update",
-            data={"title": title},
+            data=data,
+        )
+
+    def add_participant(
+        self,
+        user_id: str,
+        *,
+        user_name: str | None = None,
+        user_email: str | None = None,
+        identity_ids: list[str] | None = None,
+    ) -> AgentEvent:
+        """Add a human participant. Runtime must already be a participant (agent_id in users)."""
+        return AgentEvent(
+            send_type="participant_add",
+            data={
+                "user": {
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "user_email": user_email,
+                    "identity_ids": identity_ids or [],
+                }
+            },
         )
 
     # --- Form elements ---
@@ -305,7 +331,7 @@ class AgentSend:
         disabled: bool = False,
         placeholder: str | None = None,
         default: str | None = None,
-        input_type: Literal["text", "password", "email", "number"] = "text",
+        input_type: Literal["text", "password", "email", "number", "date"] = "text",
     ) -> dict:
         return {
             "type": "text_input",
