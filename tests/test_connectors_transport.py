@@ -361,3 +361,32 @@ async def test_requests_share_one_http_client_until_reset():
         transport.reset_transport_state()
         await ConnectorTransport().post("/v1/tools/list", {})
     assert transport._http_client is not None and transport._http_client is not first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_refused_presence_token_is_not_asked_again_for_a_minute(monkeypatch, status):
+    now = [1_900_000_000.0]
+    monkeypatch.setattr(presence, "_now", lambda: now[0])
+    turn = _turn()
+    with respx.mock() as mock:
+        session = mock.post(SESSION_URL).mock(return_value=httpx.Response(status, json={"success": False}))
+        assert await connector_session(turn) is None
+        now[0] += 59
+        assert await connector_session(turn) is None
+        assert session.call_count == 1  # every tool call of the turn would ask the core again
+        assert await connector_session(_turn("presence-other", user_id="u2")) is None
+        assert session.call_count == 2  # the refusal is per token, not per agent
+        now[0] += 2
+        assert await connector_session(turn) is None
+        assert session.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_presence_exchange_is_not_cached_as_refused():
+    turn = _turn()
+    with respx.mock() as mock:
+        session = mock.post(SESSION_URL).mock(side_effect=[httpx.Response(503), _session_ok("sess-1")])
+        assert await connector_session(turn) is None
+        assert await connector_session(turn) == "sess-1"  # a 5xx is not the core saying no
+    assert session.call_count == 2
