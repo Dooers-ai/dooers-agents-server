@@ -255,6 +255,23 @@ SEND_SCENARIOS: dict[str, Scenario] = {
         handler=_reply(lambda on, send: [send.tool_call("buscar_pedido", {"pedido": "42"}, display_name="Buscar pedido", id="call-42")]),
         incoming=ScenarioInput(),
     ),
+    # Production int has no bound: 2^63 - 1, -2^63 and 2^70 come back exact (the Maestro stores the JSON numeric).
+    "big_integers": Scenario(
+        handler=_reply(
+            lambda on, send: [
+                send.form(
+                    "Números grandes",
+                    [
+                        send.form_textarea("obs", label="Obs", order=2**63 - 1, rows=-(2**63)),
+                        send.form_text("b", label="B", order=2**70),
+                    ],
+                    submit_label="Enviar",
+                ),
+                send.tool_call("contar", {"n": 2**63 - 1, "m": [-(2**63), 2**70]}, id="call-big"),
+            ]
+        ),
+        incoming=ScenarioInput(),
+    ),
     "tool_result": Scenario(
         handler=_reply(
             lambda on, send: [

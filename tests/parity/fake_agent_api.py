@@ -574,13 +574,12 @@ class FakeAgentApi:
         items = [t for t in self.threads.values() if not t.deleting]
         if "external_key" in query:
             items = [t for t in items if t.external_key == query["external_key"]]
-        if "external_key_md5" in query:
-            # Maestro's md5(external_key): the MD5 of the UTF-8 bytes.
+        if "external_key_sha256" in query:
+            # Maestro's external_key_sha256(external_key): the SHA-256 of the UTF-8 bytes.
             items = [
                 t
                 for t in items
-                if t.external_key is not None
-                and hashlib.md5(t.external_key.encode("utf-8"), usedforsecurity=False).hexdigest() == query["external_key_md5"]
+                if t.external_key is not None and hashlib.sha256(t.external_key.encode("utf-8")).hexdigest() == query["external_key_sha256"]
             ]
         if "queue" in query:
             items = [t for t in items if (t.queue or "") == query["queue"]]
@@ -796,7 +795,7 @@ class FakeAgentApi:
 
     def _get_run(self, run_id: str, path: str) -> web.Response:
         self._request_valid("Public.AgentRunPath", {"id": run_id})
-        run = next((r for r in self.runs if r["run_id"] == run_id.lower()), None)
+        run = next((r for r in self.runs if r["run_id"].lower() == run_id.lower()), None)
         # ``agentVisibleThreads``: a thread in deletion is not one of the agent's threads, so its run is not found.
         if run is None or self.threads[run["thread_id"]].deleting:
             raise _Failure("NOT_FOUND")

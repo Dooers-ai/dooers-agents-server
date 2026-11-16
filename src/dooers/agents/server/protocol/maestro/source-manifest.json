@@ -1,6 +1,6 @@
 {
   "bundle_manifest": "docs/contracts/generated/v1/bundle-manifest.json",
-  "bundle_manifest_sha256": "19f8cf1fb60eed85c49cd64d2fc854b00afa81d676083903e690e8353157ee6a",
+  "bundle_manifest_sha256": "a566e0de46c81b9dc077a064d7e3094bc3997be4e7e2adf6b45ade416dba624d",
   "compatibility": {
     "breaking_change": "new explicit contract version and coordinated update of every affected producer/consumer; do not change a pinned artifact in place",
     "capabilities": "presence of a schema is not availability; incomplete domains remain disabled",
@@ -66,8 +66,8 @@
       "sources": ["docs/contracts/v1/common.ts", "docs/contracts/v1/public.ts"],
       "validation": {
         "fixtures": {
-          "invalid": 257,
-          "total": 552,
+          "invalid": 258,
+          "total": 553,
           "valid": 295
         },
         "schemas": 151
@@ -122,7 +122,7 @@
     }
   ],
   "files": {
-    "docs/contracts/README.md": "a796620ce6aebf7d0da47ee93b440d256ed9146f5df0b2195415891c6aa666ea",
+    "docs/contracts/README.md": "739cafbf8901336c353e58af9a21b2ca5896bf5d8413c51aed94dbd4b3a2b3c3",
     "docs/contracts/catalog-delivery.json": "ea569fc5237cb65f724fd7dc5512a08dd94d9c6d9e94e44d49aacbb7ec0969f1",
     "docs/contracts/catalog-identity.json": "d1b466a7d86837134b3c54bdccd0885f8637edca9dc88301beb90308805bb9aa",
     "docs/contracts/catalog-public.json": "c72eff03008a55d8785a5e5eb0c0aaf28ac321693624bf6f7ddc323ad128858b",
@@ -130,23 +130,23 @@
     "docs/contracts/fixtures/v1/delivery.json": "b184e62f975f25c804b66303f82f2a8f06f240b4f5fb7b3a92b635846e7f70e2",
     "docs/contracts/fixtures/v1/identity.json": "eac6383d471a8af9cee4ae4c8ad5a134e07c3ed927e4698d89e6270343aaad13",
     "docs/contracts/fixtures/v1/public-publication.json": "9d5655db25647342fdd2d15051df7c201778784a30a92ff7bc691809d644d9c1",
-    "docs/contracts/fixtures/v1/public.json": "c63556c378f96b8d29fb5a4978aaac60cef6db891930c00265a1e746ce39b96e",
+    "docs/contracts/fixtures/v1/public.json": "3a44a636713ceb055b199ad2201eab5c46e06293b30f4cc90a0acb26046e9f50",
     "docs/contracts/generated/v1/authorization-rules.json": "18a02aec858d070fc6c4c13cf5f02938bd6b9f9091b83d77945d01742e022f75",
-    "docs/contracts/generated/v1/bundle-manifest.json": "19f8cf1fb60eed85c49cd64d2fc854b00afa81d676083903e690e8353157ee6a",
+    "docs/contracts/generated/v1/bundle-manifest.json": "a566e0de46c81b9dc077a064d7e3094bc3997be4e7e2adf6b45ade416dba624d",
     "docs/contracts/generated/v1/catalog-delivery.json": "6d89c5823a670dc1e0cde51d4b0e37fb259a92ce82afe89c0d1b3b1893d650f5",
     "docs/contracts/generated/v1/catalog-identity.json": "c417f5c5258e203b9b705a8f9780e4f91f6b0b8c5de4ee0fe247cd6317b3c879",
     "docs/contracts/generated/v1/catalog-public.json": "75f87005d1a4a0b6e9424ed1e0d27b7df0c063ec125edbae09c5c29025459c93",
     "docs/contracts/generated/v1/delivery-rules.json": "f451f76a6492b98a0b68c83f25b143dbccf019557f01f6039c4e602864ed4d69",
-    "docs/contracts/generated/v1/fixtures.json": "cd8b274486ccf9044f00e6cba00e85993eb8e9924d41f1075215d9420bdc7245",
+    "docs/contracts/generated/v1/fixtures.json": "d2757647e141ac8e7b8f22764c812dc32c8afc09462fea8d3bdcaeacd0f82086",
     "docs/contracts/generated/v1/openapi/core.json": "15ff949f7a0d88e5a4ce31036157fb2b802acc984293fa1a483f23fd14a0b184",
-    "docs/contracts/generated/v1/openapi/internal.json": "6cf605b40c6535605296f573c09d922c55a7cf57d9cbe1001c3d51c97c47d7ce",
+    "docs/contracts/generated/v1/openapi/internal.json": "a3e7494799a7c7e0395a0a65a55346a44d47d266a9243773611367e95914cf38",
     "docs/contracts/generated/v1/openapi/public.json": "300745c327f75f3bf6c79c3ebece8852ab0be342118eaf09cad0b2a80893b24e",
     "docs/contracts/generated/v1/openapi/runtime.json": "2e76b6997abfdf2cddbaad4075617e6afb103f04a0d09d36a7b00292918e56e8",
     "docs/contracts/generated/v1/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
     "docs/contracts/generated/v1/python/requirements.lock": "004045153477d0ad4a6e8b1346535278f17e76446d00598ce79a9a659e828f23",
     "docs/contracts/generated/v1/python/semantics.py": "f12ebd3f45598490062785865f756b4319d014185e427fcf20229a6ccd2837f6",
     "docs/contracts/generated/v1/python/validate.py": "42e5c9a3c20408720f8f18ef8202190d6c29b058b950bc1ce9ba6ccc22d24e41",
-    "docs/contracts/generated/v1/schemas.json": "70cda4f55ae58c629a0c755689215a9c7875275daea071f63928d6952131c160",
+    "docs/contracts/generated/v1/schemas.json": "7b749d53307924deeaa756722a8b59e57fd5785f5fdea4002d7ae6876c0c4766",
     "docs/contracts/harness/README.md": "314eb860c35a6da0f1072ee20b01d8eab14b770667896fd966a3e1be7bbd33fe",
     "docs/contracts/harness/boundary-fixtures.json": "0fa1e07bfe7b29248954f4e2c587e5109002f51403169d85eb5c0a9043d2ff82",
     "docs/contracts/harness/cli.ts": "f72e4659989011d7f9b06464d56d341f575895d38334e56685a8e32051f57d0e",
@@ -162,7 +162,7 @@
     "docs/contracts/v1/common.ts": "a527f148c8493aeee6127ee0fae4227f0abdd7e041a4c8a5e511b5d080f23dca",
     "docs/contracts/v1/delivery.ts": "1fb79de2f23e72c7e352a3c8eccabee444bcd5b9e10027176def05bfe3bcfc30",
     "docs/contracts/v1/identity.ts": "bc0cfd1df412dc1a0b980be121921bfbdc9ba4fb6c4fc82f1ad525f4b9cb732f",
-    "docs/contracts/v1/public.ts": "d88187913766ec9373f2f7268e8c9dcd9ba2941a2a83692548feda9ff6e22195",
+    "docs/contracts/v1/public.ts": "804458de47e6996464b7697bfbe5dc2846abf0d2cbd414e3d9481650a8896e86",
     "docs/contratos-handoff.md": "acc8ab8812b681b9cb53478b322f0d6f9de4cf023ef75684becc4398ce10b9ec",
     "scripts/contracts-manifest.mjs": "42f981cb3a18beda9bde370e4db420f62f5520d6d94b0700e2ce0881e03fbf85"
   },
@@ -379,11 +379,11 @@
   ],
   "required_extensions": ["x-maestro-semantic", "x-maestro-string-length", "x-maestro-url"],
   "schema_version": 1,
-  "source_revision": "sha256:a3753da99f0893c37dac8fb7e0d91c203ef483070ac91a765117747c85e0752b",
+  "source_revision": "sha256:ccf3f35f16bcc05a7ec56a41bc82ca6f7d9325508d80649ef76ed978662da91d",
   "validation": {
     "fixtures": {
-      "invalid": 610,
-      "total": 1085,
+      "invalid": 611,
+      "total": 1086,
       "valid": 475
     },
     "schemas": 191

@@ -748,7 +748,7 @@ Regras:
   Maestro (`public:...`), que nunca aparece: ela mostra o id do Maestro, como a produção mostra
   um id comum. Dentro de uma entrega vale a mesma regra (`external_key` do contexto da thread).
   A chave não tem teto, como o `thread_id` de produção. Uma chave que não cabe numa URL (mais de
-  2048 caracteres codificados) é achada pelo MD5 (`external_key_md5`) e o caminho leva o id do Maestro.
+  2048 caracteres codificados) é achada pelo SHA-256 (`external_key_sha256`) e o caminho leva o id do Maestro.
 - **Id do evento.** `create_event` manda o id do SDK como `client_event_id`. `get_event` e
   `remove_event` aceitam esse id ou o `event_id` do Maestro. Um evento que o handler produziu
   não tem id do SDK: seu id é o `event_id` do Maestro, o mesmo que `list_events` e

@@ -129,6 +129,16 @@ def _participant(user_id: str) -> Check:
     return check
 
 
+def _big_integers(result: ParityResult) -> None:
+    """The form and the tool call keep production ints beyond 2^53 exact (Python int, JSONB numeric)."""
+    form = next(e for e in result.events if e["type"] == "form")
+    orders = [(element.get("order"), element.get("rows")) for element in form["data"]["elements"]]
+    assert orders == [(2**63 - 1, -(2**63)), (2**70, None)]
+    assert all(type(value) is int for pair in orders for value in pair if value is not None)
+    call = next(e for e in result.events if e["type"] == "tool.call")
+    assert call["data"]["args"] == {"n": 2**63 - 1, "m": [-(2**63), 2**70]}
+
+
 def _form_elements(result: ParityResult) -> None:
     data = result.events[-1]["data"]
     assert [element["type"] for element in data["elements"]] == [
@@ -379,6 +389,7 @@ SUBJECTS: dict[str, Subject] = {
     "template": Subject(("events",), _all(_TWO_MESSAGES, _last_part("text", text="[template: order_update (pt_BR)]"))),
     "reasoning": Subject(("events",), _types("message", "reasoning")),
     "tool_call": Subject(("events",), _all(_types("message", "tool.call"), _last_data(name="buscar_pedido"))),
+    "big_integers": Subject(("events",), _all(_types("message", "form", "tool.call"), _big_integers)),
     "tool_result": Subject(("events",), _all(_types("message", "tool.result"), _last_data(result={"status": "enviado"}))),
     "tool_transaction": Subject(("events",), _types("message", "tool.transaction")),
     "form": Subject(("events",), _all(_types("message", "form"), _form_elements)),

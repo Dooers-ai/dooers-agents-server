@@ -36,6 +36,7 @@ EXPECTED_SCENARIOS = {
     "template",
     "reasoning",
     "tool_call",
+    "big_integers",
     "tool_result",
     "tool_transaction",
     "form",

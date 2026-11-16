@@ -265,13 +265,13 @@ class MaestroAgentApi:
     async def find_thread(self, external_key: str) -> dict[str, Any] | None:
         """The agent's thread with this ``external_key``, or ``None`` (``GET /agent/threads?external_key=``).
 
-        A key too long for a URL (production takes any ``thread_id``) is found by its MD5 (``external_key_md5``) and then
-        compared whole.
+        A key too long for a URL (production takes any ``thread_id``) is found by its SHA-256 (``external_key_sha256``) and
+        then compared whole.
         """
         if _fits_url(external_key):
             page = await self.list_threads(external_key=external_key, limit=1)
             return page["items"][0] if page["items"] else None
-        page = await self.list_threads(external_key_md5=_key_md5(external_key), limit=1)
+        page = await self.list_threads(external_key_sha256=_key_sha256(external_key), limit=1)
         return next((item for item in page["items"] if item.get("external_key") == external_key), None)
 
     async def _thread_ref(self, thread_id: str) -> str:
@@ -291,14 +291,16 @@ class MaestroAgentApi:
         order: str | None = None,
         queue: str | None = None,
         external_key: str | None = None,
-        external_key_md5: str | None = None,
+        external_key_sha256: str | None = None,
     ) -> dict[str, Any]:
         """``GET /agent/threads``: ``Public.AgentThreadPage`` of the threads of the agent in the token scope.
 
-        Filters of the server: ``external_key`` (or ``external_key_md5``, the MD5 of a key too long for a URL),
+        Filters of the server: ``external_key`` (or ``external_key_sha256``, the SHA-256 of a key too long for a URL),
         ``queue`` (``""`` = no queue), ``order`` (``asc``/``desc`` of the last activity), ``cursor``, ``limit`` (1 to 999).
         """
-        query = _query(cursor=cursor, limit=limit, order=order, queue=queue, external_key=external_key, external_key_md5=external_key_md5)
+        query = _query(
+            cursor=cursor, limit=limit, order=order, queue=queue, external_key=external_key, external_key_sha256=external_key_sha256
+        )
         return await self._call(
             "GET",
             "/agent/threads",
@@ -768,9 +770,9 @@ def _fits_url(value: str) -> bool:
     return len(quote(value, safe="")) <= _URL_KEY_MAX
 
 
-def _key_md5(value: str) -> str:
-    """``external_key_md5``: the MD5 of the UTF-8 bytes, as Maestro's ``md5(external_key)``."""
-    return hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest()
+def _key_sha256(value: str) -> str:
+    """``external_key_sha256``: the SHA-256 of the UTF-8 bytes, as Maestro's ``external_key_sha256(external_key)``."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _is_uuid(value: str) -> bool:

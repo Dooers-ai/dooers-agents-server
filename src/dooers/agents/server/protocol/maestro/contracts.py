@@ -19,9 +19,9 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
-SOURCE_MANIFEST_SHA256 = "dba2cdc15c501f70696d20cbe60d1e0539837330edb85c03172afb83546cdd8c"
-SOURCE_REVISION = "sha256:a3753da99f0893c37dac8fb7e0d91c203ef483070ac91a765117747c85e0752b"
-BUNDLE_MANIFEST_SHA256 = "19f8cf1fb60eed85c49cd64d2fc854b00afa81d676083903e690e8353157ee6a"
+SOURCE_MANIFEST_SHA256 = "60455580fb0ac26ecee5ebe1db8357673e9a2cc2c6c268ed107cb16a3eea92d9"
+SOURCE_REVISION = "sha256:ccf3f35f16bcc05a7ec56a41bc82ca6f7d9325508d80649ef76ed978662da91d"
+BUNDLE_MANIFEST_SHA256 = "a566e0de46c81b9dc077a064d7e3094bc3997be4e7e2adf6b45ade416dba624d"
 
 
 class MaestroContractError(ValueError):
