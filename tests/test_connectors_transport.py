@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from dooers.tools.connectors import presence
+from dooers.tools.connectors import presence, transport
 from dooers.tools.connectors.errors import ConnectorError
 from dooers.tools.connectors.presence import connector_session
 from dooers.tools.connectors.runtime import TurnContext, bind_turn
@@ -303,3 +303,61 @@ async def test_token_mint_failure_is_denied():
         with pytest.raises(ConnectorError) as exc:
             await ConnectorTransport().post("/v1/tools/list", {})
     assert exc.value.status == "denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (
+            httpx.Response(502, text="<html>upstream echoed Authorization: Bearer sk-FAKE-123</html>"),
+            "Serviço de conectores respondeu 502 em /v1/tools/list",
+        ),
+        (
+            httpx.Response(500, json={"detail": "x" * 200, "token": "sk-FAKE-123"}),
+            "Serviço de conectores respondeu 500 em /v1/tools/list: " + "x" * 120,
+        ),
+        (
+            httpx.Response(422, json={"detail": [{"loc": ["body", "secret"], "input": "sk-FAKE-123"}]}),
+            "Serviço de conectores respondeu 422 em /v1/tools/list",
+        ),
+    ],
+    ids=["text_body", "json_detail", "json_detail_not_string"],
+)
+async def test_service_error_message_never_carries_the_raw_body(response, message):
+    bound(_turn(presence_token=None))
+    with respx.mock() as mock:
+        mock.post(TOKEN_URL).mock(return_value=_token_ok())
+        mock.post(f"{SERVICE}/v1/tools/list").mock(return_value=response)
+        with pytest.raises(ConnectorError) as exc:
+            await ConnectorTransport().post("/v1/tools/list", {})
+    assert exc.value.message == message
+    assert "sk-FAKE-123" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_payload_that_is_not_json_is_invalid_arguments_and_never_sent():
+    bound(_turn(presence_token=None))
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(TOKEN_URL).mock(return_value=_token_ok())
+        route = mock.post(f"{SERVICE}/v1/tools/execute").mock(return_value=httpx.Response(200, json={"status": "ok"}))
+        with pytest.raises(ConnectorError) as exc:
+            await ConnectorTransport().post("/v1/tools/execute", {"arguments": {"when": object()}})
+    assert exc.value.status == "invalid_arguments" and "JSON" in exc.value.message
+    assert route.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_requests_share_one_http_client_until_reset():
+    bound(_turn(presence_token=None))
+    with respx.mock() as mock:
+        mock.post(TOKEN_URL).mock(return_value=_token_ok())
+        mock.post(f"{SERVICE}/v1/tools/list").mock(return_value=httpx.Response(200, json={"tools": []}))
+        await ConnectorTransport().post("/v1/tools/list", {})
+        first = transport._http_client
+        await ConnectorTransport().post("/v1/tools/list", {}, timeout=5.0)
+        assert first is not None and transport._http_client is first
+
+        transport.reset_transport_state()
+        await ConnectorTransport().post("/v1/tools/list", {})
+    assert transport._http_client is not None and transport._http_client is not first

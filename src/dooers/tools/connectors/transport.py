@@ -24,13 +24,17 @@ from dooers.tools.connectors.runtime import TurnContext, current_turn
 
 _AUDIENCE = "connector-service"
 _SCOPES = ("connectors:read", "connectors:execute")
+# How much of the service's ``detail`` an error message carries; the rest of the body never goes in.
+_DETAIL_CHARS = 120
 _token_client: ServiceTokenClient | None = None
+_http_client: httpx.AsyncClient | None = None  # one connection pool for every call to the service
 
 
 def reset_transport_state() -> None:
-    """Drop module-level caches (service token client, connector_session cache). For tests."""
-    global _token_client
+    """Drop module-level caches (service token client, HTTP client, connector_session cache). For tests."""
+    global _token_client, _http_client
     _token_client = None
+    _http_client = None
     presence.reset_presence_cache()
 
 
@@ -39,6 +43,22 @@ def _service_token_client() -> ServiceTokenClient:
     if _token_client is None:
         _token_client = ServiceTokenClient(core_base_url=core_base_url())
     return _token_client
+
+
+def _client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient()
+    return _http_client
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """The service's own ``detail`` (a string) when it sent one; never the raw body, which may echo upstream data."""
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return ""
+    return f": {detail[:_DETAIL_CHARS]}" if isinstance(detail, str) and detail else ""
 
 
 def _base_url() -> str:
@@ -99,22 +119,26 @@ class ConnectorTransport:
             "on_behalf_of": on_behalf_of,
         }
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    f"{base}{path}",
-                    content=json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode(),
-                    headers={
-                        "Content-Type": "application/json; charset=utf-8",
-                        "Authorization": f"Bearer {token}",
-                    },
-                )
+            content = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode()
+        except (TypeError, ValueError) as exc:  # a value bound in the dev's code (datetime, object...)
+            raise ConnectorError(f"Argumentos não serializáveis em JSON: {exc}", status="invalid_arguments") from exc
+        try:
+            response = await _client().post(
+                f"{base}{path}",
+                content=content,
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Authorization": f"Bearer {token}",
+                },
+                timeout=timeout,
+            )
         except httpx.HTTPError as exc:
             raise ConnectorError(f"Falha de rede ao chamar o serviço de conectores: {type(exc).__name__}", status="provider_error") from exc
         if response.status_code in (401, 403):
             raise ConnectorError(f"Serviço de conectores recusou {path} ({response.status_code})", status="denied")
         if not response.is_success:
             raise ConnectorError(
-                f"Serviço de conectores respondeu {response.status_code} em {path}: {response.text[:300]}",
+                f"Serviço de conectores respondeu {response.status_code} em {path}{_error_detail(response)}",
                 status="provider_error",
             )
         try:

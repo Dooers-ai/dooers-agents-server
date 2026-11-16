@@ -134,6 +134,9 @@ class MemoryPersistence:
         self.runs[run.id] = run.model_copy(deep=True)
         self.writes.append(("update_run", run.model_copy(deep=True)))
 
+    async def get_service_secrets(self, agent_id: str) -> dict[str, Any]:
+        return {"dooers_runtime_api_key": "runtime-key"}
+
     async def upsert_thread_participant(self, thread_id: str, user: User) -> None:
         thread = self.threads.get(thread_id)
         if thread is None:

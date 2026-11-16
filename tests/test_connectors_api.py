@@ -168,6 +168,42 @@ async def test_run_answers_in_the_callers_provider_format(svc, turn, call, call_
     assert [e.send_type for e in turn.emitted] == ["tool_call", "tool_result"]
 
 
+async def test_approval_inside_a_real_turn(pipeline_harness, svc, fake_clock):
+    """End to end through the pipeline: the card and both tool events land in the open run, in order."""
+    svc.list.return_value = {"tools": [CREATE_EVENT]}
+    svc.execute.side_effect = [interaction("i1", "approval"), OK]
+    svc.wait.side_effect = [{"status": "pending"}, {"status": "approved"}]
+    replies: list[dict] = []
+
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        ts = await connectors.tools()
+        replies.append(await ts.run(openai_call('{"summary":"x"}')))
+        yield send.text("Agendado.")
+        yield send.run_end()
+
+    await pipeline_harness.run(handler, presence_token="presence-1")
+
+    assert json.loads(replies[0]["content"]) == OK_FOR_LLM
+    (run_id,) = pipeline_harness.persistence.runs
+    writes = pipeline_harness.persistence.writes
+    kinds = ("tool.call", "connector.interaction", "tool.result")
+    created = [(i, obj) for i, (op, obj) in enumerate(writes) if op == "create_event" and obj.type in kinds]
+    assert [obj.type for _, obj in created] == list(kinds)
+    assert {obj.run_id for _, obj in created} == {run_id}
+    run_writes = [(i, obj.status) for i, (op, obj) in enumerate(writes) if op in ("create_run", "update_run")]
+    opened = next(i for i, status in run_writes if status == "running")
+    closed = next(i for i, status in run_writes if status != "running")
+    assert opened < created[0][0] and created[-1][0] < closed  # inside the open run
+    call, card, result = (obj for _, obj in created)
+    assert (call.data["display_name"], result.data["display_name"]) == ("Criar evento", "Criar evento")
+    assert card.data["interaction_id"] == "i1" and card.actor == "system"
+    assert result.data["result"]["status"] == "ok"
+    first = svc.execute.calls[0].json()
+    assert first["context"]["thread_id"] == call.thread_id
+    assert first["connector_session"] == "sess-1"  # the turn's presence went through the exchange
+
+
 async def test_run_with_malformed_json_returns_invalid_arguments(svc, turn):  # Review Focus (F11)
     svc.list.return_value = {"tools": [CREATE_EVENT]}
     ts = await connectors.tools()

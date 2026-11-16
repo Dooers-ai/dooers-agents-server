@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 import httpx
 import pytest
 
 from dooers.tools.connectors.executor import execute
+from dooers.tools.connectors.transport import ConnectorTransport
 
 TIMEOUTS = {"approval": 120, "connect": 180}
 CONNECTOR = {"id": "c-1", "name": "Agenda Recepção", "icon": "google-calendar"}
@@ -269,25 +271,104 @@ async def test_bound_args_override_llm_args(svc, turn):
 @pytest.mark.parametrize(
     ("failure", "status"),
     [
-        (httpx.Response(503, text="down"), "provider_error"),
-        (httpx.Response(403, text="no"), "denied"),
-        (httpx.ConnectError("down"), "provider_error"),
+        (lambda: httpx.Response(503, text="down"), "provider_error"),
+        (lambda: httpx.Response(403, text="no"), "denied"),
+        (lambda: httpx.ConnectError("down"), "provider_error"),
     ],
     ids=["5xx", "403", "network"],
 )
 @pytest.mark.parametrize("stage", ["execute", "wait"])
-async def test_transport_error_becomes_status_not_exception(svc, turn, failure, status, stage):
+async def test_transport_error_becomes_status_not_exception(svc, turn, fake_clock, failure, status, stage):
     if stage == "execute":
-        svc.execute.side_effect = [failure]
-    else:
+        svc.execute.side_effect = [failure()]
+    else:  # the service stays unreachable for the whole wait
         svc.execute.side_effect = [interaction("i1", "approval")]
-        svc.wait.side_effect = [failure]
+        svc.wait.side_effect = lambda call: failure()
+    start = fake_clock.now
 
     out = await run()
 
     assert out["status"] == status and out["message"]
     assert set(out) == {"status", "message"}
     assert tool_results(turn)[-1]["result"] == {"status": status, "content": None, "truncated": False}
+    if stage == "wait" and status == "denied":  # a refusal ends the wait at once
+        assert len(svc.wait.calls) == 1
+    elif stage == "wait":  # a 5xx or a network error is asked again until the approval deadline, then reported
+        assert len(svc.wait.calls) > 3
+        assert TIMEOUTS["approval"] <= fake_clock.now - start <= TIMEOUTS["approval"] + 20
+        assert len(svc.execute.calls) == 1
+
+
+async def test_wait_retries_a_transient_error_while_there_is_time(svc, turn, fake_clock):
+    svc.execute.side_effect = [interaction("i1", "approval"), ok({"id": "e1"})]
+    svc.wait.side_effect = [httpx.Response(503, text="down"), {"status": "approved"}]
+
+    out = await run()
+
+    assert out["status"] == "ok" and out["content"] == {"id": "e1"}
+    assert len(svc.wait.calls) == 2
+    assert [c.json()["interaction_id"] for c in svc.execute.calls] == [None, "i1"]  # one re-execution
+    assert fake_clock.slept == [1.0]  # paused before asking again
+    assert len(cards(turn)) == 1
+
+
+async def test_display_name_goes_on_both_tool_events(svc, turn):
+    svc.execute.return_value = ok({"id": "e1"})
+
+    await execute(
+        "agenda__create_event",
+        {"summary": "x"},
+        call_id="c1",
+        bound={},
+        on_behalf_of=None,
+        interaction_timeout=TIMEOUTS,
+        emit_tool_events=True,
+        display_name="Criar evento",
+    )
+
+    assert [(e.send_type, e.data["display_name"]) for e in turn.emitted] == [("tool_call", "Criar evento"), ("tool_result", "Criar evento")]
+
+
+async def test_unexpected_exception_still_closes_the_tool_call(svc, turn, monkeypatch):
+    async def broken(*args, **kwargs):
+        raise RuntimeError("bug with a secret: s3cr3t")
+
+    monkeypatch.setattr(ConnectorTransport, "post", broken)
+
+    out = await run()
+
+    assert out["status"] == "provider_error" and out["message"]
+    assert "s3cr3t" not in out["message"]
+    assert [e.send_type for e in turn.emitted] == ["tool_call", "tool_result"]
+    assert tool_results(turn)[-1]["result"] == {"status": "provider_error", "content": None, "truncated": False}
+
+
+async def test_cancelled_call_still_closes_the_tool_call_and_reraises(svc, turn):
+    svc.execute.return_value = interaction("i1", "approval")
+    waiting = asyncio.Event()
+
+    async def held_forever(call):
+        waiting.set()
+        await asyncio.Event().wait()
+
+    svc.wait.side_effect = held_forever
+    task = asyncio.ensure_future(run())
+    await waiting.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [e.send_type for e in turn.emitted] == ["tool_call", "connector_interaction", "tool_result"]
+    assert tool_results(turn)[-1]["result"]["status"] == "provider_error"
+
+
+async def test_arguments_that_are_not_json_become_invalid_arguments(svc, turn):
+    out = await run(bound={"start": datetime(2026, 11, 17, 10, 0)})
+
+    assert out["status"] == "invalid_arguments" and "JSON" in out["message"]
+    assert svc.execute.calls == []
+    assert [e.send_type for e in turn.emitted] == ["tool_call", "tool_result"]
 
 
 @pytest.mark.parametrize(

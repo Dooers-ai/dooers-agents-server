@@ -85,7 +85,9 @@ class ToolSet:
     def bind(self, name: str, **values: Any) -> ToolSet:
         """A new ``ToolSet`` where ``name`` always gets ``values`` and the LLM no longer sees those arguments.
 
-        A ``name`` not in this set (for example, unavailable in this channel) changes nothing.
+        ``values`` go to the service as JSON, so they must be JSON-serializable (``str``, numbers, lists, dicts):
+        a ``datetime`` or an object makes every call return ``invalid_arguments``. A ``name`` not in this set
+        (for example, unavailable in this channel) changes nothing.
         """
         specs = copy.deepcopy(self.specs)
         for spec in specs:
@@ -168,8 +170,13 @@ class ToolSet:
             on_behalf_of=self._on_behalf_of,
             interaction_timeout=self._interaction_timeout,
             emit_tool_events=True,
+            display_name=self._title(parsed.name),
         )
         return _for_llm(out)
+
+    def _title(self, name: str) -> str | None:
+        """The catalog title (``Criar evento``) the chat shows on ``tool.call`` and ``tool.result``."""
+        return next((spec.get("title") for spec in self.specs if spec["name"] == name), None)
 
     def _langchain_coroutine(self, name: str) -> Callable[..., Coroutine[Any, Any, str]]:
         async def invoke(**arguments: Any) -> str:
