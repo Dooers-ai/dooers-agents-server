@@ -24,6 +24,12 @@ def test_handler_context_presence_token_defaults_none():
     assert HandlerContext.__dataclass_fields__["presence_token"].default is None
 
 
+def test_handler_context_repr_hides_presence_token():
+    ctx = HandlerContext(handler=None, agent_id="a", message="m", presence_token="jwt-secret")  # type: ignore[arg-type]
+    assert ctx.presence_token == "jwt-secret"
+    assert "jwt-secret" not in repr(ctx)
+
+
 def test_thread_event_accepts_connector_interaction():
     ev = ThreadEvent(
         id="e",

@@ -155,7 +155,7 @@ class HandlerContext:
     persist_actor: str = "user"
     persist_author: str | None = None
     #: Presence JWT from ``event.create`` for connector tools; never persisted.
-    presence_token: str | None = None
+    presence_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.user is None:
