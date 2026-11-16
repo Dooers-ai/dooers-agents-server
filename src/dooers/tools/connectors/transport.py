@@ -7,7 +7,6 @@ Agent, workspace, thread and channel come from the active turn, never from the L
 from __future__ import annotations
 
 import json
-import logging
 import os
 from typing import Any
 
@@ -22,8 +21,6 @@ from dooers.agents.server.observability.service_token import (
 from dooers.tools.connectors import presence
 from dooers.tools.connectors.errors import ConnectorError
 from dooers.tools.connectors.runtime import TurnContext, current_turn
-
-logger = logging.getLogger(__name__)
 
 _AUDIENCE = "connector-service"
 _SCOPES = ("connectors:read", "connectors:execute")
@@ -89,7 +86,9 @@ class ConnectorTransport:
         base = _base_url()
         turn = _require_turn()
         token = await _service_token(turn)
+        # The payload goes first: the turn's context, the presence session and the person are never overridable.
         body = {
+            **payload,
             "context": {
                 "agent_id": turn.agent_id,
                 "workspace_id": turn.workspace_id,
@@ -98,7 +97,6 @@ class ConnectorTransport:
             },
             "connector_session": await presence.connector_session(turn),
             "on_behalf_of": on_behalf_of,
-            **payload,
         }
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
@@ -123,10 +124,9 @@ def _parse_json_arguments(raw: Any) -> tuple[dict | None, str | None]:
 def _object_arguments(raw: Any) -> tuple[dict | None, str | None]:
     if raw is None:
         return {}, None
-    try:
+    if isinstance(raw, Mapping):
         return dict(raw), None
-    except (TypeError, ValueError):
-        return None, f"Tool arguments must be a JSON object, got {type(raw).__name__}."
+    return None, f"Tool arguments must be a JSON object, got {type(raw).__name__}."
 
 
 def parse_call(call: Any) -> ParsedCall:
@@ -142,8 +142,8 @@ def parse_call(call: Any) -> ParsedCall:
         return ParsedCall("openai", str(_get(call, "id") or ""), _get(function, "name") or "", args, err)
     if kind == "function_call":  # OpenAI Responses
         args, err = _parse_json_arguments(_get(call, "arguments"))
-        call_id = _get(call, "call_id") or _get(call, "id") or ""
-        return ParsedCall("openai_responses", str(call_id), _get(call, "name") or "", args, err)
+        # ``call_id`` pairs the output with the call; the item ``id`` (``fc_…``) does not, so never fall back to it.
+        return ParsedCall("openai_responses", str(_get(call, "call_id") or ""), _get(call, "name") or "", args, err)
     if kind == "tool_use":  # Anthropic
         args, err = _object_arguments(_get(call, "input"))
         return ParsedCall("anthropic", str(_get(call, "id") or ""), _get(call, "name") or "", args, err)
@@ -154,7 +154,7 @@ def parse_call(call: Any) -> ParsedCall:
         name = _get(gemini, "name")
         if isinstance(name, str) and name:
             args, err = _object_arguments(_get(gemini, "args"))
-            return ParsedCall("gemini", str(_get(gemini, "id") or name), name, args, err)
+            return ParsedCall("gemini", str(_get(gemini, "id") or ""), name, args, err)
     raise ValueError(f"Unrecognized tool call shape: {type(call).__name__}")
 
 
@@ -163,7 +163,8 @@ def result_message(parsed: ParsedCall, payload: dict) -> Any:
     if parsed.provider == "generic":
         return payload
     if parsed.provider == "gemini":
-        return {"function_response": {"name": parsed.name, "response": payload}}
+        response = {"name": parsed.name, "response": payload}
+        return {"function_response": {"id": parsed.call_id, **response} if parsed.call_id else response}
     body = json.dumps(payload, ensure_ascii=False, default=str)
     if parsed.provider == "openai":
         return {"role": "tool", "tool_call_id": parsed.call_id, "content": body}

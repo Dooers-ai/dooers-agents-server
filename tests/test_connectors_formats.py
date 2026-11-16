@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -154,9 +154,10 @@ def test_parse_string_arguments_malformed_or_not_object_is_invalid(make, bad):
         (_responses_obj('{"x": 1}'), "openai_responses", "c1"),
         ({"type": "tool_use", "id": "tu1", "name": "x", "input": {"x": 1}}, "anthropic", "tu1"),
         (SimpleNamespace(type="tool_use", id="tu1", name="x", input={"x": 1}), "anthropic", "tu1"),
-        (SimpleNamespace(name="x", args={"x": 1}, id=None), "gemini", "x"),
-        ({"name": "x", "args": {"x": 1}}, "gemini", "x"),
-        (SimpleNamespace(function_call=SimpleNamespace(name="x", args={"x": 1}, id=None)), "gemini", "x"),
+        (SimpleNamespace(name="x", args={"x": 1}, id=None), "gemini", ""),
+        ({"name": "x", "args": {"x": 1}}, "gemini", ""),
+        (SimpleNamespace(function_call=SimpleNamespace(name="x", args={"x": 1}, id=None)), "gemini", ""),
+        ({"function_call": {"name": "x", "args": MappingProxyType({"x": 1})}}, "gemini", ""),
         ({"function_call": {"name": "x", "args": {"x": 1}, "id": "g1"}}, "gemini", "g1"),
         (("x", {"x": 1}), "generic", ""),
     ],
@@ -168,6 +169,25 @@ def test_parse_each_provider_shape(call, provider, call_id):
 
 def test_parse_gemini_missing_args_is_empty_dict():
     assert parse_call({"name": "x"}).arguments == {}
+
+
+def test_parse_responses_call_id_never_falls_back_to_item_id():
+    p = parse_call({"type": "function_call", "id": "fc_item", "name": "x", "arguments": "{}"})
+    assert (p.call_id, p.arguments) == ("", {})
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        ("x", [("a", 1)]),
+        {"type": "tool_use", "id": "tu1", "name": "x", "input": [("a", 1)]},
+        {"name": "x", "args": [["a", 1]]},
+    ],
+    ids=["generic", "anthropic", "gemini"],
+)
+def test_object_arguments_accept_only_a_mapping(call):
+    p = parse_call(call)
+    assert p.arguments is None and p.raw_arguments_error
 
 
 def test_parse_unknown_shape_raises_value_error():
@@ -182,5 +202,6 @@ def test_result_message_shapes_per_provider():
     assert result_message(mk("openai", "c1"), payload) == {"role": "tool", "tool_call_id": "c1", "content": body}
     assert result_message(mk("openai_responses", "c2"), payload) == {"type": "function_call_output", "call_id": "c2", "output": body}
     assert result_message(mk("anthropic", "t3"), payload) == {"type": "tool_result", "tool_use_id": "t3", "content": body}
-    assert result_message(mk("gemini", "x"), payload) == {"function_response": {"name": "x", "response": payload}}
+    assert result_message(mk("gemini", ""), payload) == {"function_response": {"name": "x", "response": payload}}
+    assert result_message(mk("gemini", "g1"), payload) == {"function_response": {"id": "g1", "name": "x", "response": payload}}
     assert result_message(mk("generic", ""), payload) == payload

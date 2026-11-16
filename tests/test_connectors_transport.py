@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -151,6 +152,78 @@ async def test_session_exchange_denied_returns_none(status, caplog):
             assert await connector_session(_turn()) is None
     assert "presence-1" not in caplog.text
     assert "runtime-key" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(500, text="oops"),
+        httpx.Response(502, text="bad gateway"),
+        httpx.Response(200, text="not json"),
+        httpx.Response(200, json={"success": True}),
+        httpx.Response(200, json={"success": True, "data": []}),
+        httpx.Response(200, json={"success": True, "data": {"token": 123, "expiresAt": "2030-01-01T00:10:00Z"}}),
+        httpx.Response(200, json={"success": True, "data": {"token": "", "expiresAt": "2030-01-01T00:10:00Z"}}),
+    ],
+    ids=["500", "502", "not_json", "no_data", "data_not_object", "token_not_string", "token_empty"],
+)
+async def test_session_exchange_5xx_or_malformed_returns_none(response):
+    with respx.mock() as mock:
+        mock.post(SESSION_URL).mock(return_value=response)
+        assert await connector_session(_turn()) is None
+    assert presence._sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_parallel_misses_share_one_exchange():
+    """Tools running in parallel in one turn all miss the cache at once; only one exchange reaches the core."""
+
+    async def slow_session(request):
+        await asyncio.sleep(0.01)  # the first exchange is still in flight when the others ask
+        return _session_ok("sess-1")
+
+    turn = _turn()
+    with respx.mock() as mock:
+        session = mock.post(SESSION_URL).mock(side_effect=slow_session)
+        results = await asyncio.gather(*(connector_session(turn) for _ in range(3)))
+
+    assert results == ["sess-1", "sess-1", "sess-1"]
+    assert session.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_session_cache_prunes_expired_entries_on_insert(monkeypatch):
+    now = [1_900_000_000.0]
+    monkeypatch.setattr(presence, "_now", lambda: now[0])
+    with respx.mock() as mock:
+        mock.post(SESSION_URL).mock(
+            side_effect=[_session_ok("sess-a", "2030-03-17T17:56:40Z"), _session_ok("sess-b", "2030-03-17T18:56:40Z")]
+        )
+        await connector_session(_turn("presence-a"))
+        now[0] += 600  # sess-a is past its expiry
+        await connector_session(_turn("presence-b", user_id="u2"))
+
+    assert [session for session, _ in presence._sessions.values()] == ["sess-b"]
+
+
+@pytest.mark.asyncio
+async def test_payload_cannot_override_context_session_or_person():
+    bound(_turn())
+    with respx.mock() as mock:
+        mock.post(TOKEN_URL).mock(return_value=_token_ok())
+        mock.post(SESSION_URL).mock(return_value=_session_ok("sess-1"))
+        route = mock.post(f"{SERVICE}/v1/tools/execute").mock(return_value=httpx.Response(200, json={"status": "ok"}))
+        await ConnectorTransport().post(
+            "/v1/tools/execute",
+            {"name": "x", "context": {"agent_id": "other"}, "connector_session": "forged", "on_behalf_of": "u-other"},
+        )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["context"]["agent_id"] == "agent-1"
+    assert body["connector_session"] == "sess-1"
+    assert body["on_behalf_of"] is None
+    assert body["name"] == "x"
 
 
 @pytest.mark.asyncio
