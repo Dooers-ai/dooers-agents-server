@@ -186,6 +186,7 @@ class MaestroExecutionPersistence(Persistence):
             "assistant_name": self._assistant_name,
             "channel": channel,
             "channel_meta": channel_meta,
+            "participants": participants,
         }
 
     async def get_thread(self, thread_id: str) -> Thread | None:
@@ -225,6 +226,8 @@ class MaestroExecutionPersistence(Persistence):
             "queue": state["queue"],
             "created_at": created or known[0]["created_at"],
             "updated_at": known[-1]["created_at"],
+            "channel": state["channel"],
+            "channel_meta": state["channel_meta"],
         }
         return to_thread(view, recipient_instance_id=envelope["instance_agent_id"], assistant_name=self._assistant_name)
 

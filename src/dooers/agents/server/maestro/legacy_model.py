@@ -193,22 +193,23 @@ def _external_user(person: dict[str, Any], core: dict[str, Any] | None) -> User:
     external variant) carries the core's own e-mail, identity IDs, the three roles, ``connection_type``
     (``guest`` | ``public_authenticated``) and ``guest_profile`` (the visitor's own pre-chat
     name/e-mail/phone, declared, not verified by the core). ``context.py``'s own ``_user`` (the live
-    handler context) passes the participant as ``core`` separately; ``production_user``'s other
-    callers (``to_thread``'s already-enriched ``view["participants"]``, a bare message actor) pass
-    only ``person`` and leave ``core`` ``None`` — ``person`` itself is then the only source, the same
-    fallback ``_core_person`` already gives a human — an actor or participant with its own e-mail,
-    identity IDs, roles, ``connection_type`` or ``guest_profile`` (``to_thread``'s already-enriched
-    ``view["participants"]``) keeps them; a bare message actor (the contract's own ``external`` actor
-    variant carries none of this but ``connection_type``) has none to lose. When ``core`` names the
-    person, its own name/e-mail win, else the guest's declared ``guest_profile`` ones, else the actor's
-    own ``display_name`` (kept for a WhatsApp-like core with no name of its own), else ``None`` — never
-    a placeholder.
+    handler context) and ``legacy_model._message`` (a message's author) pass the participant as ``core``
+    separately; ``production_user``'s other callers (``to_thread``'s already-enriched
+    ``view["participants"]``) pass only ``person`` and leave ``core`` ``None`` — ``person`` itself is then
+    the only source, the same fallback ``_core_person`` already gives a human. A bare message actor (the
+    contract's own ``external`` actor variant carries none of this but ``connection_type``) has none to lose.
+
+    The name is the actor's own ``display_name`` first: a WhatsApp contact declares its current name on
+    every publication, while its participant keeps the one it had when it joined (production uses the
+    current one). The visitor's actor has no name, so its name is the core's, else the guest's declared
+    ``guest_profile`` one (production's ``_enrich_user_from_metadata``), else ``None`` — never a placeholder.
+    The e-mail is the core's, else the declared one. ``connection_type`` falls back to the actor's.
     """
     source = core if core is not None else person
     guest_profile = source.get("guest_profile") or {}
-    name = source.get("display_name") or guest_profile.get("name") or person.get("display_name") or None
+    name = person.get("display_name") or source.get("display_name") or guest_profile.get("name") or None
     email = source.get("email") or guest_profile.get("email") or None
-    connection_type = source.get("connection_type") or None
+    connection_type = source.get("connection_type") or person.get("connection_type") or None
     return User(
         user_id=person["external_id"],
         user_name=name,
@@ -263,6 +264,17 @@ PUBLIC_CHAT_CHANNEL = "dooers-public-chat"
 WHATSAPP_CHANNEL = "whatsapp"
 
 
+def _public_chat_label(channel_meta: dict[str, Any] | None) -> str:
+    """The public chat link's label, as production reads it: ``public_chat_label``, else ``public_chat.label``."""
+    meta = channel_meta if isinstance(channel_meta, dict) else {}
+    label = str(meta.get("public_chat_label") or "").strip()
+    if not label:
+        nested = meta.get("public_chat")
+        if isinstance(nested, dict):
+            label = str(nested.get("label") or "").strip()
+    return label
+
+
 def assistant_delivery_data(
     channel: str | None, channel_meta: dict[str, Any] | None, *, user_id: str | None = None
 ) -> dict[str, Any] | None:
@@ -271,7 +283,7 @@ def assistant_delivery_data(
     Production stamps ``data["delivery"]`` on every assistant-authored ``message.created`` it persists
     (origin/main ``handlers/pipeline.py``, around line 1230): ``None`` on an empty channel or on
     ``"dooers-platform"`` (plain web chat); otherwise ``{"channel": channel, ...}`` plus channel-specific
-    fields: ``public_chat_label`` (from ``channel_meta``) for ``"dooers-public-chat"`` (plan 6, Task 5);
+    fields: ``public_chat_label`` (``_public_chat_label``) for ``"dooers-public-chat"`` (plan 6, Task 5);
     ``to_e164``/``instance_id`` (from ``channel_meta["whatsapp"]``, falling back to ``user_id`` for
     ``to_e164`` as production falls back to ``context.user.user_id``) for ``"whatsapp"`` (plan 5, Task 7).
 
@@ -284,8 +296,7 @@ def assistant_delivery_data(
         return None
     delivery: dict[str, Any] = {"channel": channel}
     if channel == PUBLIC_CHAT_CHANNEL:
-        meta = channel_meta if isinstance(channel_meta, dict) else {}
-        label = str(meta.get("public_chat_label") or "").strip()
+        label = _public_chat_label(channel_meta)
         if label:
             delivery["public_chat_label"] = label
     elif channel == WHATSAPP_CHANNEL:
@@ -299,6 +310,24 @@ def assistant_delivery_data(
             if instance_id:
                 delivery["instance_id"] = instance_id
     return {"delivery": delivery}
+
+
+def public_chat_source_data(channel: str | None, channel_meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Production's ``HandlerPipeline._inbound_source_data`` for a public chat thread, else ``None``.
+
+    Production stamps ``data["source"]`` on every inbound event of a thread with a channel; for
+    ``"dooers-public-chat"`` it depends only on the thread's ``channel`` and ``channel_meta`` (the link's
+    label), so the visitor's message — which Maestro stores without a ``data`` — gets it on read-back.
+    A WhatsApp inbound's source has per-message values (``wa_message_id``, ``from_me``) the thread cannot
+    give: its message carries them on its own ``payload.data`` (stamped at ingest), so it is not derived here.
+    """
+    if (channel or "").strip() != PUBLIC_CHAT_CHANNEL:
+        return None
+    source: dict[str, Any] = {"channel": PUBLIC_CHAT_CHANNEL}
+    label = _public_chat_label(channel_meta)
+    if label:
+        source["public_chat_label"] = label
+    return {"source": source}
 
 
 def _stored(user: User) -> User:
@@ -376,6 +405,7 @@ async def _message(
     assistant_name: str,
     channel: str | None = None,
     channel_meta: dict[str, Any] | None = None,
+    participants: list[dict[str, Any]] | None = None,
 ) -> ThreadEvent:
     payload, actor = event["payload"], event["actor"]
     content = [await _part(part, links, agent=actor["kind"] == "agent") for part in payload["content"]]
@@ -394,7 +424,12 @@ async def _message(
     elif actor["kind"] == "system":
         legacy_actor, author = "system", actor["display_name"] or None
     else:
-        person = production_user(actor)
+        # A channel contact or a public chat visitor: the actor is a snapshot with no profile, its participant
+        # (the same ``participant_id``) has it (``context._user`` does the same for the live context).
+        participant = None
+        if actor["kind"] == "external":
+            participant = next((p for p in participants or [] if p.get("participant_id") == actor.get("participant_id")), None)
+        person = production_user(actor, participant)
         legacy_actor, author, user = "user", _author_display(person), _stored(person)
     # F7: production's ``_assistant_delivery_data(context)`` on every assistant message (own agent, or
     # another agent alone in the thread, since both render as ``assistant`` here); never on a person's
@@ -437,6 +472,9 @@ async def _message(
         }
     elif delivery is not None:
         data = delivery
+    elif legacy_actor == "user" and actor["kind"] == "external":
+        # Production's ``_with_inbound_source_data`` on the visitor's own message.
+        data = public_chat_source_data(channel, channel_meta)
     return _base(event, type="message", actor=legacy_actor, author=author, user=user, content=content or None, data=data)
 
 
@@ -522,6 +560,7 @@ async def to_thread_event(
     assistant_name: str = DEFAULT_ASSISTANT_NAME,
     channel: str | None = None,
     channel_meta: dict[str, Any] | None = None,
+    participants: list[dict[str, Any]] | None = None,
 ) -> ThreadEvent | None:
     """The production ``ThreadEvent`` of one folded Maestro event, or ``None`` without an equivalent.
 
@@ -539,6 +578,9 @@ async def to_thread_event(
     ``thread_at_cutoff``): only ``message.created`` uses them, to add ``data.delivery`` to an
     assistant message (``assistant_delivery_data``, F7). Without them (the default, ``None``), no
     delivery is added, as before this field existed.
+    ``participants`` are the thread's (the delivery context's): an ``external`` actor of a message carries
+    only its ``participant_id``, so its name, e-mail and declared pre-chat come from its participant. The
+    visitor's own message gets ``data.source`` from ``channel``/``channel_meta`` (``public_chat_source_data``).
 
     Actors: the own agent is ``assistant``; a person or channel contact is ``user``;
     ``tool_result.created`` is ``tool``; a queue change is ``system``. Another agent's
@@ -558,6 +600,7 @@ async def to_thread_event(
             assistant_name=assistant_name,
             channel=channel,
             channel_meta=channel_meta,
+            participants=participants,
         )
     if kind == "form.responded":
         return _form_response(event)
@@ -572,13 +615,44 @@ def _in_join_order(participants: list[dict]) -> list[dict]:
     The Maestro context returns them ordered by a random participant UUID, so the order of the view
     means nothing. ``joined_sequence`` (a decimal string) says who joined first; at the same
     sequence the owner comes first, then the agent, then the rest, and the participant id breaks the
-    last tie. The result is ``[owner, agent, added...]``, as production's ``Thread.users``.
+    last tie. The result is ``[owner, agent, added...]``, as production's ``Thread.users``. The owner is
+    the human with the ``owner`` role, else (a channel thread) the first external participant that
+    ``to_thread`` makes the owner: production lists a visitor or contact before the agent.
     """
+    has_human_owner = any(p["kind"] == "human" and p.get("role") == "owner" for p in participants)
+    externals = [p for p in participants if p["kind"] == "external" and p["state"] == "active"]
+    channel_owner = None if has_human_owner else min(externals, key=_join_key, default=None)
 
     def rank(participant: dict) -> int:
-        return 0 if participant.get("role") == "owner" else 1 if participant["kind"] == "agent" else 2
+        if participant is channel_owner or (participant["kind"] == "human" and participant.get("role") == "owner"):
+            return 0
+        return 1 if participant["kind"] == "agent" else 2
 
     return sorted(participants, key=lambda p: (int(p.get("joined_sequence") or 0), rank(p), p.get("participant_id") or ""))
+
+
+def _join_key(participant: dict) -> tuple[int, str]:
+    return int(participant.get("joined_sequence") or 0), participant.get("participant_id") or ""
+
+
+def _thread_metadata(view: dict, owner: dict | None) -> dict[str, Any] | None:
+    """``Thread.metadata`` of a public chat thread, as production stores it (``HandlerPipeline.setup``).
+
+    Production keeps the metadata of the first ``event.create`` of the thread: the channel and its meta the
+    visitor's browser sent, and the pre-chat it declared (``guest_name``/``guest_email``/``guest_phone``). Maestro
+    has all of it: the thread's ``channel``/``channel_meta`` and the owner participant's ``guest_profile``. Only
+    what exists is set. A thread of another channel has no such metadata here (``None``).
+    """
+    if (view.get("channel") or "").strip() != PUBLIC_CHAT_CHANNEL:
+        return None
+    metadata: dict[str, Any] = {"channel": PUBLIC_CHAT_CHANNEL}
+    if view.get("channel_meta"):
+        metadata["channel_meta"] = deepcopy(view["channel_meta"])
+    profile = (owner or {}).get("guest_profile") or {}
+    for key in ("name", "email", "phone"):
+        if profile.get(key):
+            metadata[f"guest_{key}"] = profile[key]
+    return metadata
 
 
 def to_thread(
@@ -606,6 +680,7 @@ def to_thread(
     )
     updated_at = _time(view["updated_at"])
     return Thread(
+        metadata=_thread_metadata(view, owner),
         id=view["thread_id"],
         agent_id=view.get("owner_instance_agent_id") or (agents[0]["instance_agent_id"] if agents else ""),
         organization_id=view["organization_id"],
