@@ -166,7 +166,7 @@ async def test_public_chat_visitor_never_reaches_the_maestro_mode_router(monkeyp
     fake = _Recorded.last
     assert fake.rejections == []
     (thread_id,) = fake.threads
-    assert [p["kind"] for p in fake.threads[thread_id]["participants"]] == ["external", "agent"]
+    assert [p["kind"] for p in fake.threads[thread_id]["participants"]] == ["agent", "external"]
     assert [event["actor"]["kind"] for event in fake.events[thread_id] if event["type"] == "message.created"] == [
         "external",
         "agent",

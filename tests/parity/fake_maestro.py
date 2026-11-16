@@ -455,7 +455,8 @@ class FakeMaestro:
             "title": "",
             "state": "active",
             "version": 1,
-            "participants": [visitor_participant, agent],
+            # ``rows`` come ``orderBy(kind, principal_id)`` (``public-chat.ts``): the agent, then the visitor.
+            "participants": [agent, visitor_participant],
             "permissions": dict.fromkeys(_NO_PERMISSIONS, True) | {"supervise": False},
             "capabilities": [],
             "last_sequence": "0",
@@ -1243,7 +1244,7 @@ class FakeMaestro:
         Authenticated (``connection_type != "guest"``): name, e-mail, identity IDs and the roles of the
         signed-in user, from ``core_people`` (keyed by ``external_id``, the production user id) — the
         same merge a human gets, system_role always ``"user"`` (``_with_human_profile``). Guest: no name,
-        no e-mail, no identity IDs, and ``"guest"`` in the three roles (``visitorContextSchema``'s own
+        no e-mail (``null``), no identity IDs (``[]``), and ``"guest"`` in the three roles (``visitorContextSchema``'s own
         docstring); ``guest_profile`` (the visitor's own declared name/e-mail/phone, never verified by the
         core) is added either way, agent-only (``visitorAgentFields.guest_profile``, index 4.3.1).
         """
@@ -1255,7 +1256,8 @@ class FakeMaestro:
             return view
         extra: dict[str, Any] = {}
         if view.get("connection_type") == "guest":
-            extra.update(system_role="guest", organization_role="guest", workspace_role="guest")
+            # ``agentParticipantView``: the person the core described has no e-mail ("" is null) and no identity IDs.
+            extra.update(email=None, identity_ids=[], system_role="guest", organization_role="guest", workspace_role="guest")
         else:
             person = self.core_people.get(view["external_id"])
             extra.update(

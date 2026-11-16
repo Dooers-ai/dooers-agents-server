@@ -625,3 +625,23 @@ async def test_without_the_connection_context_the_pages_are_those_of_an_older_ma
     view = fake.agent_view(thread_id)
     assert "workspace" not in view and "thread" not in view
     assert not any(role in _human(view["participants"], "user-1") for role in ROLES)
+
+
+# -- The public chat visitor's own thread (``public-chat.ts``) --
+
+
+def test_visitor_thread_lists_participants_by_kind_like_maestro_and_a_guest_has_no_profile_from_the_core():
+    guest = User(user_id="guest:abc123", system_role="guest", organization_role="guest", workspace_role="guest")
+    fake = FakeMaestro()
+    thread_id = fake.ensure_external_thread(
+        guest, external_key="public:link:guest:guest:abc123", connection_type="guest", guest_profile={"name": "Carlos Lima"}
+    )
+
+    # ``rows`` come ``orderBy(participants.kind, participants.principalId)``: the agent, then the visitor.
+    assert [participant["kind"] for participant in fake.threads[thread_id]["participants"]] == ["agent", "external"]
+    visitor = next(p for p in fake.agent_view(thread_id)["participants"] if p["kind"] == "external")
+    # ``agentParticipantView``: an empty core e-mail is null, the identity IDs are empty, the roles are ``guest``.
+    assert (visitor["email"], visitor["identity_ids"]) == (None, [])
+    assert (visitor["system_role"], visitor["organization_role"], visitor["workspace_role"]) == ("guest",) * 3
+    assert "display_name" not in visitor
+    assert visitor["guest_profile"] == {"name": "Carlos Lima"}

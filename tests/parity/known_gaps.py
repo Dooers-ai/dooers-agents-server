@@ -68,30 +68,27 @@ the visitor's own path (design section 7.3) — ``FakeMaestro.ensure_external_th
 way a web chat person's message is) through a new ``harness._run_maestro_public_chat``, a sibling of
 ``_run_maestro_deliveries``/``_run_maestro_server`` picked by ``_is_public_chat_scenario`` (``ScenarioInput.connect``
 present with ``connection_type`` ``guest``/``public_authenticated``) rather than by ``_delivered_by_maestro``
-(unchanged). What is left of both scenarios is two permanent declared differences, not the old gap: the
+(unchanged). What was left of both scenarios then was two declared differences, not the old gap: the
 legacy WebSocket acks and Core validation count (``agent_websocket``, already used by ``form_response_submit``/
 ``form_response_cancel``), and the visitor's own declared profile — name, e-mail, identity IDs, roles,
 ``connection_type`` — plus ``data.source``, which reach the live handler context (plan 6 task 5's own
 ``test_maestro_public_chat.py``) but not a Maestro-mode read-back outside it, because ``legacy_model.py``'s
 ``to_thread``/``_message`` call ``production_user`` with no participant for an external actor
-(``public_chat_visitor_profile``, new).
+(``public_chat_visitor_profile``, new; closed by the final review of plan 6, below).
 
-Fix 1 of task 6a (2026-11-16, review): that single gap conflated two causes. ``_message``'s loss is
-genuinely structural — a message's actor is the real contract's own ``external`` actor variant, which never
-carries e-mail/``guest_profile``/roles at all (confirmed against the compiled ``Public.AgentEvent`` schema),
-and ``_stored`` keeps only ``user_id``/``user_name``/``user_email`` of any message's ``User`` regardless —
-left alone, and ``public_chat_visitor_profile`` now covers only it (plus ``data.source``). ``Thread.owner``/
-``.users``'s loss was a bug: ``production_user(participant)`` (``to_thread``, no separate ``core``) reached
-``_external_user`` with ``core=None``, which returned a bare ``User(user_id, user_name)`` even though
-``participant`` (``to_thread``'s already-enriched ``view["participants"]``, Task 3b) already carried
-everything else — ``_external_user`` now falls back to ``person`` itself the same way ``_core_person``
-already does for a human. ``public_chat_authenticated``'s ``Thread.owner``/``.users`` match exactly now, with
-no mask needed for them (the owner identity, the match only differing where the thread lacks an equivalent
-field at all: ``Thread.metadata``, never set by ``to_thread`` for any thread, and the join order, a
-pre-existing ranking rule — both new, ``public_chat_thread_metadata``). ``public_chat_guest``'s differ by one
-more thing the fix does not touch: the ``guest`` role literal in the three roles is a Maestro-only concept
-(``visitorContextSchema``, plan 6), confirmed absent anywhere in the old chat widget's own code
-(``public_chat_guest_role``, new).
+Fix 1 of task 6a (2026-11-16, review): ``_external_user`` (``legacy_model.py``) now falls back to ``person``
+itself the same way ``_core_person`` already does for a human, so ``Thread.owner``/``.users`` carry the
+visitor's own profile.
+
+Final review of plan 6 (2026-11-16): the visitor's masks were hiding differences that could be fixed, so
+``public_chat_visitor_profile``, ``public_chat_thread_metadata`` and ``public_chat_guest_role`` are gone. The
+``guest`` role is the fixture's (``GUEST_CONNECT.core_user``: Core returns it, ``publicChatSession/services.ts``);
+the message's author, name, e-mail and ``data.source`` come from the message actor's participant
+(``legacy_model._message``) and the channel; ``Thread.metadata`` is built from the thread's channel and the
+owner's ``guest_profile`` (``legacy_model._thread_metadata``); ``Thread.users`` lists the visitor before the agent
+(``_in_join_order``); the live handler context is compared too (``_public_chat_reply`` calls ``capture_incoming``).
+What is left of both public chat scenarios is the legacy WebSocket acks and the Core validation count
+(``agent_websocket``).
 """
 
 from __future__ import annotations
@@ -154,80 +151,6 @@ def _agent_api_attachment_url(result: ParityResult) -> None:
         upload["ref_id"] = MASK
 
 
-def _public_chat_visitor_profile(result: ParityResult) -> None:
-    """A public chat visitor's declared profile never reaches a *message*, read back in Maestro mode.
-
-    ``legacy_model.py``'s ``_message`` calls ``production_user(actor)`` with no participant for every
-    event (the message actor is a snapshot of that instant, in the real contract's own shape: it never
-    carries e-mail/``guest_profile`` at all — ``docs/contracts/v1/common.ts``'s ``actorSchema``, confirmed
-    reading the compiled ``Public.AgentEvent`` schema). Worse: even what the actor DOES carry
-    (``connection_type``) never reaches the stored row either, because ``_stored`` only ever keeps
-    ``user_id``/``user_name``/``user_email`` (production's own events table) — the same reason
-    ``identity_ids``/the three roles are always empty there too, on both sides, with nothing to mask.
-    Legacy's WS path has no such limitation: it stamps the ``User`` straight from the connect handshake
-    onto every message. The same gap drops ``data.source`` (the channel a person's own message arrived
-    on): Maestro's conversion only ever stamps ``data.delivery``, on an assistant's own message.
-    ``Thread.owner``/``.users`` (a participant, not a message actor) do not have this gap — fix 1 taught
-    ``_external_user`` to read a participant's own profile the same way ``_core_person`` already does
-    for a human (see ``public_chat_thread_metadata``/``public_chat_guest_role`` for what is left there).
-    """
-    for event in result.events:
-        if event.get("actor") == "user":
-            event["author"] = MASK
-            event["data"] = MASK
-            user = event.get("user")
-            if isinstance(user, dict):
-                for key in ("user_name", "user_email"):
-                    if key in user:
-                        user[key] = MASK
-
-
-def _public_chat_thread_metadata(result: ParityResult) -> None:
-    """``Thread.metadata`` and the join order of ``Thread.users``, for a public chat visitor's thread.
-
-    ``to_thread`` never sets ``metadata`` for any thread (nothing public-chat-specific): legacy's own
-    ``Thread.metadata`` of a public chat thread carries the pre-chat form and the channel/label the
-    visitor's browser sent at ``thread.create.public_chat`` time; Maestro's conversion has no such
-    field to read from a ``Public.Thread`` view. The join order differs too: ``to_thread``'s
-    ``_in_join_order`` ranks the agent ahead of a non-owner external participant (``rank``'s own
-    ``else 2``); legacy's own WS-path thread builder lists the visitor (the channel owner) first.
-    """
-    for thread in result.outputs.get("threads", []):
-        if "metadata" in thread:
-            thread["metadata"] = MASK
-        if isinstance(thread.get("users"), list):
-            thread["users"] = sorted(thread["users"], key=lambda user: user.get("user_id", ""))
-
-
-def _public_chat_guest_role(result: ParityResult) -> None:
-    """The ``guest`` role in all three roles — a Maestro-only concept, absent from the legacy WS path.
-
-    Plan 6's ``visitorContextSchema`` (``identity.ts``) gives an anonymous visitor the literal role
-    ``"guest"`` in ``system_role``/``organization_role``/``workspace_role`` (confirmed in
-    ``test_maestro_public_chat.py::test_guest_visitor_user_and_on_behalf``, Task 5's own test, which
-    ``FakeMaestro._with_external_profile`` mirrors). The old, non-Maestro chat widget never had this
-    concept: its connect handshake carries only the default roles (``user``/``member``/``member``,
-    confirmed grepping the SDK for ``"guest"`` next to a role — there is none), regardless of
-    ``connection_type``. ``public_authenticated`` is unaffected: there Maestro reads the person's own
-    roles from the core, same as legacy's.
-    """
-
-    def strip(value: object) -> None:
-        if isinstance(value, dict):
-            if value.get("connection_type") == "guest":
-                for key in ("system_role", "organization_role", "workspace_role"):
-                    if key in value:
-                        value[key] = MASK
-            for child in value.values():
-                strip(child)
-        elif isinstance(value, list):
-            for child in value:
-                strip(child)
-
-    strip(result.outputs)
-    strip(result.incoming)
-
-
 #: Declared differences a gap may mask (name -> what differs, and the mask applied to both sides).
 DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
     "media_link_size": (
@@ -251,27 +174,6 @@ DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
         "real temporary link (MaestroAgentApi.link_resolver), and its stored ref_id is Maestro's own artifact id, "
         "not the staged upload's; legacy's local ref_id keeps url=None and stays the same id throughout",
         _agent_api_attachment_url,
-    ),
-    "public_chat_visitor_profile": (
-        "declared, permanent: a public chat visitor's declared name/e-mail and data.source never reach a "
-        "message (legacy_model.py's _message calls production_user with the bare message actor, which the "
-        "real contract never gives e-mail/guest_profile, and _stored keeps only user_id/user_name/user_email "
-        "of any User read back from a message either way); legacy's WS path stamps every message from the "
-        "connect handshake instead",
-        _public_chat_visitor_profile,
-    ),
-    "public_chat_thread_metadata": (
-        "declared, permanent: Thread.metadata (the pre-chat form and channel/label) and the join order of "
-        "Thread.users, for a public chat visitor's thread; to_thread never sets metadata for any thread, and "
-        "ranks the agent ahead of a non-owner external participant where legacy's own WS-path builder lists "
-        "the visitor first",
-        _public_chat_thread_metadata,
-    ),
-    "public_chat_guest_role": (
-        "declared, permanent: the guest role literal in system_role/organization_role/workspace_role "
-        "(visitorContextSchema, plan 6) is a Maestro-only concept; the old, non-Maestro chat widget's connect "
-        "handshake never carries anything but the default roles for any connection_type",
-        _public_chat_guest_role,
     ),
 }
 
@@ -336,23 +238,10 @@ GAPS: dict[str, Gap] = {
     # Task 6a (2026-11-16): the visitor talks to Maestro directly (``FakeMaestro.ensure_external_thread``/
     # ``.publish_external``, ``_run_maestro_public_chat``), never through the Maestro-mode Router — the old
     # THREAD_MANAGEMENT_MISMATCH gap is gone.
-    # Task 6a, fix 1 (2026-11-16): ``_external_user`` (legacy_model.py) read a public chat visitor's own
-    # e-mail/identity_ids/roles/connection_type/guest_profile only from a separate ``core`` argument no
-    # caller ever passes, discarding them even when ``person`` (``Thread.owner``/``.users``'s own,
-    # already-enriched participant) already had them; it now falls back to ``person`` itself, the same
-    # way ``_core_person`` already does for a human. ``Thread.owner``/``.users`` match exactly now for
-    # ``public_chat_authenticated``, and for ``public_chat_guest`` except the ``guest`` role literal
-    # (``public_chat_guest_role``, Maestro-only, confirmed absent anywhere in the old chat widget). What
-    # is left for both: the legacy WS acks/Core validation count, the per-message profile loss (genuinely
-    # structural — the message actor itself never carries it, confirmed against the real contract), and
-    # ``Thread.metadata``/the join order of ``Thread.users`` (``to_thread`` never sets the former for any
-    # thread; the latter is a pre-existing ranking rule, unrelated to this fix).
-    "public_chat_guest": _declared(
-        "agent_websocket", "public_chat_visitor_profile", "public_chat_thread_metadata", "public_chat_guest_role", deliveries=_RESPONDED * 2
-    ),
-    "public_chat_authenticated": _declared(
-        "agent_websocket", "public_chat_visitor_profile", "public_chat_thread_metadata", deliveries=_RESPONDED * 2
-    ),
+    # Final review of plan 6 (2026-11-16): both scenarios match the legacy result, the live handler context included,
+    # except for the legacy WebSocket acks and the Core validation count (a permanent declared difference).
+    "public_chat_guest": _declared("agent_websocket", deliveries=_RESPONDED * 2),
+    "public_chat_authenticated": _declared("agent_websocket", deliveries=_RESPONDED * 2),
 }
 
 GAP_REASONS: dict[str, str] = {name: gap.reason for name, gap in GAPS.items()}

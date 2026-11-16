@@ -313,6 +313,7 @@ async def _whatsapp_receipt(server: Any, handler: Any) -> dict[str, Any]:
 
 
 async def _public_chat_reply(on, send, memory, analytics, settings):
+    capture_incoming(on)
     yield send.run_start()
     yield send.text("Olá! Recebi sua mensagem.")
     yield send.run_end()
@@ -320,7 +321,8 @@ async def _public_chat_reply(on, send, memory, analytics, settings):
 
 GUEST_CONNECT = Connect(
     connection_type="guest",
-    core_user=User(user_id="guest:abc123"),
+    # What the core returns for a guest (``publicChatSession/services.ts``): the ``guest`` role in all three roles.
+    core_user=User(user_id="guest:abc123", system_role="guest", organization_role="guest", workspace_role="guest"),
     frame_user=User(user_id="", user_name="Carlos Lima", user_email="carlos@example.com"),
 )
 PUBLIC_USER = User(user_id="user-42", user_name="Paula Reis", user_email="paula@example.com", identity_ids=["idp-paula"])
