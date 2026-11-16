@@ -140,6 +140,74 @@ async def test_emit_after_turn_end_is_dropped(pipeline_harness, caplog, fails):
     assert dropped.levelname == "WARNING" and "s3cr3t" not in dropped.getMessage()
 
 
+@pytest.mark.parametrize("fails", [False, True], ids=["normal_end", "failed_turn"])
+async def test_emit_while_the_turn_is_closing_is_dropped(pipeline_harness, monkeypatch, caplog, fails):
+    """The handler is done but ``execute`` still awaits (analytics, failing the run): a tool task's emit is late."""
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    tasks: list[asyncio.Task] = []
+    track = pipeline_harness.collector.track
+
+    async def track_then_let_the_tool_emit(**kwargs):
+        await track(**kwargs)
+        if closing.is_set() and not release.is_set():
+            release.set()
+            await tasks[0]  # the tool task emits inside the closing window
+
+    monkeypatch.setattr(pipeline_harness.collector, "track", track_then_let_the_tool_emit)
+
+    async def handler(incoming, send, memory, analytics, settings):
+        async def late_tool():
+            await release.wait()
+            await current_turn().emit(send.tool_result(name="x", result={"secret": "s3cr3t"}, id="c-1"))
+
+        if fails:
+            yield send.run_start()
+        tasks.append(asyncio.create_task(late_tool()))
+        yield send.text("oi")
+        closing.set()
+        if fails:
+            raise RuntimeError("boom")
+
+    if fails:
+        with pytest.raises(HandlerError):
+            await pipeline_harness.run(handler)
+    else:
+        await pipeline_harness.run(handler)
+
+    assert release.is_set() and tasks[0].done()
+    assert [e for e in pipeline_harness.persisted if e.type == "tool.result"] == []
+    assert any("after turn end" in r.getMessage() for r in caplog.records)
+
+
+async def test_side_channel_emit_waits_for_the_event_being_applied(pipeline_harness, monkeypatch):
+    """A tool task emits while the loop is still writing a yielded event: the two writes never interleave."""
+    persistence = pipeline_harness.persistence
+    create_event = persistence.create_event
+
+    async def create_event_that_yields(event):
+        await create_event(event)
+        for _ in range(3):
+            await asyncio.sleep(0)  # a real database gives the loop away here
+
+    monkeypatch.setattr(persistence, "create_event", create_event_that_yields)
+
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        task = asyncio.create_task(current_turn().emit(send.tool_call(name="x", args={}, id="c-1")))
+        yield send.text("oi")
+        await task
+        yield send.run_end()
+
+    await pipeline_harness.run(handler)
+
+    ops = [(op, getattr(obj, "type", None), getattr(obj, "actor", None)) for op, obj in persistence.writes]
+    text = ops.index(("create_event", "message", "assistant"))
+    call = ops.index(("create_event", "tool.call", "assistant"))
+    assert ops[text + 1][0] == "update_thread"  # the text event finished (last_event_at) before the tool call began
+    assert call > text + 1
+
+
 @pytest.mark.parametrize(
     ("cls", "status"),
     [

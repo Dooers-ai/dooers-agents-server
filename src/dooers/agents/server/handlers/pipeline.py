@@ -177,12 +177,13 @@ class _TurnState:
     context: HandlerContext
     result: PipelineResult
     thread_id: str
-    thread: Thread | None
     c2s_content_type: str
     current_run_id: str | None = None
     current_agent_id: str | None = None
-    #: Set when ``execute`` ends; the emitter then drops events (see ``_emit``).
+    #: Set once the handler is done (normally or not); the emitter then drops events (see ``_emit``).
     closed: bool = False
+    #: One ``_apply_event`` at a time: the loop and the emitter (tool tasks) never interleave their writes.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class HandlerPipeline:
@@ -418,7 +419,6 @@ class HandlerPipeline:
             context=context,
             result=result,
             thread_id=thread_id,
-            thread=thread,
             c2s_content_type=c2s_content_type,
         )
 
@@ -459,8 +459,10 @@ class HandlerPipeline:
         )
         try:
             async for event in _handler_event_stream():
-                await self._apply_event(event, state)
+                async with state.lock:
+                    await self._apply_event(event, state)
                 yield event
+            state.closed = True
 
             if result.user_event.run_id is None:
                 await self._track_event(
@@ -476,6 +478,7 @@ class HandlerPipeline:
                 )
 
         except Exception as e:
+            state.closed = True
             if result.user_event.run_id is None:
                 await self._track_event(
                     context.agent_id,
@@ -552,18 +555,20 @@ class HandlerPipeline:
     async def _emit(self, event: AgentEvent, state: _TurnState) -> None:
         """The turn's side-channel emitter (``TurnContext.emit``).
 
-        Tasks created during the turn copy its context and can call this after ``execute``
-        ended (normally or not). Such late events are dropped with a warning, never raised,
-        so a tool task that outlives the turn cannot write into a closed run or crash.
+        Tasks created during the turn copy its context and can call this after the handler
+        finished (normally or not). Such late events are dropped with a warning, never raised,
+        so a tool task that outlives the turn cannot write into a closed run or crash. While
+        the loop is applying a yielded event, this waits for it (``state.lock``).
         """
-        if state.closed:
-            logger.warning(
-                "[agents] emit after turn end dropped: send_type=%s thread=%s",
-                event.send_type,
-                state.thread_id,
-            )
-            return
-        await self._apply_event(event, state)
+        async with state.lock:
+            if state.closed:
+                logger.warning(
+                    "[agents] emit after turn end dropped: send_type=%s thread=%s",
+                    event.send_type,
+                    state.thread_id,
+                )
+                return
+            await self._apply_event(event, state)
 
     async def _apply_event(self, event: AgentEvent, state: _TurnState) -> None:
         """Persist and broadcast one handler event: the body of the ``execute`` loop, also run
@@ -1120,7 +1125,7 @@ class HandlerPipeline:
                 )
 
         elif event.send_type == "thread_update":
-            thread = state.thread = await self._persistence.get_thread(thread_id)
+            thread = await self._persistence.get_thread(thread_id)
             if thread:
                 if event.data.get("title") is not None:
                     thread.title = event.data["title"]
@@ -1177,7 +1182,7 @@ class HandlerPipeline:
         elif event.send_type == "participant_add":
             from dooers.agents.server.thread_access import actor_id_is_participant
 
-            thread = state.thread = await self._persistence.get_thread(thread_id)
+            thread = await self._persistence.get_thread(thread_id)
             if not thread:
                 logger.warning("[agents] participant_add: thread %s not found", thread_id)
             else:
@@ -1187,7 +1192,7 @@ class HandlerPipeline:
                         thread_id,
                         User(user_id=context.agent_id, user_name=self._assistant_name),
                     )
-                    thread = state.thread = await self._persistence.get_thread(thread_id) or thread
+                    thread = await self._persistence.get_thread(thread_id) or thread
                 if not actor_id_is_participant(context.agent_id, thread):
                     logger.warning(
                         "[agents] participant_add denied: agent %s not a participant of %s",
