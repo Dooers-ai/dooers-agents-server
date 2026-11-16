@@ -316,11 +316,14 @@ def _whatsapp_receipt(result: ParityResult) -> None:
 
 
 def _whatsapp_history_raw(result: ParityResult) -> None:
-    """The contact's message, read by the handler inside the run, has the ``data.source`` production stamped on it."""
-    (message,) = result.histories["raw"]
-    assert message["actor"] == "user"
-    source = message["data"]["source"]
-    assert (source["channel"], source["from_e164"], source["wa_message_id"]) == ("whatsapp", WHATSAPP_CUSTOMER, "wamid.in.1")
+    """The second run reads the thread inside it: the contact's messages keep ``data.source``, the first reply its delivery status."""
+    first, reply, second = result.histories["raw"]
+    assert [first["actor"], reply["actor"], second["actor"]] == ["user", "assistant", "user"]
+    for message in (first, second):
+        source = message["data"]["source"]
+        assert (source["channel"], source["from_e164"], source["wa_message_id"]) == ("whatsapp", WHATSAPP_CUSTOMER, "wamid.in.1")
+    delivery = reply["data"]["delivery"]
+    assert (delivery["status"], delivery["wa_message_id"]) == ("accepted", WHATSAPP_OUTBOUND_ID)
 
 
 def _public_chat_form_response(result: ParityResult) -> None:

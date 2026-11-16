@@ -149,6 +149,9 @@ class FakeAgentApi:
         self.link_route_enabled = True
         #: Test hook: ``(thread_id, trigger_event, delivery_id)`` called when a publication with ``trigger`` creates its delivery.
         self.on_trigger: Callable[[str, dict[str, Any], str], None] | None = None
+        #: Test hook: called with ``(thread_id, event)`` for each ``channel_delivery.updated`` this API stores, so the harness
+        #: can mirror it into ``FakeMaestro``, which serves the delivery context (real Maestro keeps one thread).
+        self.on_channel_delivery: Callable[[str, dict[str, Any]], None] | None = None
         #: The deliveries the publications with ``trigger`` created: delivery id -> ``{thread_id, trigger_event_id}``.
         self.agent_deliveries: dict[str, dict[str, str]] = {}
         #: principal id -> what the core knows about that human (``display_name``, ``email``, ``identity_ids`` and the roles).
@@ -806,6 +809,8 @@ class FakeAgentApi:
                 if name in body:
                     payload[name] = body[name]
             event = self._append(thread, "channel_delivery.updated", self._actor(thread, {"kind": "self"}), payload)
+            if self.on_channel_delivery is not None:
+                self.on_channel_delivery(thread.id, deepcopy(event))
             return {"applied": True, "event": event}, 201
 
         value, status, _ = self._receipt(key, body, build)

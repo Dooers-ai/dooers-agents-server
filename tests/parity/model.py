@@ -245,9 +245,10 @@ async def capture_histories(memory: Any) -> None:
 
 #: Where ``capture_raw_history`` stores what the handler read: a key of ``ParityResult.histories`` that no format uses.
 RAW_HISTORY = "raw"
-#: Left out of a raw capture: the ids of one thread are compared where its events are read back (``ParityResult.events``).
-#: Inside a delivery Maestro names the events it stored (``Public.Event.event_id``); the SDK id of a message the SDK
+#: Left out of a raw capture. ``id``: inside a delivery Maestro names the events it stored; the SDK id of a message the SDK
 #: published (``client_event_id``) is applied only on the reads outside one (``MaestroAgentPersistence._expose``).
+#: ``thread_id``: a known open gap (see ``known_gaps.py``): the handler sees Maestro's thread UUID, production gives the
+#: caller's key.
 _RAW_ID_FIELDS = ("id", "thread_id")
 
 

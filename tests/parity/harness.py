@@ -727,7 +727,8 @@ async def _deliver_agent_trigger(
         WhatsApp send, an artifact link) already need the event through the agent API, so this cannot wait
         for the delivery to end: ``FakeMaestro.on_append`` fires it the moment ``_append`` stores the event.
         """
-        if appended_thread_id != thread_id:
+        if appended_thread_id != thread_id or event["type"] == "channel_delivery.updated":
+            # A ``channel_delivery.updated`` comes from ``FakeAgentApi`` (``mirror_channel_delivery`` below): it has it already.
             return
         payload = copy.deepcopy(event["payload"])
         if payload.get("trigger_event_id") == mirrored_trigger["event_id"]:
@@ -823,7 +824,17 @@ async def _run_maestro_server(maestro: FakeMaestro, fake: FakeAgentApi, scenario
     def on_trigger(thread_id: str, trigger_event: dict[str, Any], delivery_id: str) -> None:
         pending.append(asyncio.ensure_future(_deliver_agent_trigger(maestro, fake, adapter, thread_id, trigger_event, delivery_id)))
 
+    def mirror_channel_delivery(thread_id: str, event: dict[str, Any]) -> None:
+        """The other direction: the status of a WhatsApp send that ``FakeAgentApi`` stored is in ``FakeMaestro``'s thread too.
+
+        Real Maestro keeps one thread, so the next delivery's context has the ``channel_delivery.updated``. The id of its
+        target is the same in both fakes (``mirror_output`` gives a handler output the id ``FakeMaestro`` chose).
+        """
+        if thread_id in maestro.threads:
+            maestro.admit_agent_event(thread_id, event["type"], event["actor"], event["payload"])
+
     fake.on_trigger = on_trigger
+    fake.on_channel_delivery = mirror_channel_delivery
     try:
         await server.ensure_initialized()
         if spec.service_secrets:

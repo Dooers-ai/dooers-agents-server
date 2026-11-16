@@ -369,7 +369,7 @@ SERVER_SCENARIOS: dict[str, Scenario] = {
     "whatsapp_history_raw": Scenario(
         handler=_whatsapp_history_reader,
         incoming=ScenarioInput(
-            turns=(Turn(message="Oi, quero saber do meu pedido"),),
+            turns=(Turn(message="Oi, quero saber do meu pedido"), Turn(message="Pode confirmar?")),
             user=WHATSAPP_USER,
             channel="whatsapp",
             channel_meta=WHATSAPP_CHANNEL_META,
