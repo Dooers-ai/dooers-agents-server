@@ -180,3 +180,14 @@ class ServiceTokenClient:
             return None
 
         return _CachedToken(access_token=access_token, expires_at=time.monotonic() + expires_in)
+
+
+def core_base_url() -> str:
+    """Core base URL as the SDK services resolve it: ``AGENT_CORE_BASE_URL``, ``DOOERS_CORE_BASE_URL``, default."""
+    from dooers.agents.server.settings import AGENT_CORE_BASE_URL
+
+    return (
+        (os.environ.get("AGENT_CORE_BASE_URL") or "").strip()
+        or (os.environ.get("DOOERS_CORE_BASE_URL") or "").strip()
+        or AGENT_CORE_BASE_URL
+    ).rstrip("/")
