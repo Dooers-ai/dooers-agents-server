@@ -83,8 +83,8 @@ class ConnectorTransport:
         timeout: float = 60.0,
         on_behalf_of: str | None = None,
     ) -> dict[str, Any]:
+        turn = _require_turn()  # before the URL: outside a handler turn, that is the error worth reporting
         base = _base_url()
-        turn = _require_turn()
         token = await _service_token(turn)
         # The payload goes first: the turn's context, the presence session and the person are never overridable.
         body = {

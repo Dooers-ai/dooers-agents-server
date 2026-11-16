@@ -555,6 +555,25 @@ When enabled:
 - Each user only sees threads they created
 - Useful for multi-tenant or personal assistant scenarios
 
+## Connectors
+
+Tools from the organization's connectors (Google Calendar, GitHub), executed by Dooers inside the handler turn. The SDK handles the "connect your account" and "approve this action" cards in the chat.
+
+```python
+from dooers.tools import connectors
+
+tools = await connectors.tools()
+completion = await openai.chat.completions.create(model="gpt-4.1", messages=messages, tools=tools.openai())
+message = completion.choices[0].message
+if message.tool_calls:
+    messages.append(message.model_dump(exclude_none=True))
+    for call in message.tool_calls:
+        messages.append(await tools.run(call))  # never raises: the LLM gets status and message
+    # ...and call the model again (full loop in the guide)
+```
+
+Also `anthropic()`, `gemini()`, `openai_responses()`, `langchain()`, `openai_agents()`, `bind()`, `connectors.call()` and `connectors.list()`. Guide (pt-BR): [docs/connectors.md](docs/connectors.md).
+
 ## Examples
 
 See [`examples/`](examples/) for complete working examples:
@@ -575,4 +594,5 @@ See [`examples/`](examples/) for complete working examples:
 ## See Also
 
 - [WhatsApp integration](docs/whatsapp.md) — inbound/outbound, `WhatsAppClient`, templates, Meta 24h window
+- [Connectors](docs/connectors.md) — `connectors.tools()`, `ToolSet.run`, `bind`, `call`, `list`, channels without web chat
 - [dooers-agents-client](https://github.com/Dooers-ai/dooers-agents-client) — React SDK that connects to agents built with this server

@@ -174,14 +174,42 @@ async def test_connect_then_approval_in_one_call(svc, turn):
 
 
 async def test_interaction_rounds_are_capped(svc, turn):
-    svc.execute.return_value = interaction("i1", "approval")
+    svc.execute.side_effect = [interaction(f"i{n}", "approval") for n in range(1, 5)]
     svc.wait.return_value = {"status": "approved"}
 
     out = await run()
 
-    assert out["status"] == "error" and out["message"]
+    assert out["status"] == "provider_error" and out["message"]
     assert len(svc.execute.calls) == 4  # the call plus three re-executions
-    assert len(cards(turn)) == 3
+    assert [c["interaction_id"] for c in cards(turn)] == ["i1", "i2", "i3"]
+
+
+async def test_repeated_interaction_id_is_provider_error_without_a_new_card(svc, turn):
+    svc.execute.side_effect = [interaction("i1", "approval"), interaction("i1", "approval")]
+    svc.wait.return_value = {"status": "approved"}
+
+    out = await run()
+
+    assert out["status"] == "provider_error" and out["message"]
+    assert (len(svc.execute.calls), len(svc.wait.calls)) == (2, 1)
+    assert [c["interaction_id"] for c in cards(turn)] == ["i1"]
+
+
+async def test_deadline_is_checked_before_the_card(svc, turn, fake_clock):
+    """A second approval after the shared deadline is gone: no card the person could no longer answer."""
+    svc.execute.side_effect = [interaction("i1", "approval"), interaction("i2", "approval")]
+
+    def approved_at_the_deadline(call):
+        fake_clock.advance(TIMEOUTS["approval"])
+        return {"status": "approved"}
+
+    svc.wait.side_effect = approved_at_the_deadline
+
+    out = await run()
+
+    assert out == {"status": "interaction_timeout", "message": "A pessoa não respondeu a tempo."}
+    assert [c["interaction_id"] for c in cards(turn)] == ["i1"]
+    assert len(svc.wait.calls) == 1
 
 
 async def _until(predicate) -> None:
@@ -268,8 +296,10 @@ async def test_transport_error_becomes_status_not_exception(svc, turn, failure, 
         ([["not", "an", "object"]], None),
         ([{"status": "interaction_required", "interaction": {"kind": "approval"}}], None),
         ([interaction("i1", "approval")], {"status": "weird"}),
+        ([{"content": {"id": "e1"}}], None),
+        ([{"status": 7, "content": None}], None),
     ],
-    ids=["body_not_object", "interaction_without_id", "unknown_wait_status"],
+    ids=["body_not_object", "interaction_without_id", "unknown_wait_status", "body_without_status", "status_not_string"],
 )
 async def test_malformed_service_answers_become_provider_error(svc, turn, execute_answers, wait_answer):
     svc.execute.side_effect = execute_answers

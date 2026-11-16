@@ -82,31 +82,36 @@ async def _execute_with_interactions(
     transport = ConnectorTransport()
     timeouts = {**DEFAULT_INTERACTION_TIMEOUT, **interaction_timeout}
     deadlines: dict[str, float] = {}  # per kind, shared by every round of this call
+    seen: set[str] = set()
     interaction_id: str | None = None
-    rounds = 0
     while True:
         out = await transport.post(
             "/v1/tools/execute",
             {"name": name, "arguments": args, "call_id": call_id, "interaction_id": interaction_id},
             on_behalf_of=on_behalf_of,
         )
-        if not isinstance(out, dict):
+        if not isinstance(out, dict) or not isinstance(out.get("status"), str):
             raise ConnectorError("Resposta inválida do serviço de conectores", status="provider_error")
-        if out.get("status") != "interaction_required":
+        if out["status"] != "interaction_required":
             return out
-        if rounds == _MAX_INTERACTION_ROUNDS:
-            return {"status": "error", "message": "A ação pediu interações demais com a pessoa e foi interrompida."}
-        rounds += 1
+        if len(seen) == _MAX_INTERACTION_ROUNDS:
+            raise ConnectorError("A ação pediu interações demais com a pessoa e foi interrompida.", status="provider_error")
 
         interaction = out.get("interaction")
         if not isinstance(interaction, dict) or not interaction.get("id"):
             raise ConnectorError("Resposta inválida do serviço de conectores", status="provider_error")
         interaction_id = str(interaction["id"])
+        if interaction_id in seen:  # the service asked again for an interaction this call already resolved
+            raise ConnectorError("O serviço de conectores repetiu uma interação já resolvida.", status="provider_error")
+        seen.add(interaction_id)
         kind = interaction.get("kind")
+        limit = timeouts.get(kind, DEFAULT_INTERACTION_TIMEOUT["approval"])
+        deadline = deadlines.setdefault(kind, _clock() + limit)
+        if _clock() >= deadline:  # no card the person could no longer answer
+            return _timed_out()
         await _emit(AgentEvent(send_type="connector_interaction", data=_card(interaction)))
 
-        limit = timeouts.get(kind, DEFAULT_INTERACTION_TIMEOUT["approval"])
-        status = await _wait(transport, interaction_id, deadlines.setdefault(kind, _clock() + limit), on_behalf_of)
+        status = await _wait(transport, interaction_id, deadline, on_behalf_of)
         if status == "declined":
             return _declined()
         if status == "expired":
