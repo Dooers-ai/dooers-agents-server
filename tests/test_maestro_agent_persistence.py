@@ -1001,3 +1001,54 @@ async def test_the_server_refuses_a_maestro_mode_without_its_configuration(fake)
     object.__setattr__(server._config, "maestro", None)
     with pytest.raises(MaestroConfigurationError, match="MAESTRO_CONFIG_REQUIRED"):
         await server.repository()
+
+
+async def test_get_event_reads_the_channel_data_like_list_events_does(world):
+    """``repository().get_event`` outside a delivery has the thread's channel too: ``data.source`` and ``data.delivery``."""
+    fake = world.fake
+    api = MaestroAgentApi(fake.config())
+    key = "public:link-1:guest:guest:abc123"
+    view = await api.create_thread(
+        external_key=key,
+        channel="dooers-public-chat",
+        channel_meta={"public_chat_label": "Site institucional"},
+        participants=[{"kind": "external", "channel": "public_chat", "external_id": "guest:abc123"}],
+        workspace_id=WORKSPACE_ID,
+    )
+    maestro_id = view["thread_id"]
+    visitor = next(p for p in fake.threads[maestro_id].participants if p["kind"] == "external")
+    actor = {
+        "kind": "external",
+        "external_id": "guest:abc123",
+        "channel": "public_chat",
+        "connection_type": "guest",
+        "participant_id": visitor["participant_id"],
+    }
+    asked = fake.inject_event(maestro_id, "message.created", {"content": [{"type": "text", "text": "Oi"}], "mentions": []}, actor=actor)
+    answered = fake.inject_event(
+        maestro_id,
+        "message.created",
+        {"content": [{"type": "text", "text": "Olá"}], "mentions": []},
+        actor=fake._actor(fake.threads[maestro_id], {"kind": "self"}),
+    )
+    agent = fake._actor(fake.threads[maestro_id], {"kind": "self"})
+    form = fake.inject_event(
+        maestro_id,
+        "form.created",
+        {"message": "Dados", "elements": [], "submit_label": "Enviar", "cancel_label": "Cancelar", "size": "small"},
+        actor=agent,
+    )
+    form_answer = fake.inject_event(
+        maestro_id, "form.responded", {"form_event_id": form["event_id"], "values": {"nome": "Ana"}, "cancelled": False}, actor=actor
+    )
+    repo = world.maestro
+    listed = {event.id: event for event in await repo.list_events({"thread_id": key}, order={"direction": "asc"})}
+    assert listed[form_answer["event_id"]].data["source"] == {"channel": "dooers-public-chat", "public_chat_label": "Site institucional"}
+    source = {"source": {"channel": "dooers-public-chat", "public_chat_label": "Site institucional"}}
+    assert listed[asked["event_id"]].data == source
+    assert listed[answered["event_id"]].data["delivery"]["channel"] == "dooers-public-chat"
+
+    for raw in (asked, answered, form_answer):
+        found = await repo.get_event(raw["event_id"])
+        assert found is not None
+        assert found.model_dump() == listed[raw["event_id"]].model_dump()

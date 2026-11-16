@@ -242,7 +242,11 @@ class _ThreadReads(MaestroExecutionPersistence):
         target = next((raw for raw in folded if raw["event_id"] == raw_id), None)
         if target is None:
             return None  # a removed event or a control event (an edit, a removal)
-        converted = await to_thread_event(target, links=self._memory.links, **self._conversion(list(head["participants"])))
+        # The thread's channel, as ``get_events`` passes it: ``data.source`` of a visitor's message or form answer and
+        # ``data.delivery`` of an assistant message.
+        channel, channel_meta = await self._channel_state(window, events)
+        conversion = self._conversion(list(head["participants"]), channel, channel_meta)
+        converted = await to_thread_event(target, links=self._memory.links, **conversion)
         return None if converted is None else self._expose(converted, target, as_id=as_id)
 
 
