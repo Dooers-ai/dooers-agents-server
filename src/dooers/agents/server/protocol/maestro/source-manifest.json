@@ -1,6 +1,6 @@
 {
   "bundle_manifest": "docs/contracts/generated/v1/bundle-manifest.json",
-  "bundle_manifest_sha256": "a566e0de46c81b9dc077a064d7e3094bc3997be4e7e2adf6b45ade416dba624d",
+  "bundle_manifest_sha256": "1fcf801b1fb98879be885d4c9ec508c7ac52314844fe5415cfeb6379a1f3f0bc",
   "compatibility": {
     "breaking_change": "new explicit contract version and coordinated update of every affected producer/consumer; do not change a pinned artifact in place",
     "capabilities": "presence of a schema is not availability; incomplete domains remain disabled",
@@ -122,7 +122,7 @@
     }
   ],
   "files": {
-    "docs/contracts/README.md": "739cafbf8901336c353e58af9a21b2ca5896bf5d8413c51aed94dbd4b3a2b3c3",
+    "docs/contracts/README.md": "43b06cc61973b8dda36c69a32e8f9decdc21c0c6e3f068dc9524cc7ee9c880e3",
     "docs/contracts/catalog-delivery.json": "ea569fc5237cb65f724fd7dc5512a08dd94d9c6d9e94e44d49aacbb7ec0969f1",
     "docs/contracts/catalog-identity.json": "d1b466a7d86837134b3c54bdccd0885f8637edca9dc88301beb90308805bb9aa",
     "docs/contracts/catalog-public.json": "c72eff03008a55d8785a5e5eb0c0aaf28ac321693624bf6f7ddc323ad128858b",
@@ -132,7 +132,7 @@
     "docs/contracts/fixtures/v1/public-publication.json": "9d5655db25647342fdd2d15051df7c201778784a30a92ff7bc691809d644d9c1",
     "docs/contracts/fixtures/v1/public.json": "3a44a636713ceb055b199ad2201eab5c46e06293b30f4cc90a0acb26046e9f50",
     "docs/contracts/generated/v1/authorization-rules.json": "18a02aec858d070fc6c4c13cf5f02938bd6b9f9091b83d77945d01742e022f75",
-    "docs/contracts/generated/v1/bundle-manifest.json": "a566e0de46c81b9dc077a064d7e3094bc3997be4e7e2adf6b45ade416dba624d",
+    "docs/contracts/generated/v1/bundle-manifest.json": "1fcf801b1fb98879be885d4c9ec508c7ac52314844fe5415cfeb6379a1f3f0bc",
     "docs/contracts/generated/v1/catalog-delivery.json": "6d89c5823a670dc1e0cde51d4b0e37fb259a92ce82afe89c0d1b3b1893d650f5",
     "docs/contracts/generated/v1/catalog-identity.json": "c417f5c5258e203b9b705a8f9780e4f91f6b0b8c5de4ee0fe247cd6317b3c879",
     "docs/contracts/generated/v1/catalog-public.json": "75f87005d1a4a0b6e9424ed1e0d27b7df0c063ec125edbae09c5c29025459c93",
@@ -162,7 +162,7 @@
     "docs/contracts/v1/common.ts": "a527f148c8493aeee6127ee0fae4227f0abdd7e041a4c8a5e511b5d080f23dca",
     "docs/contracts/v1/delivery.ts": "1fb79de2f23e72c7e352a3c8eccabee444bcd5b9e10027176def05bfe3bcfc30",
     "docs/contracts/v1/identity.ts": "bc0cfd1df412dc1a0b980be121921bfbdc9ba4fb6c4fc82f1ad525f4b9cb732f",
-    "docs/contracts/v1/public.ts": "804458de47e6996464b7697bfbe5dc2846abf0d2cbd414e3d9481650a8896e86",
+    "docs/contracts/v1/public.ts": "8199e1f1e34b938268e2512a6b227e5809d1214ae3df3a505b9148746923d42e",
     "docs/contratos-handoff.md": "acc8ab8812b681b9cb53478b322f0d6f9de4cf023ef75684becc4398ce10b9ec",
     "scripts/contracts-manifest.mjs": "42f981cb3a18beda9bde370e4db420f62f5520d6d94b0700e2ce0881e03fbf85"
   },
@@ -379,7 +379,7 @@
   ],
   "required_extensions": ["x-maestro-semantic", "x-maestro-string-length", "x-maestro-url"],
   "schema_version": 1,
-  "source_revision": "sha256:ccf3f35f16bcc05a7ec56a41bc82ca6f7d9325508d80649ef76ed978662da91d",
+  "source_revision": "sha256:196a9d1d734468f19dbd44a29383217fe9c81127e42b5ca355084ed0a9e9d33d",
   "validation": {
     "fixtures": {
       "invalid": 611,
