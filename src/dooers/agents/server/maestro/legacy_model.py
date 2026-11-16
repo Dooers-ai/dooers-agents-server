@@ -182,32 +182,37 @@ def _core_person(person: dict[str, Any], core: dict[str, Any] | None) -> dict[st
 
 
 def _external_user(person: dict[str, Any], core: dict[str, Any] | None) -> User:
-    """The production ``User`` of a channel contact or a public-chat visitor's actor.
+    """The production ``User`` of a channel contact or a public-chat visitor's actor or participant.
 
     A WhatsApp contact's participant (Maestro today) carries nothing beyond the channel contact
-    identity, so without ``core``, or with one that names no one, ``User`` keeps the actor's own
-    declared name, as production always did: ``user_name = person.get("display_name") or None``.
+    identity, so without ``core``, or with one that names no one, ``User`` keeps whatever ``person``
+    (the actor or participant itself) already has of its own — as production always did for the name:
+    ``user_name = person.get("display_name") or None``.
 
     A public-chat visitor's participant (``core``, plan 6 Task 3b/4b's ``ContextResponse.participants``
     external variant) carries the core's own e-mail, identity IDs, the three roles, ``connection_type``
     (``guest`` | ``public_authenticated``) and ``guest_profile`` (the visitor's own pre-chat
-    name/e-mail/phone, declared, not verified by the core). When ``core`` names the person, its own
-    name/e-mail win, else the guest's declared ``guest_profile`` ones, else the actor's own
-    ``display_name`` (kept for a WhatsApp-like core with no name of its own), else ``None`` — never a
-    placeholder.
+    name/e-mail/phone, declared, not verified by the core). ``core`` is ``None`` for every caller today
+    (no one passes the participant separately): ``person`` itself is then the only source, the same
+    fallback ``_core_person`` already gives a human — an actor or participant with its own e-mail,
+    identity IDs, roles, ``connection_type`` or ``guest_profile`` (``to_thread``'s already-enriched
+    ``view["participants"]``) keeps them; a bare message actor (the contract's own ``external`` actor
+    variant carries none of this but ``connection_type``) has none to lose. When ``core`` names the
+    person, its own name/e-mail win, else the guest's declared ``guest_profile`` ones, else the actor's
+    own ``display_name`` (kept for a WhatsApp-like core with no name of its own), else ``None`` — never
+    a placeholder.
     """
-    guest_profile = (core or {}).get("guest_profile") or {}
-    name = (core or {}).get("display_name") or guest_profile.get("name") or person.get("display_name") or None
-    if core is None:
-        return User(user_id=person["external_id"], user_name=name)
-    email = core.get("email") or guest_profile.get("email") or None
-    connection_type = core.get("connection_type") or None
+    source = core if core is not None else person
+    guest_profile = source.get("guest_profile") or {}
+    name = source.get("display_name") or guest_profile.get("name") or person.get("display_name") or None
+    email = source.get("email") or guest_profile.get("email") or None
+    connection_type = source.get("connection_type") or None
     return User(
         user_id=person["external_id"],
         user_name=name,
         user_email=email,
-        identity_ids=list(core.get("identity_ids") or []),
-        **{role: core[role] for role in _ROLES if core.get(role)},
+        identity_ids=list(source.get("identity_ids") or []),
+        **{role: source[role] for role in _ROLES if source.get(role)},
         **({"connection_type": connection_type} if connection_type else {}),
     )
 
