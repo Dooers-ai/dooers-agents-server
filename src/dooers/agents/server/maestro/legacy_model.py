@@ -69,11 +69,12 @@ _AGENT_MEDIA_FIELDS = {
     "audio": ("mime_type", "duration"),
     "document": ("mime_type", "filename"),
 }
-#: Metadata each production part keeps from a Maestro ``media_link`` (a URL the SDK did not upload).
+#: Fields each production part keeps from a Maestro ``media_link`` (a production media part the SDK did not upload): the
+#: ones of that part model (``WireS2C_*Part``), as the agent wrote them.
 _MEDIA_LINK_FIELDS = {
-    "image": ("mime_type", "filename", "alt"),
-    "audio": ("mime_type", "filename", "duration"),
-    "document": ("mime_type", "filename"),
+    "image": ("url", "mime_type", "filename", "alt", "width", "height", "ref_id"),
+    "audio": ("url", "mime_type", "filename", "duration", "ref_id"),
+    "document": ("url", "mime_type", "filename", "size_bytes", "ref_id"),
 }
 #: ``HandlerPipeline.execute`` (send_type ``form``): known elements go through these models.
 _FORM_ELEMENTS = {
@@ -358,7 +359,7 @@ async def _part(part: dict[str, Any], links: LinkResolver, *, agent: bool = Fals
         )
     if kind == "media_link":
         family = part["kind"]
-        return _MEDIA_PARTS[family](url=part["url"], **{key: part[key] for key in _MEDIA_LINK_FIELDS[family] if key in part})
+        return _MEDIA_PARTS[family](**{key: part[key] for key in _MEDIA_LINK_FIELDS[family] if key in part})
     if kind == "attachment":
         family = _media_family(part.get("mime_type"))
         url = await links.url_for(part["artifact_id"])

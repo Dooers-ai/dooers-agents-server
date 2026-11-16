@@ -643,7 +643,8 @@ Cada `send.*` de produção grava uma saída (`outputs.output_for`, índice 4.4)
 `send.image`/`audio`/`document` baixam a URL (`fetch_media`) e enviam o arquivo como
 artefato; se o download falha, o tipo sai da política de produção ou o Maestro recusa
 o arquivo, ou se o upload passa do tempo ou o Maestro está indisponível (5xx), a mensagem
-leva a parte `media_link` com a URL original e um log `warning` com o motivo. O tempo do
+leva a parte `media_link` com a URL e os campos de mídia como vieram (qualquer texto de URL,
+como em produção) e um log `warning` só com o motivo. O tempo do
 upload cresce com o tamanho do arquivo (1 MiB/s), com `artifact_timeout_seconds` como piso.
 A parte enviada usa o `mime_type` que o Maestro gravou (MIME canônico), não o declarado.
 Uma URL `data:` é decodificada no local (base64 tolerante como nos navegadores, ou
@@ -691,11 +692,14 @@ Recibo de saída: `message.create` e os eventos de conteúdo (`reasoning`, `tool
 `run.update` e `message.update`, o Maestro pode normalizar o valor: a saída já está gravada,
 o valor gravado vale e o sink grava um log `warning`.
 
-Divergência da produção: o contrato só aceita `http`/`https` na parte `media_link`.
-Com uma URL `data:` recusada (malformada, grande demais ou fora da política de tipo) ou
-com outro esquema (`ftp:`, `file:` e outros), não há `media_link` possível: a execução
-falha com `handler_contract_error`. Em produção, `send.image`/`audio`/`document` só
-guardam a URL e nunca falham por causa dela. Recursos
+Como em produção, `send.image`/`audio`/`document` nunca falham por causa da URL: uma URL
+`data:` recusada (malformada, grande demais ou fora da política de tipo) ou de outro esquema
+(`ftp:`, `file:` e outros) fica no `media_link` como veio. `send.update_user_event` converte as
+partes de produção (`deserialize_s2c_part`): mídia vira `media_link` com todos os campos da parte
+(`url`, `ref_id`, `mime_type`, `filename`, `alt`, `duration`, `width`, `height`, `size_bytes`) e o
+contato sem nome fica com `display_name` `""`. O `event_id` pode ser o id do Maestro ou o id do SDK
+que o agente deu ao publicar; sem evento, o Maestro responde NOT_FOUND e o handler continua (a
+produção só registra um aviso). Recursos
 privados RAG/WhatsApp/settings/analytics continuam vinculados pela camada E05-07.
 `AgentSend` e o pipeline legado não foram alterados por E05-08.
 
@@ -743,6 +747,8 @@ Regras:
   escolheu, ou o id do Maestro. A thread de chat público tem uma `external_key` do próprio
   Maestro (`public:...`), que nunca aparece: ela mostra o id do Maestro, como a produção mostra
   um id comum. Dentro de uma entrega vale a mesma regra (`external_key` do contexto da thread).
+  A chave não tem teto, como o `thread_id` de produção. Uma chave que não cabe numa URL (mais de
+  2048 caracteres codificados) é achada pelo MD5 (`external_key_md5`) e o caminho leva o id do Maestro.
 - **Id do evento.** `create_event` manda o id do SDK como `client_event_id`. `get_event` e
   `remove_event` aceitam esse id ou o `event_id` do Maestro. Um evento que o handler produziu
   não tem id do SDK: seu id é o `event_id` do Maestro, o mesmo que `list_events` e
@@ -786,17 +792,17 @@ Diferenças declaradas (produção -> Maestro):
 - `create_thread` com uma `external_key` que já existe devolve a thread (o Maestro não duplica);
   produção falha com chave duplicada. `create_event` numa thread que não existe levanta erro.
 - `create_event` publica só `message`: `assistant` como o agente e `user` como o humano de
-  `event.user` (partes de texto, contato e arquivo por URL http ou https). Estas entradas levantam
+  `event.user` (partes de texto, contato e mídia: a parte de mídia vira `media_link` com todos os
+  campos, qualquer URL ou só `ref_id`). Estas entradas levantam
   `MaestroAgentUnsupported` (a falha é alta, nada é gravado):
   - `actor="user"` sem pessoa (`user.user_id` vazio);
   - `actor="system"` ou `actor="tool"`;
   - tipo diferente de `message` (`reasoning`, `tool.*`, `form`, `chart`, `thread.update`, ...);
-  - mensagem só com `data` (sem parte de conteúdo);
-  - parte de arquivo sem URL, como um `ref_id` de upload fora do `dispatch`.
+  - mensagem só com `data` (sem parte de conteúdo).
   Nenhum caminho interno do SDK chama `Repository.create_event`: o pipeline, o router e o broadcast
   usam a persistência local. A decisão está aberta: fechar essas entradas precisa de uma rota de
-  publicação do Maestro para mensagens de sistema ou sem pessoa. Um arquivo por URL volta como
-  `media_link`: sem `size_bytes`, `width`, `height` e `ref_id`.
+  publicação do Maestro para mensagens de sistema ou sem pessoa. Uma parte de mídia volta igual:
+  o `media_link` guarda `url`, `ref_id`, `size_bytes`, `width`, `height` e os outros campos.
 - Sem rota no Maestro: `update_event`, `create_run`, `update_run` e `upsert_thread_participant`
   levantam `MaestroAgentUnsupported`. `list_runs` sem `thread_id` lê as threads do agente, uma
   rota por thread, até 1000 threads (`MaestroAgentLimitError`).
@@ -847,15 +853,14 @@ produção mantêm assinatura e retorno. O código está em `maestro/ingress.py`
 - **Arquivos.** O SDK resolve as partes com o código de produção (mesmos erros). Uma parte com
   `ref_id` ou com bytes vira artefato (`upload_artifact`) e a parte `attachment` leva o MIME que o
   Maestro devolve. Uma parte com URL é baixada (`fetch_media`) e enviada. Se o download, a política
-  de tipo ou o envio falham, a parte é `media_link` (só `http` e `https`).
+  de tipo ou o envio falham, a parte é `media_link` com a URL como veio (qualquer esquema).
 
 Diferenças declaradas (produção -> Maestro):
 
 - Os horários são os do Maestro. `Thread.users` lista o agente junto do contato, na ordem de
   entrada: em thread de canal o agente pode vir antes do contato.
 - Uma parte de arquivo lida de volta tem o id do artefato como `ref_id`, o link temporário como
-  `url` e o MIME do Maestro. Produção guarda o id local, sem `url`. Uma parte `media_link` não
-  tem `ref_id` nem `size_bytes`.
+  `url` e o MIME do Maestro. Produção guarda o id local, sem `url`.
 - O `author` informado em `ingest` de um usuário não é gravado: o autor vem da pessoa.
 - `ingest(actor=...)` que falha na validação de produção não grava nada no Maestro. Produção já
   criou a thread vazia.
@@ -863,10 +868,9 @@ Diferenças declaradas (produção -> Maestro):
   e sem enriquecimento pelos metadados de visitante (plano 6).
 - Levantam `MaestroAgentUnsupported`, antes de qualquer chamada ao Maestro e antes de consumir um
   `ref_id`: canal sem contato externo no Maestro (só `whatsapp` e `dooers-public-chat`), pessoa sem
-  `user_id` (sem `from_e164` num canal), parte de mídia sem arquivo e sem URL (`ref_id`, bytes e
-  URL ausentes: não há o que publicar) e URL que não é `http`, `https` nem `data:`. Uma URL
-  `data:` que não decodifica levanta o mesmo erro, também antes de qualquer chamada (depois de
-  ler os arquivos; eles voltam ao `UploadStore`). Um arquivo de `ref_id` ou de bytes que o Maestro
+  `user_id` (sem `from_e164` num canal) e parte de mídia sem arquivo e sem URL (`ref_id`, bytes e
+  URL ausentes: não há o que publicar). Uma URL que não é `http` nem `https`, ou uma URL `data:`
+  que não decodifica, fica no `media_link` como veio, como em produção. Um arquivo de `ref_id` ou de bytes que o Maestro
   recusa (tipo fora da política, tamanho) levanta `MaestroAgentApiError` `REQUEST_INVALID` nas
   mesmas condições (sem URL para cair em `media_link`). Os testes afirmam que nenhuma requisição
   foi feita.

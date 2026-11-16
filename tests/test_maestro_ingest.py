@@ -487,13 +487,14 @@ async def test_ingest_media_url_that_cannot_be_uploaded_becomes_a_media_link(wor
     "url",
     ["ftp://files.example.com/foto.png", "data:image/png;base64,@@@@", "file:///etc/passwd"],
 )
-async def test_ingest_media_url_that_can_only_fail_is_unsupported_before_any_write(world, url):
-    """A URL that is neither http(s) nor a data URL that decodes cannot be a ``media_link``: nothing reaches Maestro."""
+async def test_ingest_media_url_that_cannot_be_fetched_keeps_the_url(world, url):
+    """Production stores any URL text: one that is neither http(s) nor a data URL that decodes is a ``media_link`` as it came."""
     content = [{"type": "image", "url": url, "filename": "foto.png"}]
     with media_served():
-        with pytest.raises(MaestroAgentUnsupported):
-            await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-ftp", actor="user", content=content, **COMMON)
-    assert world.fake.requests == [] and world.fake.threads == {}
+        await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-ftp", actor="user", content=content, **COMMON)
+    assert world.fake.artifacts == {}
+    (part,) = world.maestro_thread("t-ftp").events[-1]["payload"]["content"]
+    assert part == {"type": "media_link", "kind": "image", "url": url, "filename": "foto.png"}
 
 
 async def test_ingest_file_outside_the_maestro_policy_is_refused_before_any_write_and_keeps_the_file(world):

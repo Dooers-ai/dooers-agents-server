@@ -101,6 +101,23 @@ async def test_create_find_get_list_update_delete_thread(api, fake):
     assert deleted["state"] == "deleting"
 
 
+async def test_a_key_too_long_for_a_url_is_found_by_its_md5_and_the_path_carries_the_maestro_id(api, fake):
+    """Production takes any thread_id: a key longer than a URL can carry goes by ``external_key_md5`` and the Maestro id."""
+    key = "wa:inst:i1:" + "k" * 5000 + "😀"
+    thread = await _thread(api, external_key=key)
+    fake.requests.clear()
+    assert (await api.find_thread(key))["thread_id"] == thread["thread_id"]
+    assert (await api.get_thread(key))["external_key"] == key
+    renamed = await api.update_thread(key, title="Novo")
+    assert renamed["title"] == "Novo"
+    await _message(api, key)
+    # No request carries the key: the lookups use its MD5 and the paths the Maestro id.
+    assert all(key not in request.path and key not in str(request.query) for request in fake.requests)
+    assert {request.path for request in fake.requests} >= {f"/api/v1/agent/threads/{thread['thread_id']}"}
+    with pytest.raises(MaestroAgentNotFound):
+        await api.get_thread(key + "x")
+
+
 async def test_list_threads_pages_with_cursor(api):
     for number in range(3):
         await _thread(api, external_key=f"k{number}")

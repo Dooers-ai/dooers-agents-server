@@ -48,13 +48,9 @@ from dooers.agents.server.protocol.maestro import default_contracts
 from dooers.agents.server.repository import Repository
 from dooers.agents.server.server import AgentServer
 from tests.maestro_conformance_support import (
-    LONG_TEXT,
     Divergence,
     Refusal,
     SpyContracts,
-    ids,
-    is_declared_ceiling,
-    prefixed,
 )
 from tests.parity.fake_agent_api import AGENT_ID, ORGANIZATION_ID, WORKSPACE_ID, FakeAgentApi
 from tests.parity.memory_persistence import MemoryPersistence
@@ -336,94 +332,26 @@ def outcomes() -> dict[str, Outcome]:
 
 
 # --- what this guard found and nobody fixed yet -------------------------------------------------------------------------------
+#
+# Every group the guard found (D01-D12) is fixed except one case of D03, stopped by a decision of the design: the person of a
+# Maestro thread (the owner of Repository.create_thread and the user of AgentServer.ingest) is a principal the core authorizes,
+# and a production user_id that cannot be a core principal (longer than 256 characters or with a control character) is a
+# person the core does not know. The contract takes the value; Maestro answers what the core would (403 scope_mismatch). A
+# fix needs a person in a Maestro thread that is not a core principal, which the design does not have. The user decides.
+# Any entry runs as ``xfail(strict=True)`` and is never a permanent difference.
 
-_USER_WRITERS = frozenset({"Repository.create_event", "AgentServer.ingest"})
-_PERSON_WRITERS = frozenset({"Repository.create_event", "AgentServer.ingest", "Repository.create_thread"})
-_USER = "User (models.py:391-401, free str and list[str] fields, stored in JSONB)"
-
-
-def _long(field: str) -> Any:
-    return prefixed(f"{field}=long", f"{field}=huge")
-
+_NOT_CORE_PRINCIPAL = ("user_id=long", "user_id=long-unicode", "user_id=huge", "user_id=huge-unicode", "user_id=control-chars")
 
 DIVERGENCES: list[Divergence] = [
     Divergence(
-        _PERSON_WRITERS,
+        frozenset({"Repository.create_thread", "AgentServer.ingest"}),
         "user",
-        _long("user_id"),
+        lambda sample_id: sample_id in _NOT_CORE_PRINCIPAL,
         None,
-        f"{_USER}: user_id longer than 256 characters; Maestro opaquePrincipalSchema is 1 to 256 characters (common.ts:5-10), used by "
-        "the owner of"
-        " a thread and by the actor of a message",
-    ),
-    Divergence(
-        _PERSON_WRITERS,
-        "user",
-        ids("user_id=control-chars"),
-        None,
-        f"{_USER}: user_id with control characters; Maestro opaquePrincipalSchema refuses \\u0000-\\u001f and \\u007f (common.ts:10)",
-    ),
-    Divergence(
-        _USER_WRITERS,
-        "user",
-        _long("user_name"),
-        None,
-        f"{_USER}: user_name longer than 200 characters; Maestro displayNameSchema max 200 (common.ts:67), used by the actor display_name",
-    ),
-    Divergence(
-        _USER_WRITERS,
-        "user",
-        _long("user_email"),
-        None,
-        f"{_USER}: user_email longer than 320 characters; Maestro humanContact.email max 320 (public.ts:458)",
-    ),
-    Divergence(
-        _USER_WRITERS,
-        "user",
-        ids("identity_ids=empty-item", "identity_ids=long-item", "identity_ids=huge-item", "identity_ids=many"),
-        None,
-        f"{_USER}: an empty or long identity id, or more than 256; Maestro humanContact.identity_ids items 1 to 256 characters, at "
-        "most 256 (public.ts:459)",
-    ),
-    Divergence(
-        frozenset({"Repository.create_event"}),
-        "author",
-        LONG_TEXT,
-        None,
-        "ThreadEvent.author str | None (models.py:499, TEXT column); Maestro agentMessageFields.author max 200 (public.ts:189)",
-    ),
-    Divergence(
-        frozenset({"Repository.create_event"}),
-        "run_id",
-        lambda sample_id: sample_id not in {"none", "omitted"},
-        None,
-        "ThreadEvent.run_id str | None (models.py:496, TEXT column events.run_id); Maestro agentMessageFields.run_id must be a UUID "
-        "(public.ts:181,192):"
-        " a run id that is not a UUID (the same class as the free-text Run.agent_id)",
-    ),
-    Divergence(
-        frozenset({"Repository.create_event", "AgentServer.ingest"}),
-        "content",
-        prefixed("[contact:display_name=long", "[contact:display_name=huge"),
-        None,
-        "ContactPart.display_name str (models.py:235-239); Maestro contactPart.display_name max 512 (public.ts:129-134)",
-    ),
-    Divergence(
-        frozenset({"Repository.create_event"}),
-        "content",
-        ids("[contact:display_name=empty]", "[contact:display_name=omitted]"),
-        None,
-        "WireS2C_ContactPart.display_name defaults to '' (models.py:235-239), a contact with no name is a production value; the SDK raises"
-        " MaestroAgentUnsupported 'a contact part without an http(s) URL' (agent_persistence.py:277 tests `part.display_name`, so the empty"
-        " name falls in the file branch); the contract accepts an empty display_name (public.ts:131). README does not list this case",
-    ),
-    Divergence(
-        frozenset({"AgentServer.ingest"}),
-        "thread_id",
-        LONG_TEXT,
-        None,
-        "ingest(thread_id: str | None) is the thread id the caller chose, any text (server.py:563-570, ThreadEvent.thread_id TEXT);"
-        " Maestro keeps it as external_key, 1 to 512 characters (public.ts:610)",
+        "User.user_id is any text in production (models.py:391-401, JSONB); in Maestro the owner of the thread and the user of"
+        " ingest are core principals (Public.AgentThreadCreateRequest takes the value; agent-api/threads.ts answers 403"
+        " scope_mismatch, the core's answer for a person it does not know: opaquePrincipalSchema, common.ts:5-10)",
+        blocked_by="the person of a Maestro thread is a principal the core authorizes; access rules equal to legacy, 22/10/2026",
     ),
 ]
 
@@ -434,7 +362,7 @@ CASES = build_cases()
 def _marks(case: Case) -> list[Any]:
     for divergence in DIVERGENCES:
         if divergence.matches(case.function.name, case.param, case.sample.id, ""):
-            return [pytest.mark.xfail(strict=True, reason=f"divergência real, a corrigir: {divergence.reason}")]
+            return [pytest.mark.xfail(strict=True, reason=divergence.mark_reason())]
     return []
 
 
@@ -446,12 +374,11 @@ def _failure(case: Case, outcome: Outcome) -> str:
 
 
 #: The inputs the Maestro README declares ``MaestroAgentUnsupported`` ("Diferenças declaradas", "ingest e chat_upload pela API do agente"):
-#: a type other than ``message``; an actor without a person; a file part without an http(s) URL; a message without a part; a channel
+#: a type other than ``message``; an actor without a person; a message without a part; a channel
 #: without an external contact; a person without an id. Any other ``MaestroAgentUnsupported`` is a divergence, not a declared difference.
 DECLARED_UNSUPPORTED = re.compile(
     r"create_event: type '.+' has no route in the agent API \(only 'message'\)"
     r"|create_event: actor '.+' without a person cannot be published"
-    r"|create_event: a '(image|audio|document)' part without an http\(s\) URL"
     r"|create_event: a message needs at least one part"
     r"|ingest: channel '.*' has no external contact in the agent API"
     r"|ingest: a message of a person without user_id"
@@ -479,9 +406,6 @@ def test_production_value_is_valid_for_the_maestro_contract(outcomes: dict[str, 
             pytest.xfail(f"declared, MaestroAgentUnsupported (Maestro README, Diferenças declaradas): {outcome.detail}")
         if _declared_server_queue(case, outcome):
             pytest.xfail("declared: update_thread takes any queue text and the server decides (Maestro README, Diferenças declaradas)")
-        ceiling = is_declared_ceiling(case.sample.id, outcome.refusals[-1] if outcome.refusals else None)
-        if ceiling is not None:
-            pytest.xfail(f"declared ceiling, permanent: {ceiling.why}")
     assert outcome.ok, _failure(case, outcome)
 
 

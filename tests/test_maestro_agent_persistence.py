@@ -34,6 +34,7 @@ from dooers.agents.server.protocol.models import (
     Thread,
     ThreadEvent,
     User,
+    WireS2C_ContactPart,
     WireS2C_DocumentPart,
     WireS2C_ImagePart,
     WireS2C_TextPart,
@@ -791,8 +792,6 @@ async def test_what_the_agent_api_cannot_write_is_refused_loudly(world):
             await repo.create_event(thread.id, kind, actor, content=content, data={"id": "t"})
     with pytest.raises(MaestroAgentUnsupported):  # a user message needs a person
         await repo.create_event(thread.id, "message", "user", content=[WireS2C_TextPart(text="x")])
-    with pytest.raises(MaestroAgentUnsupported):  # a file part without a URL (a WebSocket upload) has nothing to publish
-        await repo.create_event(thread.id, "message", "assistant", content=[WireS2C_ImagePart(ref_id="up-1")])
     assert fake.requests == []
     for call in (world.maestro_db.update_event, world.maestro_db.create_run, world.maestro_db.update_run):
         with pytest.raises(MaestroAgentUnsupported):
@@ -806,6 +805,20 @@ async def test_a_link_part_round_trips_as_a_media_link(world):
     await repo.create_event(thread.id, "message", "assistant", content=[WireS2C_TextPart(text="Veja"), part])
     (event,) = await repo.list_events({"thread_id": thread.id})
     assert event.content == [WireS2C_TextPart(text="Veja"), part]
+
+
+async def test_a_production_media_part_round_trips_whatever_its_url(world):
+    """Production stores the part as it came: no URL (a WebSocket upload ``ref_id``), any URL text, any integer."""
+    repo = world.maestro
+    thread = await repo.create_thread(AGENT_ID, ORGANIZATION_ID, WORKSPACE_ID, user=ANA)
+    parts = [
+        WireS2C_ImagePart(ref_id="up-1", width=2**63 - 1, height=-1, alt="😀" * 1000),
+        WireS2C_DocumentPart(url="valor", filename="pasta/arquivo\\nome", mime_type="dooers-assistant", size_bytes=-1),
+        WireS2C_ContactPart(),
+    ]
+    await repo.create_event(thread.id, "message", "assistant", content=parts)
+    (event,) = await repo.list_events({"thread_id": thread.id})
+    assert event.content == parts
 
 
 async def test_history_beyond_the_page_limit_is_a_loud_error(fake):

@@ -269,8 +269,8 @@ def _user(actor: dict[str, Any], participants: list[dict[str, Any]]) -> User:
 
 
 def _url_part(part: dict[str, Any]) -> AudioPart | ImagePart | DocumentPart:
-    """``media_link``: the production URL-only part of the same kind (no bytes)."""
-    url, mime_type = part["url"], part.get("mime_type")
+    """``media_link``: the production URL-only part of the same kind (no bytes), with the metadata the agent wrote."""
+    url, mime_type = part.get("url"), part.get("mime_type")
     if part["kind"] == "audio":
         return AudioPart(
             data=b"",
@@ -280,9 +280,20 @@ def _url_part(part: dict[str, Any]) -> AudioPart | ImagePart | DocumentPart:
             url=url,
         )
     if part["kind"] == "image":
-        return ImagePart(data=b"", mime_type=mime_type or "image/*", filename=part.get("filename"), url=url)
+        return ImagePart(
+            data=b"",
+            mime_type=mime_type or "image/*",
+            width=part.get("width"),
+            height=part.get("height"),
+            filename=part.get("filename"),
+            url=url,
+        )
     return DocumentPart(
-        data=b"", mime_type=mime_type or "application/octet-stream", filename=part.get("filename") or "file", size_bytes=0, url=url
+        data=b"",
+        mime_type=mime_type or "application/octet-stream",
+        filename=part.get("filename") or "file",
+        size_bytes=part.get("size_bytes") or 0,
+        url=url,
     )
 
 

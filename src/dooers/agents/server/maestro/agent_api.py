@@ -263,9 +263,25 @@ class MaestroAgentApi:
         )
 
     async def find_thread(self, external_key: str) -> dict[str, Any] | None:
-        """The agent's thread with this ``external_key``, or ``None`` (``GET /agent/threads?external_key=``)."""
-        page = await self.list_threads(external_key=external_key, limit=1)
-        return page["items"][0] if page["items"] else None
+        """The agent's thread with this ``external_key``, or ``None`` (``GET /agent/threads?external_key=``).
+
+        A key too long for a URL (production takes any ``thread_id``) is found by its MD5 (``external_key_md5``) and then
+        compared whole.
+        """
+        if _fits_url(external_key):
+            page = await self.list_threads(external_key=external_key, limit=1)
+            return page["items"][0] if page["items"] else None
+        page = await self.list_threads(external_key_md5=_key_md5(external_key), limit=1)
+        return next((item for item in page["items"] if item.get("external_key") == external_key), None)
+
+    async def _thread_ref(self, thread_id: str) -> str:
+        """The ``thread_id`` a path can carry: the caller's key itself, or the Maestro id of a key too long for a URL."""
+        if _fits_url(thread_id):
+            return thread_id
+        view = await self.find_thread(thread_id)
+        if view is None:
+            raise _missing("NOT_FOUND", status=404)
+        return view["thread_id"]
 
     async def list_threads(
         self,
@@ -275,13 +291,14 @@ class MaestroAgentApi:
         order: str | None = None,
         queue: str | None = None,
         external_key: str | None = None,
+        external_key_md5: str | None = None,
     ) -> dict[str, Any]:
         """``GET /agent/threads``: ``Public.AgentThreadPage`` of the threads of the agent in the token scope.
 
-        Filters of the server: ``external_key``, ``queue`` (``""`` = no queue), ``order`` (``asc``/``desc`` of the
-        last activity), ``cursor``, ``limit`` (1 to 999).
+        Filters of the server: ``external_key`` (or ``external_key_md5``, the MD5 of a key too long for a URL),
+        ``queue`` (``""`` = no queue), ``order`` (``asc``/``desc`` of the last activity), ``cursor``, ``limit`` (1 to 999).
         """
-        query = _query(cursor=cursor, limit=limit, order=order, queue=queue, external_key=external_key)
+        query = _query(cursor=cursor, limit=limit, order=order, queue=queue, external_key=external_key, external_key_md5=external_key_md5)
         return await self._call(
             "GET",
             "/agent/threads",
@@ -655,6 +672,12 @@ class MaestroAgentApi:
         check: Callable[[Any], Any] | None = None,
     ) -> Any:
         """One request: validate the request, call, validate the answer. ``route`` is the log name (no ids)."""
+        if len(segments) > 1 and segments[0] == "threads" and not _fits_url(segments[1]):
+            # A caller key too long for a URL: the path carries the Maestro id of its thread.
+            resolved = await self._thread_ref(segments[1])
+            if path_schema is not None and path_schema[1].get("id") == segments[1]:
+                path_schema = (path_schema[0], {**path_schema[1], "id": resolved})
+            segments = ("threads", resolved, *segments[2:])
         if path_schema is not None:
             self._validate(*path_schema, response=False)
         if query_schema is not None:
@@ -683,6 +706,9 @@ class MaestroAgentApi:
                         content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
         except MaestroAgentApiError:
             raise
+        except httpx.InvalidURL:
+            # A query value too long for a URL (httpx refuses it before sending): nothing was sent.
+            raise MaestroAgentApiError("REQUEST_INVALID") from None
         except (TimeoutError, httpx.HTTPError, OSError):
             logger.warning("maestro agent api %s: transport failure", route)
             raise MaestroAgentApiError("TRANSPORT_UNAVAILABLE", retryable=True) from None
@@ -731,6 +757,20 @@ class MaestroAgentApi:
             retry_after_seconds=details.get("retry_after_seconds"),
             request_id=error["request_id"],
         )
+
+
+#: A caller key (``external_key``) longer than this, percent-encoded, does not go in a URL: Maestro's HTTP server takes 16 KiB
+#: for the request line and the headers together (Node.js ``maxHeaderSize``), and the token is a header too.
+_URL_KEY_MAX = 2048
+
+
+def _fits_url(value: str) -> bool:
+    return len(quote(value, safe="")) <= _URL_KEY_MAX
+
+
+def _key_md5(value: str) -> str:
+    """``external_key_md5``: the MD5 of the UTF-8 bytes, as Maestro's ``md5(external_key)``."""
+    return hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _is_uuid(value: str) -> bool:

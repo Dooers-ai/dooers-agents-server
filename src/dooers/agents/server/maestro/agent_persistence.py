@@ -49,6 +49,7 @@ from dooers.agents.server.thread_queue import is_unqueued_list_filter
 from .agent_api import MaestroAgentApi, MaestroAgentApiError, MaestroAgentMissing
 from .legacy_model import DEFAULT_ASSISTANT_NAME, fold_events, to_thread, to_thread_event
 from .links import LinkResolver
+from .outputs import UnsupportedAgentEvent, production_part
 from .persistence import MaestroExecutionPersistence
 from .window import MaestroHistoryLimitError
 
@@ -57,11 +58,6 @@ if TYPE_CHECKING:
 
 #: Threads a ``list_runs`` without a thread reads (the route is per thread): more is ``MaestroAgentLimitError``.
 MAX_RUN_SWEEP_THREADS = 1000
-_MEDIA_FIELDS = {
-    "image": ("mime_type", "filename", "alt"),
-    "audio": ("mime_type", "filename", "duration"),
-    "document": ("mime_type", "filename"),
-}
 
 
 class MaestroAgentUnsupported(NotImplementedError):
@@ -269,26 +265,15 @@ def callers_key(view: Mapping[str, Any]) -> str | None:
 
 
 def _content(parts: Iterable[Any] | None) -> list[dict[str, Any]]:
-    """The parts of a production message as the agent API takes them: text, a contact or a file by URL."""
-    content: list[dict[str, Any]] = []
-    for part in parts or []:
-        if part.type == "text":
-            content.append({"type": "text", "text": part.text})
-        elif part.type == "contact" and part.display_name:
-            contact: dict[str, Any] = {"type": "contact", "display_name": part.display_name}
-            if part.vcard is not None:
-                contact["vcard"] = part.vcard
-            if part.phones:
-                contact["phones"] = deepcopy(part.phones)
-            content.append(contact)
-        elif part.type in _MEDIA_FIELDS and isinstance(part.url, str) and part.url.lower().startswith(("https://", "http://")):
-            link: dict[str, Any] = {"type": "media_link", "kind": part.type, "url": part.url}
-            link.update({name: getattr(part, name) for name in _MEDIA_FIELDS[part.type] if getattr(part, name) is not None})
-            content.append(link)
-        else:
-            raise MaestroAgentUnsupported(
-                f"create_event: a {part.type!r} part without an http(s) URL cannot be published through the agent API"
-            )
+    """The parts of a production message as the agent API takes them: text, a contact or a media part.
+
+    The same conversion as ``send.update_user_event`` (``production_part``): a contact with no name keeps the production
+    default ``""``; a media part is a ``media_link`` with the URL and every field it has, whatever the URL text.
+    """
+    try:
+        content = [production_part(part) for part in parts or []]
+    except UnsupportedAgentEvent as error:
+        raise MaestroAgentUnsupported(f"create_event: {error}") from None
     if not content:
         raise MaestroAgentUnsupported("create_event: a message needs at least one part")
     return content

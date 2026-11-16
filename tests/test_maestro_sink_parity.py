@@ -330,19 +330,22 @@ async def test_png_data_url_is_uploaded_as_attachment(private_key, contracts):
     ],
     ids=["data_oversized", "data_malformed", "data_policy", "ftp"],
 )
-async def test_refused_non_http_media_url_fails_the_run(private_key, contracts, caplog, url, config_change):
+async def test_non_http_media_url_that_cannot_be_uploaded_keeps_the_url(private_key, contracts, caplog, url, config_change):
+    """Production keeps any URL text the handler gives; the message carries it in a ``media_link`` and the run goes on."""
     async with setup(private_key, contracts, config_change=config_change) as fixture:
 
         async def handler(_on, send, *_args):
-            yield send.image(url)
+            yield send.image(url, mime_type="image/png")
 
         with caplog.at_level(logging.WARNING, logger=sink_module.__name__):
             response = await execute_fixture(fixture, handler)
         assert response.status_code == 200
-        assert (response.json()["state"], fixture.completions[-1]["reason_code"]) == ("failed", "handler_contract_error")
-        assert not fixture.outputs and not fixture.artifacts
+        assert response.json()["state"] == "responded"
+        assert not fixture.artifacts
+        (output,) = published(fixture)
+        assert output["payload"]["content"] == [{"type": "media_link", "kind": "image", "url": url, "mime_type": "image/png"}]
         (record,) = [r for r in caplog.records if r.name == sink_module.__name__]
-        assert "base64" not in record.getMessage() and "TVo" not in record.getMessage()
+        assert "base64" not in record.getMessage() and "TVo" not in record.getMessage() and "example.com" not in record.getMessage()
 
 
 RULE_REFUSALS = {
@@ -789,7 +792,8 @@ async def test_unavailable_upload_becomes_media_link(private_key, contracts, loo
         assert any("upload_unavailable" in r.getMessage() for r in caplog.records if r.name == sink_module.__name__)
 
 
-async def test_unavailable_upload_of_a_data_url_fails_the_run(private_key, contracts):
+async def test_unavailable_upload_of_a_data_url_keeps_the_url(private_key, contracts):
+    """Production stores the ``data:`` URL as it came; when the upload is unavailable the ``media_link`` keeps it."""
     async with setup(private_key, contracts) as fixture:
         fixture.status["artifacts"] = 503
         url = "data:image/png;base64," + base64.b64encode(PNG).decode()
@@ -798,8 +802,9 @@ async def test_unavailable_upload_of_a_data_url_fails_the_run(private_key, contr
             yield send.image(url)
 
         response = await execute_fixture(fixture, handler)
-        assert (response.json()["state"], fixture.completions[-1]["reason_code"]) == ("failed", "handler_contract_error")
-        assert not fixture.outputs
+        assert response.json()["state"] == "responded"
+        (output,) = published(fixture)
+        assert output["payload"]["content"] == [{"type": "media_link", "kind": "image", "url": url}]
 
 
 async def test_upload_timeout_scales_with_the_file_size(private_key, contracts):
@@ -815,3 +820,36 @@ async def test_upload_timeout_scales_with_the_file_size(private_key, contracts):
         assert artifacts._operation("artifact.upload", size=20 * 1048576) == pytest.approx(20)
         assert artifacts._operation("artifact.upload", size=26214400) <= client._check_current()
         client.close()
+
+
+async def test_update_user_event_takes_the_production_parts_as_they_come(private_key, contracts):
+    """``send.update_user_event``: the wire parts of production (``deserialize_s2c_part``) become Maestro parts with every
+    field: a media part is a ``media_link`` (production keeps the URL and the metadata), a contact keeps its default name."""
+    async with setup(private_key, contracts) as fixture:
+
+        async def handler(on, send, *_args):
+            yield send.update_user_event(
+                "sdk-evento-1",
+                [
+                    {"type": "text", "text": ""},
+                    {"type": "image", "url": "https://cdn.example.com/a.png", "width": 2**63 - 1, "alt": "Foto"},
+                    {"type": "audio", "ref_id": "up-1", "duration": -1.5},
+                    {"type": "document", "url": "valor", "filename": "pasta/arquivo", "size_bytes": 10},
+                    {"type": "contact", "vcard": None},
+                ],
+            )
+
+        response = await execute_fixture(fixture, handler)
+        assert response.status_code == 200, response.text
+        (output,) = published(fixture)
+        assert output["type"] == "message.update"
+        assert output["payload"] == {
+            "event_id": "sdk-evento-1",
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "media_link", "kind": "image", "url": "https://cdn.example.com/a.png", "alt": "Foto", "width": 2**63 - 1},
+                {"type": "media_link", "kind": "audio", "duration": -1.5, "ref_id": "up-1"},
+                {"type": "media_link", "kind": "document", "url": "valor", "filename": "pasta/arquivo", "size_bytes": 10},
+                {"type": "contact", "display_name": ""},
+            ],
+        }

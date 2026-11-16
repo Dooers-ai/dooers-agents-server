@@ -72,6 +72,13 @@ _ERRORS = {
     "UNSUPPORTED_CAPABILITY": (422, False),
     "DEPENDENCY_UNAVAILABLE": (503, True),
 }
+
+
+def _is_core_principal(value: str) -> bool:
+    """``opaquePrincipalSchema`` of the Maestro contract (``common.ts``): 1 to 256 characters, no control character."""
+    return 1 <= len(value) <= 256 and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
+
+
 _CORE_PERSON_FIELDS = ("display_name", "email", "identity_ids", "system_role", "organization_role", "workspace_role")
 _STATUS_RANK = {"accepted": 1, "sent": 1, "delivered": 2, "read": 3, "failed": 4}
 #: Content events the agent removes (``removableTypes`` in ``agent-api/events.ts``); control events stay in the history.
@@ -517,6 +524,12 @@ class FakeAgentApi:
         expected = ("personal", None) if self.workspace_id is None else ("workspace", self.workspace_id)
         if (body["scope_kind"], body.get("workspace_id")) != expected:
             raise _Failure("FORBIDDEN")
+        key_taken = body.get("external_key") and any(
+            t.external_key == body["external_key"] and not t.deleting for t in self.threads.values()
+        )
+        if "owner" in body and not key_taken and not _is_core_principal(body["owner"]["principal_id"]):
+            # Maestro (agent-api/threads.ts): an owner that cannot be a core principal is a person the core does not know.
+            raise _Failure("FORBIDDEN", reason_code="scope_mismatch")
 
         def build() -> tuple[Any, int]:
             existing = next(
@@ -561,6 +574,14 @@ class FakeAgentApi:
         items = [t for t in self.threads.values() if not t.deleting]
         if "external_key" in query:
             items = [t for t in items if t.external_key == query["external_key"]]
+        if "external_key_md5" in query:
+            # Maestro's md5(external_key): the MD5 of the UTF-8 bytes.
+            items = [
+                t
+                for t in items
+                if t.external_key is not None
+                and hashlib.md5(t.external_key.encode("utf-8"), usedforsecurity=False).hexdigest() == query["external_key_md5"]
+            ]
         if "queue" in query:
             items = [t for t in items if (t.queue or "") == query["queue"]]
         items.sort(key=lambda t: (t.updated_at or t.created_at, t.id), reverse=query.get("order", "desc") == "desc")

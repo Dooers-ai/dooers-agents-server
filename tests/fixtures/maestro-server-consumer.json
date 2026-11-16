@@ -1895,9 +1895,9 @@
       }
     },
     {
-      "id": "server.request.message_large_human_text_rejected",
+      "id": "server.request.message_large_human_text_accepted",
       "schema": "Public.MessageCreateRequest",
-      "valid": false,
+      "valid": true,
       "data": {
         "type": "message.create",
         "content": [

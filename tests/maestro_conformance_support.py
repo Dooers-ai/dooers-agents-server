@@ -2,7 +2,7 @@
 
 ``SpyContracts`` is the real ``MaestroContracts`` (the vendored ``bundle.zip``, the validator that ``FakeMaestro`` and the SDK use)
 that also remembers which schema refused a value, where and why: the real one only says ``CONTRACT_INVALID``.
-``Divergence`` and ``DeclaredCeiling`` are how a guard states what it found.
+``Divergence`` is how a guard states what it found.
 """
 
 from __future__ import annotations
@@ -95,6 +95,13 @@ class Divergence:
     modes: frozenset[str] | None
     #: What differs, with the production and the Maestro definition (file:line).
     reason: str
+    #: The decision of the design that stops the fix (the user decides), or ``None`` for a divergence still to fix.
+    blocked_by: str | None = None
+
+    def mark_reason(self) -> str:
+        if self.blocked_by is not None:
+            return f"divergência real, parada por decisão do design ({self.blocked_by}): {self.reason}"
+        return f"divergência real, a corrigir: {self.reason}"
 
     def matches(self, function: str, param: str | None, sample_id: str, mode: str) -> bool:
         return param == self.param and function in self.functions and self.samples(sample_id) and (self.modes is None or mode in self.modes)
@@ -113,28 +120,3 @@ _FREE_TEXT = frozenset(sample.id for sample in string_samples()) - {"plain"}
 NOT_ORDINARY = lambda sample_id: sample_id in _FREE_TEXT  # noqa: E731
 LONG_TEXT = ids("long", "long-unicode", "huge", "huge-unicode")
 EMPTY_AND_LONG_TEXT = ids("empty", "long", "long-unicode", "huge", "huge-unicode")
-
-
-@dataclass(frozen=True)
-class DeclaredCeiling:
-    """A length limit the project declares on purpose, not as a bug (``docs/contracts/README.md``, ``common.ts``, ``public.ts``)."""
-
-    max_length: int
-    why: str
-
-
-#: Only the "huge" samples (100 000 characters) can reach these: they are the v1 ceilings that the Maestro contract states in its
-#: source. ``public.ts:23`` "These are v1 contract ceilings, not production quotas"; ``public.ts:26`` ``text`` 64 Ki;
-#: ``public.ts:200-201`` ``agentLabel`` 64 Ki ("far above any tool name, form label or chart title"); ``public.ts:205-206``
-#: ``threadTitle`` 4096; ``docs/contracts/README.md:17`` "O teto é o de 64 Ki dos outros ids que o agente escreve".
-DECLARED_CEILINGS = {
-    65536: DeclaredCeiling(65536, "64 Ki characters: the declared ceiling of ids, names, labels and free text the agent writes"),
-    4096: DeclaredCeiling(4096, "4096 characters: the declared ceiling of a thread title"),
-}
-
-
-def is_declared_ceiling(sample_id: str, refusal: Refusal | None) -> DeclaredCeiling | None:
-    """The ceiling that explains a refusal of a "huge" sample, if it is one the project declares."""
-    if refusal is None or refusal.max_length not in DECLARED_CEILINGS or "huge" not in sample_id:
-        return None
-    return DECLARED_CEILINGS[refusal.max_length]

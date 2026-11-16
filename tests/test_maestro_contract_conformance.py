@@ -25,11 +25,11 @@ A failing case says the function, the field, the production value and the Maestr
 
 ``DIVERGENCES`` lists what this guard found and nobody fixed yet. Each one runs as ``xfail(strict=True)`` with the reason "divergência
 real, a corrigir": when the contract or the SDK is fixed, the case passes, the strict ``xfail`` fails, and the entry must leave the
-list. It is never a permanent difference. The only differences stated as permanent are the length ceilings that the Maestro contract
-declares on purpose (``maestro_conformance_support.DECLARED_CEILINGS``, each with the line of the contract that says it); they are
-tried only with the "huge" samples (100 000 characters). Nothing in ``tests/parity/known_gaps.py::DECLARED_DIFFERENCES`` is about a value
-a handler sends through ``send.*`` (they are about the legacy WebSocket, the size of a URL document read back, the agent that is always a
-participant of an agent-API thread and the link of a read-back attachment).
+list. It is never a permanent difference. There is no length ceiling to excuse: where production has no length rule (ids, labels,
+titles, free text), neither has the Maestro contract, so the "huge" samples (100 000 characters) must pass like any other. Nothing
+in ``tests/parity/known_gaps.py::DECLARED_DIFFERENCES`` is about a value a handler sends through ``send.*`` (they are about the
+legacy WebSocket, the size of a URL document read back, the agent that is always a participant of an agent-API thread and the
+link of a read-back attachment).
 
 The guard also guards itself: the ordinary call of every function conforms, every production function and parameter has cases, and
 ``MaestroSend`` keeps every production signature.
@@ -58,20 +58,13 @@ from dooers.agents.server.maestro.sink import MaestroEventSink, MaestroSend
 from dooers.agents.server.protocol import models
 from dooers.agents.server.protocol.maestro import default_contracts
 from tests.maestro_conformance_support import (
-    EMPTY_AND_LONG_TEXT,
-    LONG_TEXT,
-    NOT_ORDINARY,
     Divergence,
     Refusal,
     SpyContracts,
-    ids,
-    is_declared_ceiling,
-    prefixed,
 )
 from tests.production_domain import (
     ProductionFunction,
     Sample,
-    element_builders,
     omitted,
     parameter_domain,
     production_functions,
@@ -282,200 +275,16 @@ async def run_case(case: Case) -> Outcome:
 # --- what this guard found and nobody fixed yet ---------------------------------------------------------------------------
 #
 # Each entry is a real divergence: production accepts the value, the Maestro contract (``docs/contracts/v1/public.ts`` of
-# dooers-service-maestro, vendored in ``bundle.zip``) or the SDK conversion refuses it. Production lines are in
-# ``src/dooers/agents/server/handlers/send.py``; every production parameter below is a plain ``str``/``float``/``int``/``list``, stored
-# in a ``TEXT`` or ``JSONB`` column (``persistence/postgres.py:152-191``) with no length or range rule.
+# dooers-service-maestro, vendored in ``bundle.zip``) or the SDK conversion refuses it. Every group the guard found (D01-D12)
+# is fixed: the list is empty. A new entry runs as ``xfail(strict=True)`` until it is fixed, and is never a permanent difference.
 
-
-def _both(*names: str) -> frozenset[str]:
-    """``send.<name>`` and ``send.whatsapp.<name>`` (the same send types, plus ``data["whatsapp"]``)."""
-    return frozenset({f"send.{n}" for n in names} | {f"send.whatsapp.{n}" for n in names})
-
-
-def _only(*names: str) -> frozenset[str]:
-    return frozenset(f"send.{n}" for n in names)
-
-
-_MESSAGES = ("text", "image", "document", "audio", "contact", "template")
-_MEDIA = ("image", "audio", "document")
-_LINK = frozenset({"link"})
-_BOTH_MODES = None
-_BUILDERS = [b.name.removeprefix("send.") for b in element_builders()]
-
-
-def _any_of(*patterns: Any) -> Any:
-    return lambda sample_id: any(p(sample_id) for p in patterns)
-
-
-DIVERGENCES: list[Divergence] = [
-    Divergence(
-        _both(*_MESSAGES),
-        "author",
-        LONG_TEXT,
-        _BOTH_MODES,
-        "author: production str | None (send.py:128, TEXT column events.author), Maestro agentMessageFields.author max 200 (public.ts:189)",
-    ),
-    Divergence(
-        _only("add_participant"),
-        "user_id",
-        LONG_TEXT,
-        _BOTH_MODES,
-        "user_id: production str (send.py:301), Maestro participantAddPayload.user.user_id max 256 (public.ts:395)",
-    ),
-    Divergence(
-        _only("add_participant"),
-        "user_name",
-        LONG_TEXT,
-        _BOTH_MODES,
-        "user_name: production str | None (send.py:301), Maestro participantAddPayload.user.user_name max 200 (public.ts:396)",
-    ),
-    Divergence(
-        _only("add_participant"),
-        "user_email",
-        LONG_TEXT,
-        _BOTH_MODES,
-        "user_email: production str | None (send.py:301), Maestro participantAddPayload.user.user_email max 320 (public.ts:397)",
-    ),
-    Divergence(
-        _only("add_participant"),
-        "identity_ids",
-        ids("empty-item", "long-item", "huge-item", "many"),
-        _BOTH_MODES,
-        "identity_ids: production list[str] | None (send.py:301), Maestro items min 1 max 256 and at most 64 items (public.ts:398)",
-    ),
-    Divergence(
-        _both("contact"),
-        "display_name",
-        LONG_TEXT,
-        _BOTH_MODES,
-        "display_name: production str (send.py:170), Maestro contactPart.display_name max 512 (public.ts:131)",
-    ),
-    Divergence(
-        _both(*_MEDIA),
-        "mime_type",
-        NOT_ORDINARY,
-        _LINK,
-        "mime_type: production free str (send.py:134,146,158), Maestro media_link.mime_type must look like type/subtype, 3 to 128 "
-        "characters"
-        " (public.ts:62-66,141); the SDK sends the production value in the media_link when it cannot upload the file (sink.py:694-706)",
-    ),
-    Divergence(
-        _both(*_MEDIA),
-        "url",
-        NOT_ORDINARY,
-        _LINK,
-        "url: production free str (send.py:134,146,158), Maestro media_link.url must be an http(s) URL (public.ts:140) and the SDK"
-        " fails the run with INVALID_REQUEST for another text when it cannot upload the file (sink.py:701)",
-    ),
-    Divergence(
-        _both("document"),
-        "filename",
-        ids("empty", "path-chars", "control-chars", "markup", "long", "long-unicode", "huge", "huge-unicode"),
-        _LINK,
-        "filename: production str (send.py:146), Maestro media_link.filename 1 to 255 characters without / \\ or control characters "
-        "(public.ts:56-61,142)",
-    ),
-    Divergence(
-        _both("image"),
-        "alt",
-        ids("long-unicode", "huge", "huge-unicode"),
-        _BOTH_MODES,
-        "alt: production str | None (send.py:134), Maestro alt max 1024 UTF-16 units (public.ts:93,143)",
-    ),
-    Divergence(
-        _both("audio"),
-        "duration",
-        ids("minus-one", "float-lowest", "float-max"),
-        _BOTH_MODES,
-        "duration: production float | None (send.py:158), Maestro duration from 0 to 9007199254740991 (public.ts:94,144)",
-    ),
-    Divergence(
-        _both("template"),
-        "template_name",
-        EMPTY_AND_LONG_TEXT,
-        _BOTH_MODES,
-        "template_name: production str (send.py:188, pipeline.py:716 stores it as sent), Maestro template_name 1 to 512 characters "
-        "(public.ts:172)",
-    ),
-    Divergence(
-        _both("template"),
-        "template_language",
-        EMPTY_AND_LONG_TEXT,
-        _BOTH_MODES,
-        "template_language: production str (send.py:188), Maestro template_language 1 to 64 characters (public.ts:174)",
-    ),
-    Divergence(
-        frozenset(f"send.whatsapp.{n}" for n in _MESSAGES),
-        "to_e164",
-        EMPTY_AND_LONG_TEXT,
-        _BOTH_MODES,
-        "to_e164: production str (send.py:28-33), Maestro whatsapp.to_e164 1 to 64 characters (public.ts:177-178)",
-    ),
-    Divergence(
-        frozenset(f"send.whatsapp.{n}" for n in _MESSAGES),
-        "instance_id",
-        EMPTY_AND_LONG_TEXT,
-        _BOTH_MODES,
-        "instance_id: production str (send.py:28-33), Maestro whatsapp.instance_id 1 to 256 characters (public.ts:177-178)",
-    ),
-    Divergence(
-        _only("form"),
-        "elements",
-        _any_of(
-            *(ids(f"[{b}.order={x}]") for b in _BUILDERS for x in ("int64-max", "int64-min")),
-            *(ids(f"[form_textarea.rows={x}]") for x in ("int64-max", "int64-min")),
-        ),
-        _BOTH_MODES,
-        "order and rows: production int (send.py:325-466, WireS2C_Form*Element, JSONB), Maestro z.number().int() is a JavaScript safe "
-        "integer,"
-        " at most 2^53-1 in magnitude (public.ts:278,298)",
-    ),
-    Divergence(
-        _only("update_user_event"),
-        "event_id",
-        NOT_ORDINARY,
-        _BOTH_MODES,
-        "event_id: production str (send.py:284); pipeline.py:956-960 looks the id up and only logs a warning when it finds no event;"
-        " Maestro messageUpdatePayload.event_id must be a UUID (public.ts:384), so the run fails on any other text",
-    ),
-    Divergence(
-        _only("update_user_event"),
-        "content",
-        ids("[text:text=empty]", "[text:text=blank]"),
-        _BOTH_MODES,
-        "an edited message with an empty text: production stores it (pipeline.py:962-963); Maestro message.update keeps the "
-        "nonblank-content"
-        " rule (public.ts:155-160,385; docs/contracts/README.md:17 says message.update keeps it on purpose)",
-    ),
-    Divergence(
-        _only("update_user_event"),
-        "content",
-        prefixed("[audio:", "[image:", "[document:"),
-        _BOTH_MODES,
-        "an edited message with an audio, image or document part: production takes the wire part (WireS2C_*Part: type "
-        "audio/image/document with"
-        " a url, deserialize_s2c_part, pipeline.py:962-963); the SDK sends content as it came (outputs.py:194 _passthrough) and the Maestro"
-        " message.update content accepts only text, attachment, contact and media_link parts (public.ts:129-145,147-163)",
-    ),
-    Divergence(
-        _only("update_user_event"),
-        "content",
-        _any_of(
-            ids("[contact:vcard=none]", "[contact:display_name=omitted]"),
-            prefixed("[contact:display_name=long", "[contact:display_name=huge"),
-        ),
-        _BOTH_MODES,
-        "an edited message with a contact part: production ContactPart has display_name default '' and vcard str | None (models.py:69-73);"
-        " Maestro contactPart.display_name is required and max 512, vcard cannot be null (public.ts:129-134); the SDK passes the part "
-        "through",
-    ),
-]
+DIVERGENCES: list[Divergence] = []
 
 
 def _marks(case: Case) -> list[Any]:
     for divergence in DIVERGENCES:
         if divergence.matches(case.function.name, case.param, case.sample.id, case.mode):
-            return [pytest.mark.xfail(strict=True, reason=f"divergência real, a corrigir: {divergence.reason}")]
+            return [pytest.mark.xfail(strict=True, reason=divergence.mark_reason())]
     return []
 
 
@@ -492,10 +301,6 @@ def _failure(case: Case, outcome: Outcome) -> str:
 @pytest.mark.parametrize("case", [pytest.param(case, id=case.id, marks=_marks(case)) for case in CASES])
 async def test_production_value_is_valid_for_the_maestro_contract(case: Case) -> None:
     outcome = await run_case(case)
-    if not outcome.ok:
-        ceiling = is_declared_ceiling(case.sample.id, outcome.refusals[-1] if outcome.refusals else None)
-        if ceiling is not None:
-            pytest.xfail(f"declared ceiling, permanent: {ceiling.why}")
     assert outcome.ok, _failure(case, outcome)
 
 

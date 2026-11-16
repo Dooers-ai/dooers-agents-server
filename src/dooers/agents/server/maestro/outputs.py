@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from dooers.agents.server.handlers.send import AgentEvent
 from dooers.agents.server.persistence.sanitize import without_nul
+from dooers.agents.server.protocol.models import deserialize_s2c_part
 
 #: Saídas por fase (``output:0`` até ``output:997``): o teto do servidor do Maestro
 #: (``execution_outputs`` por entrega e fase). Produção não tem teto por execução.
@@ -155,6 +156,52 @@ def _template(event: AgentEvent, runs: RunTracker) -> tuple[str, dict]:
     return "message.create", payload
 
 
+#: Every field of a production media part (``WireS2C_ImagePart``, ``AudioPart``, ``DocumentPart``) that a ``media_link`` keeps.
+MEDIA_LINK_FIELDS = ("url", "mime_type", "filename", "alt", "duration", "width", "height", "size_bytes", "ref_id")
+MEDIA_KINDS = frozenset({"image", "audio", "document"})
+
+
+def media_link_of(kind: str, fields: Any) -> dict[str, Any]:
+    """The ``media_link`` of a production media part: each field it has, as production stores it (``None`` is absent).
+
+    ``fields`` is the part (or the ``send.image``/``audio``/``document`` data); only the media fields are read, so the
+    ``url``, the ``mime_type`` or the ``filename`` the handler gave reach Maestro as they came, whatever their form.
+    """
+    return {"type": "media_link", "kind": kind} | {key: deepcopy(fields[key]) for key in MEDIA_LINK_FIELDS if fields.get(key) is not None}
+
+
+def production_part(part: Any) -> dict[str, Any]:
+    """A production content part (``WireS2C_*Part`` or its dict) as the Maestro part an agent writes, with no file read.
+
+    A dict goes through ``deserialize_s2c_part``, as ``pipeline.py`` does for ``send.update_user_event``. ``text`` and
+    ``contact`` keep their fields (a contact with no name has ``display_name`` ``""``, the production default); a media
+    part becomes a ``media_link`` with every field it has (production keeps the URL and the metadata, not a file).
+    """
+    model = deserialize_s2c_part(part) if isinstance(part, dict) else part
+    data = model.model_dump()
+    kind = data.get("type")
+    if kind == "text":
+        return {"type": "text", "text": data["text"]}
+    if kind == "contact":
+        contact: dict[str, Any] = {"type": "contact", "display_name": data.get("display_name") or ""}
+        if data.get("vcard") is not None:
+            contact["vcard"] = data["vcard"]
+        if data.get("phones"):
+            contact["phones"] = deepcopy(data["phones"])
+        return contact
+    if kind in MEDIA_KINDS:
+        return media_link_of(kind, data)
+    raise UnsupportedAgentEvent(f"content part {kind!r} has no Maestro part")
+
+
+def _event_update(event: AgentEvent, runs: RunTracker) -> tuple[str, dict]:
+    """``send.update_user_event``: the parts as production stores them (``deserialize_s2c_part``), as Maestro parts."""
+    content = event.data["content"]
+    if not isinstance(content, list):
+        raise TypeError("content must be a list")
+    return "message.update", {"event_id": event.data["event_id"], "content": [production_part(part) for part in content]}
+
+
 def _run_start(event: AgentEvent, runs: RunTracker) -> tuple[str, dict]:
     payload: dict[str, Any] = {"run_id": runs.open(), "status": "running"}
     if event.data.get("agent_id") is not None:
@@ -191,7 +238,7 @@ _BUILDERS = {
     "chart": _passthrough("chart.create"),
     "run_start": _run_start,
     "run_end": _run_end,
-    "event_update": _passthrough("message.update"),
+    "event_update": _event_update,
     "thread_update": _passthrough("thread.update"),
     "participant_add": _passthrough("participant.add"),
 }

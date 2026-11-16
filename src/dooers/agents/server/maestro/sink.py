@@ -10,7 +10,6 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
 
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.thread_queue import resolve_thread_queue
@@ -26,6 +25,7 @@ from .outputs import (
     UnsupportedAgentEvent,
     clean_json,
     clean_text,
+    media_link_of,
     media_output,
     message_content_bytes,
     output_for,
@@ -644,9 +644,8 @@ class MaestroEventSink:
         (``fetch_media``; uma URL ``data:`` é decodificada no local) e envia o arquivo
         (``upload``). Se o download falha, o tipo sai da política de produção ou o
         Maestro recusa o arquivo, a mensagem leva a parte ``media_link`` com a URL
-        original (índice 4.3) e o handler continua. O ``media_link`` só aceita
-        ``http``/``https``: com outra URL (``data:`` incluída), esses casos falham a
-        execução (``INVALID_REQUEST``).
+        original e os campos da mídia, como a produção os guarda (índice 4.3), e o
+        handler continua. Qualquer texto de URL vale, como em produção.
         """
         ordinal = len(self._intents)
         if ordinal >= MAX_PHASE_OUTPUTS:
@@ -692,19 +691,10 @@ class MaestroEventSink:
         return {**attachment, **extra}
 
     def _media_link(self, event: AgentEvent, reason: str) -> dict[str, Any]:
-        # Only the reason code: the URL may carry a token or the file (diagnostics.py rule).
-        try:
-            scheme = urlsplit(event.data["url"]).scheme.lower()
-        except ValueError:
-            scheme = ""
-        if scheme not in {"http", "https"}:
-            logger.warning("maestro send.%s: media URL not uploaded (reason=%s); no media_link for this scheme", event.send_type, reason)
-            raise MaestroCallbackError("INVALID_REQUEST")
+        # Only the reason code: the URL may carry a token or the file (diagnostics.py rule). Production keeps any URL
+        # text the handler gave, so the media_link keeps it too, whatever its scheme.
         logger.warning("maestro send.%s: media URL not uploaded (reason=%s); publishing media_link", event.send_type, reason)
-        keys = ("mime_type", "filename", "alt", "duration")
-        return {"type": "media_link", "kind": event.send_type, "url": event.data["url"]} | {
-            key: event.data[key] for key in keys if event.data.get(key) is not None
-        }
+        return media_link_of(event.send_type, event.data)
 
     def _visible_reply(self) -> bool:
         return any(intent is not None and intent.output["type"] in VISIBLE_REPLY_OUTPUTS for intent in self._intents)

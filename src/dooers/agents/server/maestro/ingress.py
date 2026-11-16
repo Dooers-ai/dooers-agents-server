@@ -27,14 +27,12 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit
 
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.handlers.pipeline import HandlerContext, HandlerPipeline, _user_author_display
@@ -54,6 +52,7 @@ from .agent_api import MaestroAgentApi, MaestroAgentApiError, MaestroAgentMissin
 from .agent_persistence import MaestroAgentUnsupported
 from .artifacts import artifact_type_allowed
 from .media_fetch import MediaFetchError, decode_data_url, fetch_media, is_data_url
+from .outputs import media_link_of
 from .sink import _artifact_filename
 
 logger = logging.getLogger(__name__)
@@ -73,7 +72,6 @@ _TOLERATED_UPLOAD_ERRORS = frozenset(
     }
 )
 _MEDIA_TIMEOUT_SECONDS = 30.0
-_MIME = re.compile(r"[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+")
 
 
 async def _noop_handler(*_args: Any, **_kwargs: Any):
@@ -171,7 +169,6 @@ class MaestroIngress:
         try:
             if actor == "user":
                 who = self._person(context)
-                _check_content(content)
             event, storage_parts, handler_parts = await self._event(context, store, event_id)
             who = self._person(context)
             prepared = [await self._prepare(s, h) for s, h in zip(storage_parts, handler_parts, strict=True)]
@@ -319,17 +316,8 @@ class MaestroIngress:
         """A media URL: fetched now, uploaded later; a ``media_link`` when it cannot be (production keeps the URL)."""
         config = self._api.config
         limits = {"max_bytes": config.max_artifact_bytes, "hint_mime": storage.mime_type, "hint_filename": storage.filename}
-        link: dict[str, Any] | None = None
-        if urlsplit(url).scheme.lower() in {"http", "https"}:
-            link = {"type": "media_link", "kind": kind, "url": url}
-            if storage.mime_type and _MIME.fullmatch(storage.mime_type):
-                link["mime_type"] = storage.mime_type
-            if storage.filename:
-                link["filename"] = _artifact_filename(storage.filename)
-            for name in ("alt", "duration"):
-                value = getattr(storage, name, None)
-                if value is not None:
-                    link[name] = value
+        # Production keeps the URL text and the part's fields as they came, whatever the scheme.
+        link = media_link_of(kind, storage.model_dump())
         reason: str | None = None
         try:
             fetched = (
@@ -344,8 +332,6 @@ class MaestroIngress:
             reason = "policy"
         # Only the reason: the URL may carry a token (the log rule of the sink).
         logger.warning("maestro ingest: media URL not uploaded (reason=%s); publishing media_link", reason)
-        if link is None:
-            raise MaestroAgentUnsupported(f"ingest: a {kind!r} URL that is not http or https and cannot be fetched cannot be published")
         return _Prepared(part=link)
 
     async def _materialize(self, maestro_thread: str, item: _Prepared) -> dict[str, Any]:
@@ -359,10 +345,6 @@ class MaestroIngress:
         except MaestroAgentApiError as error:
             if not up.from_url or error.code not in _TOLERATED_UPLOAD_ERRORS:
                 raise
-            if item.fallback is None:
-                raise MaestroAgentUnsupported(
-                    f"ingest: a {up.kind!r} URL that is not http or https and cannot be uploaded cannot be published"
-                ) from None
             logger.warning("maestro ingest: media URL not uploaded (reason=upload_%s); publishing media_link", error.code.lower())
             return item.fallback
         part: dict[str, Any] = {
@@ -419,19 +401,6 @@ class _RecordingStore:
         for ref_id, entry in self._taken.items():
             self._store.restore(ref_id, entry)
         self._taken.clear()
-
-
-def _check_content(content: list[Any] | None) -> None:
-    """The Maestro limits of the parts that need no file read: a URL part that can only be a ``media_link`` has a web scheme."""
-    for part in content or []:
-        data = part.model_dump() if hasattr(part, "model_dump") else part
-        if not isinstance(data, Mapping) or data.get("type") not in {"image", "audio", "document"}:
-            continue
-        url = data.get("url")
-        if data.get("ref_id") or data.get("data") or data.get("data_base64") or not isinstance(url, str) or not url.strip():
-            continue
-        if not is_data_url(url.strip()) and urlsplit(url.strip()).scheme.lower() not in {"http", "https"}:
-            raise MaestroAgentUnsupported(f"ingest: a {data['type']!r} URL that is not http, https or data cannot be published")
 
 
 def _is_uuid(value: str) -> bool:
