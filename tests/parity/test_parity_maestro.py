@@ -150,11 +150,29 @@ async def test_send_whatsapp_publishes_then_fails_without_the_agent_api_route(mo
     assert result.deliveries == [{"status": 200, "state": "failed", "reason_code": "handler_error"}]
 
 
-async def test_public_chat_reaches_the_maestro_mode_router():
+async def test_public_chat_visitor_never_reaches_the_maestro_mode_router(monkeypatch):
+    """Task 6a's own fix: the visitor talks to Maestro directly (design 7.3), never through the Router.
+
+    ``public_chat_guest``/``public_chat_authenticated`` used to ack every ``event.create`` with
+    ``THREAD_MANAGEMENT_MISMATCH`` (``_run_maestro_server`` sent them to the Router). They are plain
+    ``KNOWN_GAPS`` entries now (a permanent declared difference, not a routing failure): this proves the
+    new path actually runs — two deliveries, both responded, no FakeMaestro rejection — the same quantity
+    ``test_maestro_matches_legacy``/``test_known_gap_fails_as_stated`` already check, stated here on its
+    own so a future regression back to the Router is obvious without reading the masked diff.
+    """
+    monkeypatch.setattr(harness, "FakeMaestro", _Recorded)
     result = await run_maestro("public_chat_guest")
-    errors = [ack["error"]["code"] for ack in result.outputs["acks"] if not ack["ok"]]
-    assert errors == ["THREAD_MANAGEMENT_MISMATCH", "THREAD_MANAGEMENT_MISMATCH"]
-    assert result.events == [] and result.outputs["threads"] == [] and result.deliveries == []
+    assert result.deliveries == [{"status": 200, "state": "responded", "reason_code": "responded"}] * 2
+    fake = _Recorded.last
+    assert fake.rejections == []
+    (thread_id,) = fake.threads
+    assert [p["kind"] for p in fake.threads[thread_id]["participants"]] == ["external", "agent"]
+    assert [event["actor"]["kind"] for event in fake.events[thread_id] if event["type"] == "message.created"] == [
+        "external",
+        "agent",
+        "external",
+        "agent",
+    ]
 
 
 async def test_web_chat_person_cannot_send_a_url_part(monkeypatch):

@@ -60,6 +60,21 @@ Final review of plan 5 (fix 1, 2026-11-14): that last gap was never the extra re
 result. ``_reads`` now passes that ``view`` into ``_AgentWindow``'s head (the ``thread`` key
 ``_channel_state`` looks for), so ``data.delivery`` is populated outside a delivery too. The 7
 ``whatsapp_<send type>``/``whatsapp_receipt`` scenarios match exactly now and are gone from ``GAPS``.
+
+Measured again on 2026-11-16 (plan 6, task 6a, Passo 0/1). ``public_chat_guest``/``public_chat_authenticated``
+no longer go through the Maestro-mode Router (``THREAD_MANAGEMENT_MISMATCH`` is gone): the harness now plays
+the visitor's own path (design section 7.3) — ``FakeMaestro.ensure_external_thread``/``.publish_external``
+(a new ``kind: "external"`` actor/participant, idempotent by ``external_key``, routed to a delivery the same
+way a web chat person's message is) through a new ``harness._run_maestro_public_chat``, a sibling of
+``_run_maestro_deliveries``/``_run_maestro_server`` picked by ``_is_public_chat_scenario`` (``ScenarioInput.connect``
+present with ``connection_type`` ``guest``/``public_authenticated``) rather than by ``_delivered_by_maestro``
+(unchanged). What is left of both scenarios is two permanent declared differences, not the old gap: the
+legacy WebSocket acks and Core validation count (``agent_websocket``, already used by ``form_response_submit``/
+``form_response_cancel``), and the visitor's own declared profile — name, e-mail, identity IDs, roles,
+``connection_type`` — plus ``data.source``, which reach the live handler context (plan 6 task 5's own
+``test_maestro_public_chat.py``) but not a Maestro-mode read-back outside it, because ``legacy_model.py``'s
+``to_thread``/``_message`` call ``production_user`` with no participant for an external actor
+(``public_chat_visitor_profile``, new).
 """
 
 from __future__ import annotations
@@ -122,6 +137,46 @@ def _agent_api_attachment_url(result: ParityResult) -> None:
         upload["ref_id"] = MASK
 
 
+def _public_chat_visitor_profile(result: ParityResult) -> None:
+    """A public chat visitor's declared profile never reaches a Maestro read-back outside the live
+    handler context: ``legacy_model.py``'s ``to_thread``/``_message`` call ``production_user`` with no
+    participant (``core=None``) for every event and for ``Thread.owner``/``.users``, so an external
+    actor's name, e-mail, identity IDs, roles and ``connection_type`` come back empty there (only
+    ``context.py``'s own ``_user`` — the live handler's ``on.context.user``, already covered by plan 6
+    task 5's own tests — looks the participant up). Legacy's WS path has no such limitation: it builds
+    the ``User`` straight from the connect handshake. The same gap drops ``data.source`` (the channel a
+    person's own message arrived on): Maestro's conversion only ever stamps ``data.delivery``, on an
+    assistant's own message.
+    """
+
+    def strip_user(value: object) -> None:
+        if isinstance(value, dict):
+            if "connection_type" in value and "user_id" in value:
+                for key in ("user_name", "user_email", "identity_ids", "connection_type"):
+                    if key in value:
+                        value[key] = MASK
+            for child in value.values():
+                strip_user(child)
+        elif isinstance(value, list):
+            for child in value:
+                strip_user(child)
+
+    strip_user(result.incoming)
+    strip_user(result.outputs)
+    for thread in result.outputs.get("threads", []):
+        thread["metadata"] = MASK
+        if isinstance(thread.get("users"), list):
+            # Legacy and Maestro agree on the thread's active users; the join order they list them in,
+            # only in this gap's scenarios, does not (``to_thread``'s ``_in_join_order`` ranks the agent
+            # before a non-owner external participant; legacy's own WS-path builder does not).
+            thread["users"] = sorted(thread["users"], key=lambda user: user.get("user_id", ""))
+    for event in result.events:
+        if event.get("actor") == "user":
+            event["author"] = MASK
+            event["data"] = MASK
+        strip_user(event.get("user"))
+
+
 #: Declared differences a gap may mask (name -> what differs, and the mask applied to both sides).
 DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
     "media_link_size": (
@@ -145,6 +200,13 @@ DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
         "real temporary link (MaestroAgentApi.link_resolver), and its stored ref_id is Maestro's own artifact id, "
         "not the staged upload's; legacy's local ref_id keeps url=None and stays the same id throughout",
         _agent_api_attachment_url,
+    ),
+    "public_chat_visitor_profile": (
+        "declared, permanent: a public chat visitor's declared profile (name, e-mail, identity IDs, roles, "
+        "connection_type) and data.source reach the live handler context (plan 6 task 5) but not a Maestro "
+        "read-back outside it (legacy_model.py's to_thread/_message call production_user with no participant "
+        "for an external actor); legacy's WS path builds the User straight from the connect handshake",
+        _public_chat_visitor_profile,
     ),
 }
 
@@ -184,8 +246,6 @@ def _declared(*names: str, deliveries: tuple[Outcome, ...]) -> Gap:
 
 
 _RESPONDED: tuple[Outcome, ...] = ((200, "responded", "responded"),)
-#: A phase without a visible reply (message, form or chart) completes silent: Maestro refuses responded for it.
-_PUBLIC_CHAT = Gap("plan 6: the Maestro-mode router acks event.create with THREAD_MANAGEMENT_MISMATCH: no events and no thread")
 
 GAPS: dict[str, Gap] = {
     # Core's person, workspace and thread data reach the agent's context (plan 5, task 5a): the scenarios that
@@ -208,9 +268,13 @@ GAPS: dict[str, Gap] = {
     # Final review fix 1: ``_reads()`` now passes the thread ``view`` it already read into ``_AgentWindow``'s head,
     # so ``_channel_state`` has a thread view outside a delivery too; every ``send.whatsapp.*`` and the receipt
     # scenario now match exactly (``agent_api_no_delivery_data`` is gone — see git history for the closed gap).
-    # Public chat (plan 6).
-    "public_chat_guest": _PUBLIC_CHAT,
-    "public_chat_authenticated": _PUBLIC_CHAT,
+    # Task 6a (2026-11-16): the visitor talks to Maestro directly (``FakeMaestro.ensure_external_thread``/
+    # ``.publish_external``, ``_run_maestro_public_chat``), never through the Maestro-mode Router — the old
+    # THREAD_MANAGEMENT_MISMATCH gap is gone. What is left is the same two permanent declared differences:
+    # the legacy WS acks/Core validation count, and the visitor's declared profile/``data.source`` not
+    # reaching a Maestro read-back outside the live handler context.
+    "public_chat_guest": _declared("agent_websocket", "public_chat_visitor_profile", deliveries=_RESPONDED * 2),
+    "public_chat_authenticated": _declared("agent_websocket", "public_chat_visitor_profile", deliveries=_RESPONDED * 2),
 }
 
 GAP_REASONS: dict[str, str] = {name: gap.reason for name, gap in GAPS.items()}
