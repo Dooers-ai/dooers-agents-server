@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from dooers.agents.server.maestro.agent_persistence import callers_key
 from dooers.agents.server.maestro.context import maestro_handler_context
 from dooers.agents.server.maestro.persistence import MaestroAgentMemory
 from dooers.agents.server.protocol.maestro import default_contracts
@@ -149,3 +150,23 @@ async def test_a_public_chat_thread_read_outside_a_delivery_shows_a_plain_id_nev
     assert persistence._thread(view).id == thread_id
     assert persistence._keys[thread_id] == thread_id
     assert await persistence._caller_key(thread_id) == thread_id
+
+
+async def test_an_agent_chosen_public_prefixed_key_is_still_the_callers_key():
+    """The rule looks at who made the thread (a visitor's ``connection_type``), not at the ``public:`` prefix of the key."""
+    from tests.test_maestro_legacy_model import _thread_view
+
+    persistence, thread_id = _persistence(), str(uuid4())
+    view = _thread_view(thread_id, external_key="public:x")
+    assert not any(p.get("connection_type") for p in view["participants"])
+    assert callers_key(view) == "public:x"
+    assert persistence._thread(view).id == "public:x"
+    assert persistence._keys[thread_id] == "public:x"
+    assert await persistence._caller_key(thread_id) == "public:x"
+
+
+async def test_an_agent_chosen_public_prefixed_key_reaches_the_handler_inside_a_delivery():
+    thread, context = _memory("public:x")
+    memory = MaestroAgentMemory(context, thread_id="public:x")
+    assert {event.thread_id for event in await memory.get_history_raw(limit=10)} == {"public:x"}
+    assert (await memory.get_thread()).id == "public:x"
