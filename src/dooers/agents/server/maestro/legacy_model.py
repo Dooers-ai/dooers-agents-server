@@ -192,8 +192,10 @@ def _external_user(person: dict[str, Any], core: dict[str, Any] | None) -> User:
     A public-chat visitor's participant (``core``, plan 6 Task 3b/4b's ``ContextResponse.participants``
     external variant) carries the core's own e-mail, identity IDs, the three roles, ``connection_type``
     (``guest`` | ``public_authenticated``) and ``guest_profile`` (the visitor's own pre-chat
-    name/e-mail/phone, declared, not verified by the core). ``core`` is ``None`` for every caller today
-    (no one passes the participant separately): ``person`` itself is then the only source, the same
+    name/e-mail/phone, declared, not verified by the core). ``context.py``'s own ``_user`` (the live
+    handler context) passes the participant as ``core`` separately; ``production_user``'s other
+    callers (``to_thread``'s already-enriched ``view["participants"]``, a bare message actor) pass
+    only ``person`` and leave ``core`` ``None`` — ``person`` itself is then the only source, the same
     fallback ``_core_person`` already gives a human — an actor or participant with its own e-mail,
     identity IDs, roles, ``connection_type`` or ``guest_profile`` (``to_thread``'s already-enriched
     ``view["participants"]``) keeps them; a bare message actor (the contract's own ``external`` actor
