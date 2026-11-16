@@ -73,6 +73,8 @@ class EventCreatePayload(BaseModel):
     chat_context: ChatContext | None = None
     #: Used only when ``thread_id`` is omitted (new thread). Ignored otherwise.
     queue: str | None = None
+    #: Short-lived presence JWT for connector tools. Never stored in metadata or events.
+    presence_token: str | None = None
 
 
 class C2S_Connect(BaseModel):

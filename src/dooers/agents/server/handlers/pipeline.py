@@ -153,6 +153,8 @@ class HandlerContext:
     #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
     persist_actor: str = "user"
     persist_author: str | None = None
+    #: Presence JWT from ``event.create`` for connector tools; never persisted.
+    presence_token: str | None = None
 
     def __post_init__(self):
         if self.user is None:
