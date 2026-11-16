@@ -78,8 +78,10 @@ async def test_emit_persists_and_broadcasts_tool_call_outside_yield(pipeline_har
         await current_turn().emit(send.tool_call(name="x", args={}, id="c-1"))
         yield send.run_end()
 
-    await pipeline_harness.run(handler)
+    yielded = await pipeline_harness.run(handler)
 
+    # emitted events go to persistence and broadcast, not to execute's yield stream
+    assert [e.send_type for e in yielded] == ["run_start", "run_end"]
     calls = [e for e in pipeline_harness.persisted if e.type == "tool.call"]
     assert len(calls) == 1
     # run_id is read when the event is emitted, not when the turn was bound
@@ -101,6 +103,41 @@ async def test_emit_connector_interaction_creates_event(pipeline_harness):
     (run_id,) = pipeline_harness.persistence.runs
     assert (ev.actor, ev.run_id, ev.data) == ("system", run_id, INTERACTION)
     assert ["connector.interaction"] in _appended_types(pipeline_harness)
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["normal_end", "failed_turn"])
+async def test_emit_after_turn_end_is_dropped(pipeline_harness, caplog, fails):
+    """A tool task created during the turn keeps the copied context; once execute ended, its
+    events are dropped with a warning (no content logged) instead of landing in the thread."""
+    release = asyncio.Event()
+    tasks: list[asyncio.Task] = []
+
+    async def handler(incoming, send, memory, analytics, settings):
+        async def late_tool():
+            await release.wait()
+            await current_turn().emit(send.tool_result(name="x", result={"secret": "s3cr3t"}, id="c-1"))
+
+        yield send.run_start()
+        tasks.append(asyncio.create_task(late_tool()))
+        if fails:
+            raise RuntimeError("boom")
+        yield send.run_end()
+
+    if fails:
+        with pytest.raises(HandlerError):
+            await pipeline_harness.run(handler)
+    else:
+        await pipeline_harness.run(handler)
+    writes = list(pipeline_harness.persistence.writes)
+    broadcasts = len(pipeline_harness.broadcasts)
+
+    release.set()
+    await tasks[0]
+
+    assert pipeline_harness.persistence.writes == writes
+    assert len(pipeline_harness.broadcasts) == broadcasts
+    (dropped,) = [r for r in caplog.records if "after turn end" in r.getMessage()]
+    assert dropped.levelname == "WARNING" and "s3cr3t" not in dropped.getMessage()
 
 
 @pytest.mark.parametrize(

@@ -126,6 +126,17 @@ class MemoryPersistence:
         self.runs[run.id] = run.model_copy(deep=True)
         self.writes.append(("update_run", run.model_copy(deep=True)))
 
+    async def upsert_thread_participant(self, thread_id: str, user: User) -> None:
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            return
+        user = user.model_copy(deep=True)
+        if any(u.user_id == user.user_id for u in thread.users):
+            thread.users = [user if u.user_id == user.user_id else u for u in thread.users]
+        else:
+            thread.users.append(user)
+        self.writes.append(("upsert_thread_participant", (thread_id, user.user_id)))
+
 
 class _RecordingCollector:
     def __init__(self) -> None:

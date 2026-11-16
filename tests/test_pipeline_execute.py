@@ -15,6 +15,7 @@ import pytest
 from dooers.agents.server.exceptions import HandlerError
 from dooers.agents.server.handlers import pipeline as pipeline_module
 from dooers.agents.server.handlers.send import AgentEvent
+from dooers.agents.server.protocol.models import Thread, User
 
 _BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -38,6 +39,8 @@ def _writes(harness) -> list[tuple[Any, ...]]:
             out.append((op, obj.id, obj.type, obj.actor, obj.run_id))
         elif op in ("create_run", "update_run"):
             out.append((op, obj.id, obj.status, obj.error))
+        elif op == "upsert_thread_participant":
+            out.append((op, *obj))
         else:
             out.append((op, obj.id, obj.title, _t(obj.last_event_at), _t(obj.updated_at)))
     return out
@@ -154,3 +157,36 @@ async def test_handler_error_fails_the_open_run(pipeline_harness):
         ("event.append", [("id-5", "message", "id-3")]),
     ]
     assert _tracked(pipeline_harness)[-1] == ("error.occurred", "id-3", None)
+
+
+async def test_participant_add_backfills_agent_then_adds_user(pipeline_harness):
+    pipeline_harness.persistence.threads["th-1"] = Thread(
+        id="th-1",
+        agent_id="agent-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        owner=User(user_id="u1"),
+        users=[User(user_id="u1")],
+        created_at=_BASE,
+        updated_at=_BASE,
+        last_event_at=_BASE,
+    )
+
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.add_participant("u2", user_name="Bia")
+
+    yielded = await pipeline_harness.run(handler, thread_id="th-1")
+
+    assert [e.send_type for e in yielded] == ["participant_add"]
+    assert _writes(pipeline_harness) == [
+        ("create_event", "id-1", "message", "user", None),
+        # the agent is not a participant of this old thread: lazy backfill, then the new user
+        ("upsert_thread_participant", "th-1", "agent-1"),
+        ("upsert_thread_participant", "th-1", "u2"),
+        # participant_add never moves last-event
+    ]
+    assert _broadcasts(pipeline_harness)[0] == ("event.append", [("id-1", "message", None)])
+    (upsert,) = pipeline_harness.broadcasts[1:]
+    assert upsert["type"] == "thread.upsert"
+    assert [(u.user_id, u.user_name) for u in upsert["thread"].users] == [("u1", None), ("agent-1", "Assistant"), ("u2", "Bia")]
+    assert _tracked(pipeline_harness) == [("message.c2s", None, "id-1")]

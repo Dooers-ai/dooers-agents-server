@@ -27,6 +27,7 @@ class TurnContext:
     presence_token: str | None = field(repr=False)
     persistence: Persistence
     #: Persists and broadcasts an event outside the handler's ``yield`` (same path as yielded events).
+    #: After the turn ends it drops the event with a warning instead of raising.
     emit: Callable[[AgentEvent], Awaitable[None]] | None = field(repr=False)
 
 

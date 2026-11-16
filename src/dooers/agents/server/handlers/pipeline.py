@@ -181,6 +181,8 @@ class _TurnState:
     c2s_content_type: str
     current_run_id: str | None = None
     current_agent_id: str | None = None
+    #: Set when ``execute`` ends; the emitter then drops events (see ``_emit``).
+    closed: bool = False
 
 
 class HandlerPipeline:
@@ -452,7 +454,7 @@ class HandlerPipeline:
                 channel=context.channel or "dooers-platform",
                 presence_token=context.presence_token,
                 persistence=self._persistence,
-                emit=partial(self._apply_event, state=state),
+                emit=partial(self._emit, state=state),
             )
         )
         try:
@@ -543,12 +545,29 @@ class HandlerPipeline:
 
             raise HandlerError(str(e), original=e) from e
         finally:
+            state.closed = True
             reset_turn(turn_token)
             reset_handler_context(runtime_tokens)
 
+    async def _emit(self, event: AgentEvent, state: _TurnState) -> None:
+        """The turn's side-channel emitter (``TurnContext.emit``).
+
+        Tasks created during the turn copy its context and can call this after ``execute``
+        ended (normally or not). Such late events are dropped with a warning, never raised,
+        so a tool task that outlives the turn cannot write into a closed run or crash.
+        """
+        if state.closed:
+            logger.warning(
+                "[agents] emit after turn end dropped: send_type=%s thread=%s",
+                event.send_type,
+                state.thread_id,
+            )
+            return
+        await self._apply_event(event, state)
+
     async def _apply_event(self, event: AgentEvent, state: _TurnState) -> None:
         """Persist and broadcast one handler event: the body of the ``execute`` loop, also run
-        by the turn's emitter for events sent outside the handler's ``yield``."""
+        by the turn's emitter (``_emit``) for events sent outside the handler's ``yield``."""
         context = state.context
         result = state.result
         thread_id = state.thread_id
