@@ -130,7 +130,11 @@ def _object_arguments(raw: Any) -> tuple[dict | None, str | None]:
 
 
 def parse_call(call: Any) -> ParsedCall:
-    """Read a provider tool call into a ``ParsedCall``. Raises ``ValueError`` only for shapes no provider uses."""
+    """Read a provider tool call into a ``ParsedCall``.
+
+    Raises ``ValueError`` for shapes no provider uses, and for a LangChain ``ToolCall`` (use ``ToolSet.langchain()``).
+    ``{"name", "arguments"}`` without ``args`` parses as ``generic`` with JSON-string arguments, never as an empty call.
+    """
     if isinstance(call, tuple | list) and len(call) == 2 and isinstance(call[0], str):
         args, err = _object_arguments(call[1])
         return ParsedCall("generic", "", call[0], args, err)
@@ -147,14 +151,20 @@ def parse_call(call: Any) -> ParsedCall:
     if kind == "tool_use":  # Anthropic
         args, err = _object_arguments(_get(call, "input"))
         return ParsedCall("anthropic", str(_get(call, "id") or ""), _get(call, "name") or "", args, err)
+    if kind == "tool_call":  # LangChain ToolCall: its reply is a ToolMessage, which no shape here builds
+        raise ValueError("LangChain tool calls are not accepted by run(); give the model ts.langchain() instead")
 
     inner = _get(call, "function_call") if _has(call, "function_call") else None
-    gemini = inner if inner is not None else call
-    if _has(gemini, "name") and (_has(gemini, "args") or inner is not None or isinstance(call, dict)):
-        name = _get(gemini, "name")
+    found = inner if inner is not None else call
+    if _has(found, "name") and (_has(found, "args") or _has(found, "arguments") or inner is not None or isinstance(call, dict)):
+        name = _get(found, "name")
         if isinstance(name, str) and name:
-            args, err = _object_arguments(_get(gemini, "args"))
-            return ParsedCall("gemini", str(_get(gemini, "id") or ""), name, args, err)
+            if _has(found, "arguments") and not _has(found, "args"):
+                # {"name", "arguments": "<JSON>"}: legacy OpenAI ``function_call`` (or a tool call's ``function``)
+                args, err = _parse_json_arguments(_get(found, "arguments"))
+                return ParsedCall("generic", str(_get(found, "id") or ""), name, args, err)
+            args, err = _object_arguments(_get(found, "args"))  # Gemini
+            return ParsedCall("gemini", str(_get(found, "id") or ""), name, args, err)
     raise ValueError(f"Unrecognized tool call shape: {type(call).__name__}")
 
 

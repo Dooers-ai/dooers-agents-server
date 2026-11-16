@@ -190,9 +190,37 @@ def test_object_arguments_accept_only_a_mapping(call):
     assert p.arguments is None and p.raw_arguments_error
 
 
-def test_parse_unknown_shape_raises_value_error():
-    with pytest.raises(ValueError):
-        parse_call(42)
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [
+        (42, "Unrecognized tool call shape"),
+        ({"type": "tool_call", "name": "x", "args": {"x": 1}, "id": "t1"}, r"ts\.langchain\(\)"),
+    ],
+    ids=["not_a_call", "langchain_tool_call"],
+)
+def test_parse_unknown_shape_raises_value_error(call, match):
+    with pytest.raises(ValueError, match=match):
+        parse_call(call)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        {"name": "x", "arguments": '{"x": 1}'},  # legacy OpenAI ``message.function_call``, or a tool call's ``function``
+        {"name": "x", "arguments": {"x": 1}},
+        {"role": "assistant", "content": None, "function_call": {"name": "x", "arguments": '{"x": 1}'}},
+        SimpleNamespace(function_call=SimpleNamespace(name="x", arguments='{"x": 1}')),
+    ],
+    ids=["dict", "dict_object_arguments", "legacy_message", "legacy_message_object"],
+)
+def test_parse_name_with_arguments_is_generic_and_keeps_the_arguments(call):
+    p = parse_call(call)
+    assert (p.provider, p.call_id, p.name, p.arguments, p.raw_arguments_error) == ("generic", "", "x", {"x": 1}, None)
+
+
+def test_parse_name_with_malformed_arguments_is_invalid_not_empty():
+    p = parse_call({"name": "x", "arguments": "{oops"})
+    assert (p.provider, p.arguments) == ("generic", None) and p.raw_arguments_error
 
 
 def test_result_message_shapes_per_provider():
