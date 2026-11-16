@@ -20,6 +20,7 @@ from tests.parity.model import (
     AGENT_ID,
     OTHER_AGENT_ID,
     USER,
+    WHATSAPP_CUSTOMER,
     WHATSAPP_OUTBOUND_ID,
     WORKSPACE_ID,
     ParityResult,
@@ -314,6 +315,26 @@ def _whatsapp_receipt(result: ParityResult) -> None:
     assert [r["delivery"][0]["status"] for r in receipts] == ["delivered", "read", "read", "read", "failed"]
 
 
+def _whatsapp_history_raw(result: ParityResult) -> None:
+    """The contact's message, read by the handler inside the run, has the ``data.source`` production stamped on it."""
+    (message,) = result.histories["raw"]
+    assert message["actor"] == "user"
+    source = message["data"]["source"]
+    assert (source["channel"], source["from_e164"], source["wa_message_id"]) == ("whatsapp", WHATSAPP_CUSTOMER, "wamid.in.1")
+
+
+def _public_chat_form_response(result: ParityResult) -> None:
+    """The visitor's answer, read inside the run, has the visitor's declared profile and ``data.source``."""
+    answer = next(event for event in result.histories["raw"] if event["type"] == "form.response")
+    assert (answer["author"], answer["user"]["user_name"], answer["user"]["user_email"]) == (
+        "Carlos Lima",
+        "Carlos Lima",
+        "carlos@example.com",
+    )
+    assert answer["data"]["source"] == {"channel": "dooers-public-chat", "public_chat_label": "Site institucional"}
+    assert answer["data"]["values"] == {"nome": "Carlos"}
+
+
 def _public_chat(connection_type: str, owner_id: str) -> Check:
     def check(result: ParityResult) -> None:
         assert result.outputs["core_validations"] == 1
@@ -393,6 +414,7 @@ SUBJECTS: dict[str, Subject] = {
         f"whatsapp_{send_type}": Subject(("events", "outputs.whatsapp_requests"), _whatsapp_sent(send_type)) for send_type in WHATSAPP_SENDS
     },
     "whatsapp_receipt": Subject(("events", "outputs.receipts", "outputs.whatsapp_requests"), _whatsapp_receipt),
+    "whatsapp_history_raw": Subject(("events", "histories.raw"), _whatsapp_history_raw),
     "server_dispatch": Subject(("events", "outputs.dispatch"), _server_dispatch),
     "server_ingest": Subject(("events", "outputs.ingest"), _server_ingest),
     "repository_crud": Subject(("events", "outputs.repository"), _repository),
@@ -400,6 +422,7 @@ SUBJECTS: dict[str, Subject] = {
     "chat_upload": Subject(("events", "outputs.chat_upload", "outputs.chat_upload_errors", "incoming.content"), _chat_upload),
     "public_chat_guest": Subject(("events", "outputs.acks", "outputs.threads"), _public_chat("guest", "guest:abc123")),
     "public_chat_authenticated": Subject(("events", "outputs.acks", "outputs.threads"), _public_chat("public_authenticated", "user-42")),
+    "public_chat_form_response": Subject(("events", "outputs.acks", "outputs.threads", "histories.raw"), _public_chat_form_response),
     "incoming_fields": Subject(("events", "incoming.context", "incoming.content"), _incoming_fields),
     **{f"history_{fmt}": Subject(("events", f"histories.{fmt}"), _history(fmt)) for fmt in HISTORY_FORMATS},
 }

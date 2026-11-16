@@ -89,6 +89,15 @@ owner's ``guest_profile`` (``legacy_model._thread_metadata``); ``Thread.users`` 
 (``_in_join_order``); the live handler context is compared too (``_public_chat_reply`` calls ``capture_incoming``).
 What is left of both public chat scenarios is the legacy WebSocket acks and the Core validation count
 (``agent_websocket``).
+
+Follow-up of the final review (2026-11-16): ``whatsapp_history_raw`` (a handler reads ``get_history_raw`` inside the delivery:
+the contact's message keeps the ``payload.data`` the ingress stamped) matches exactly, and ``public_chat_form_response`` (a
+visitor's form answer read the same way: profile and ``data.source``) differs only by ``agent_websocket``. The raw capture
+leaves the event and thread ids out: inside a delivery Maestro names the events it stored, and the SDK id of a message
+the SDK published (``client_event_id``) is applied only on a read outside one (``MaestroAgentPersistence._expose``); that
+id is not part of this follow-up. A second WhatsApp turn is not captured either: ``FakeMaestro`` (the delivery context)
+never receives the ``channel_delivery.updated`` that ``record_channel_delivery`` writes to ``FakeAgentApi``, so the first
+reply's ``data.delivery`` has no status in it.
 """
 
 from __future__ import annotations
@@ -242,6 +251,9 @@ GAPS: dict[str, Gap] = {
     # except for the legacy WebSocket acks and the Core validation count (a permanent declared difference).
     "public_chat_guest": _declared("agent_websocket", deliveries=_RESPONDED * 2),
     "public_chat_authenticated": _declared("agent_websocket", deliveries=_RESPONDED * 2),
+    # Follow-up of the final review: a visitor's form answer, read by the handler inside the delivery
+    # (``memory.get_history_raw``), has the visitor's profile and ``data.source`` too. Same single declared difference.
+    "public_chat_form_response": _declared("agent_websocket", deliveries=_RESPONDED * 2),
 }
 
 GAP_REASONS: dict[str, str] = {name: gap.reason for name, gap in GAPS.items()}

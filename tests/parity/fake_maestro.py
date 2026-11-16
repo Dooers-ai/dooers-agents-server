@@ -590,6 +590,19 @@ class FakeMaestro:
         payload = {"form_event_id": form["event_id"], "values": request["values"], "cancelled": request["cancelled"]}
         return self._append(thread_id, self._person_actor(person), payload, event_type="form.responded")
 
+    def respond_form_external(
+        self, thread_id: str, visitor: User, form_event_id: str, *, values: dict[str, Any], cancelled: bool
+    ) -> dict[str, Any]:
+        """``respond_form`` for a public chat visitor: the same route, its actor is the visitor's (``respondLegacyFormCommand``
+        accepts a ``human`` or an ``external`` principal, as ``legacy-forms.ts`` does).
+        """
+        self._client_request("form.response", "Public.FormEventPath", {"id": thread_id, "formEventId": form_event_id})
+        request = self._client_request("form.response", "Public.FormResponseRequest", {"values": values, "cancelled": cancelled})
+        participant = self._external_participant(thread_id, external_id=visitor.user_id)
+        form = self._form_author(thread_id, form_event_id)[0]
+        payload = {"form_event_id": form["event_id"], "values": request["values"], "cancelled": request["cancelled"]}
+        return self._append(thread_id, self._external_actor(participant), payload, event_type="form.responded")
+
     def upload(self, human: User, data: bytes, *, filename: str, mime_type: str) -> dict[str, Any]:
         """A person uploads a file for the next message; returns the attachment part."""
         metadata = self._client_request(

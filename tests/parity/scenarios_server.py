@@ -15,6 +15,7 @@ from dooers.agents.server.protocol.models import User, WireS2C_TextPart
 from tests.parity.model import (
     AGENT_ID,
     ASSISTANT_NAME,
+    FORM_EVENT_REF,
     ORG_ID,
     USER,
     WHATSAPP_AGENT_PHONE,
@@ -30,6 +31,7 @@ from tests.parity.model import (
     ScenarioInput,
     Turn,
     capture_incoming,
+    capture_raw_history,
 )
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nparity-image"
@@ -262,6 +264,14 @@ def _whatsapp_reply(send_type: str) -> Any:
     return handler
 
 
+async def _whatsapp_history_reader(on, send, memory, analytics, settings):
+    """Reads the thread's raw events inside the delivery: the contact's message keeps its ``data.source`` there."""
+    yield send.run_start()
+    await capture_raw_history(memory, limit=50)
+    yield send.text("Anotei o seu pedido.")
+    yield send.run_end()
+
+
 def _whatsapp_scenario(send_type: str) -> Scenario:
     return Scenario(
         handler=_whatsapp_reply(send_type),
@@ -319,6 +329,23 @@ async def _public_chat_reply(on, send, memory, analytics, settings):
     yield send.run_end()
 
 
+async def _public_chat_form_reader(on, send, memory, analytics, settings):
+    """Turn 1 asks the visitor for a form; on the answer, reads the raw events inside the delivery."""
+    yield send.run_start()
+    if on.form_data is not None or on.form_cancelled or on.form_event_id is not None:
+        await capture_raw_history(memory, limit=50)
+        yield send.text("Cadastro recebido.")
+    else:
+        yield send.form(
+            "Complete seu cadastro",
+            [send.form_text("nome", label="Nome", required=True)],
+            submit_label="Enviar",
+            cancel_label="Cancelar",
+            size="small",
+        )
+    yield send.run_end()
+
+
 GUEST_CONNECT = Connect(
     connection_type="guest",
     # What the core returns for a guest (``publicChatSession/services.ts``): the ``guest`` role in all three roles.
@@ -339,6 +366,17 @@ SERVER_SCENARIOS: dict[str, Scenario] = {
     "memory_by_thread_id": Scenario(handler=_photo_reply, incoming=ScenarioInput(flow="script", script=_memory_by_thread_id)),
     "chat_upload": Scenario(handler=_upload_reader, incoming=ScenarioInput(flow="script", script=_chat_upload)),
     **{f"whatsapp_{send_type}": _whatsapp_scenario(send_type) for send_type in WHATSAPP_SENDS},
+    "whatsapp_history_raw": Scenario(
+        handler=_whatsapp_history_reader,
+        incoming=ScenarioInput(
+            turns=(Turn(message="Oi, quero saber do meu pedido"),),
+            user=WHATSAPP_USER,
+            channel="whatsapp",
+            channel_meta=WHATSAPP_CHANNEL_META,
+            config=WHATSAPP_CONFIG,
+            service_secrets=WHATSAPP_SECRETS,
+        ),
+    ),
     "whatsapp_receipt": Scenario(
         handler=_echo,
         incoming=ScenarioInput(flow="script", script=_whatsapp_receipt, config=WHATSAPP_CONFIG, service_secrets=WHATSAPP_SECRETS),
@@ -359,6 +397,31 @@ SERVER_SCENARIOS: dict[str, Scenario] = {
                     },
                 ),
                 Turn(message="Pode me ligar?", metadata=PUBLIC_CHAT_CHANNEL),
+            ),
+            observe=frozenset({"threads"}),
+        ),
+    ),
+    "public_chat_form_response": Scenario(
+        handler=_public_chat_form_reader,
+        incoming=ScenarioInput(
+            flow="websocket",
+            connect=GUEST_CONNECT,
+            turns=(
+                Turn(
+                    message="Quero me cadastrar",
+                    metadata={
+                        "guest_name": "Carlos Lima",
+                        "guest_email": "carlos@example.com",
+                        "guest_phone": "+5511977776666",
+                        **PUBLIC_CHAT_CHANNEL,
+                    },
+                ),
+                Turn(
+                    message="",
+                    event_type="form.response",
+                    data={"form_event_id": FORM_EVENT_REF, "cancelled": False, "values": {"nome": "Carlos"}},
+                    metadata=PUBLIC_CHAT_CHANNEL,
+                ),
             ),
             observe=frozenset({"threads"}),
         ),

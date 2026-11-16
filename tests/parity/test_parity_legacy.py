@@ -78,6 +78,8 @@ EXPECTED_SCENARIOS = {
     "whatsapp_contact",
     "whatsapp_template",
     "whatsapp_receipt",
+    "whatsapp_history_raw",
+    "public_chat_form_response",
     "server_dispatch",
     "server_ingest",
     "repository_crud",

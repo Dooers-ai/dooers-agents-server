@@ -241,3 +241,17 @@ async def capture_histories(memory: Any) -> None:
     capture = current_capture()
     for fmt in capture.history_formats:
         capture.histories[fmt] = await memory.get_history(format=fmt)
+
+
+#: Where ``capture_raw_history`` stores what the handler read: a key of ``ParityResult.histories`` that no format uses.
+RAW_HISTORY = "raw"
+#: Left out of a raw capture: the ids of one thread are compared where its events are read back (``ParityResult.events``).
+#: Inside a delivery Maestro names the events it stored (``Public.Event.event_id``); the SDK id of a message the SDK
+#: published (``client_event_id``) is applied only on the reads outside one (``MaestroAgentPersistence._expose``).
+_RAW_ID_FIELDS = ("id", "thread_id")
+
+
+async def capture_raw_history(memory: Any, **query: Any) -> None:
+    """What the handler's own ``memory.get_history_raw`` returns inside the run (the last call wins), without the ids."""
+    events = [event.model_dump(exclude=set(_RAW_ID_FIELDS)) for event in await memory.get_history_raw(**query)]
+    current_capture().histories[RAW_HISTORY] = events

@@ -528,7 +528,18 @@ async def _run_maestro_public_chat(maestro: FakeMaestro, scenario: Scenario) -> 
         guest_profile=_public_chat_guest_profile(spec),
     )
     for number, turn in enumerate(spec.turns, start=1):
-        trigger = maestro.publish_external(thread_id, connect.core_user, _maestro_content(turn), client_event_id=f"client-{number}")
+        if turn.event_type == "form.response":
+            data = dict(turn.data or {})
+            form_event_id = _last_form(maestro, thread_id) if data.get("form_event_id") == FORM_EVENT_REF else data.get("form_event_id")
+            trigger = maestro.respond_form_external(
+                thread_id,
+                connect.core_user,
+                form_event_id,
+                values=copy.deepcopy(data.get("values") or {}),
+                cancelled=bool(data.get("cancelled")),
+            )
+        else:
+            trigger = maestro.publish_external(thread_id, connect.core_user, _maestro_content(turn), client_event_id=f"client-{number}")
         for delivery in maestro.deliveries_for(trigger):
             await maestro.deliver(adapter, delivery)
     return {}
