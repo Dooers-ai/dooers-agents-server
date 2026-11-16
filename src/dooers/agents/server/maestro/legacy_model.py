@@ -540,11 +540,23 @@ def _agent_event(event: dict[str, Any], *, recipient_instance_id: str, assistant
     return None
 
 
-def _form_response(event: dict[str, Any], participants: list[dict[str, Any]] | None = None) -> ThreadEvent:
-    """A person's answer to ``send.form``: production's ``form.response`` event, without content."""
+def _form_response(
+    event: dict[str, Any],
+    participants: list[dict[str, Any]] | None = None,
+    channel: str | None = None,
+    channel_meta: dict[str, Any] | None = None,
+) -> ThreadEvent:
+    """A person's answer to ``send.form``: production's ``form.response`` event, without content.
+
+    Production stamps ``data.source`` on every inbound event (``_with_inbound_source_data``), so a public chat visitor's
+    answer has it too: Maestro stores no ``data`` on a ``form.responded``, so it is derived from the thread's channel, as
+    ``_message`` does for the visitor's own message.
+    """
     payload, actor = event["payload"], event["actor"]
     person = production_user(actor, _participant_of(actor, participants))
     data = {"form_event_id": payload["form_event_id"], "values": deepcopy(payload["values"]), "cancelled": payload["cancelled"]}
+    if actor["kind"] == "external":
+        data.update(public_chat_source_data(channel, channel_meta) or {})
     return _base(event, type="form.response", actor="user", author=_author_display(person), user=_stored(person), data=data)
 
 
@@ -591,8 +603,9 @@ async def to_thread_event(
     its agent's events (and as the agent's ``user_name`` of a queue change), whatever name the
     agent has in Maestro.
     ``channel``/``channel_meta`` are the thread's own, at read time (``context.thread_from_view``/
-    ``thread_at_cutoff``): only ``message.created`` uses them, to add ``data.delivery`` to an
-    assistant message (``assistant_delivery_data``, F7). Without them (the default, ``None``), no
+    ``thread_at_cutoff``): ``message.created`` uses them to add ``data.delivery`` to an
+    assistant message (``assistant_delivery_data``, F7), and a public chat visitor's message or form answer
+    to add ``data.source``. Without them (the default, ``None``), no
     delivery is added, as before this field existed.
     ``participants`` are the thread's (the delivery context's): an ``external`` actor of a message carries
     only its ``participant_id``, so its name, e-mail and declared pre-chat come from its participant (on a message,
@@ -621,7 +634,7 @@ async def to_thread_event(
             participants=participants,
         )
     if kind == "form.responded":
-        return _form_response(event, participants)
+        return _form_response(event, participants, channel, channel_meta)
     if kind == "thread.updated":
         return _queue_update(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name, participants=participants)
     return _agent_event(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name)

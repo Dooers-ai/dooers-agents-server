@@ -141,13 +141,13 @@ async def test_a_message_without_data_outside_a_channel_has_none():
 # -- finding 2: the profile of an external actor on a form answer and on a queue change --
 
 
-async def _external_form_response(actor: dict[str, Any], participant: dict[str, Any]):
+async def _external_form_response(actor: dict[str, Any], participant: dict[str, Any], **conversion: Any):
     thread = MaestroThread(default_contracts())
     form = thread.append(
         "form.created", AGENT, {"message": "Dados", "elements": [], "submit_label": "Enviar", "cancel_label": "Cancelar", "size": "small"}
     )
     response = thread.append("form.responded", actor, {"form_event_id": form["event_id"], "values": {"nome": "Ana"}, "cancelled": False})
-    return await _read(response, participants=[participant])
+    return await _read(response, participants=[participant], **conversion)
 
 
 async def test_a_visitors_form_answer_has_its_participants_name_and_email():
@@ -193,3 +193,23 @@ async def test_a_visitors_queue_change_has_its_participants_name_and_email():
         "carlos@example.com",
     )
     assert converted.data == {"field": "queue", "from": "vendas", "to": "suporte"}
+
+
+async def test_a_visitors_form_answer_carries_the_inbound_source_like_production():
+    """``_with_inbound_source_data`` stamps ``data.source`` on every inbound event, a form answer included."""
+    participant = _visitor_participant()
+    actor = _external_actor(participant_id=participant["participant_id"], connection_type="guest")
+
+    converted = await _external_form_response(actor, participant, channel="dooers-public-chat", channel_meta=dict(PUBLIC_CHAT_META))
+
+    assert converted.data["source"] == {"channel": "dooers-public-chat", "public_chat_label": "Site institucional"}
+    assert converted.data["values"] == {"nome": "Ana"}
+
+
+async def test_a_form_answer_outside_a_public_chat_gets_no_source():
+    participant = _visitor_participant()
+    actor = _external_actor(participant_id=participant["participant_id"], connection_type="guest")
+
+    converted = await _external_form_response(actor, participant, channel="dooers-platform", channel_meta=None)
+
+    assert "source" not in converted.data
