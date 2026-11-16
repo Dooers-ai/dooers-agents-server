@@ -395,6 +395,17 @@ def _own(actor: dict[str, Any], recipient_instance_id: str | None) -> bool:
     return actor["kind"] == "agent" and actor["instance_agent_id"] == recipient_instance_id
 
 
+def _participant_of(actor: dict[str, Any], participants: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """The participant of an ``external`` actor (a channel contact or a public chat visitor), by ``participant_id``.
+
+    Such an actor is a snapshot with no profile: its participant (the same ``participant_id``) has the name, e-mail and
+    declared pre-chat (``context._user`` does the same for the live context). Any other actor has no lookup.
+    """
+    if actor["kind"] != "external":
+        return None
+    return next((p for p in participants or [] if p.get("participant_id") == actor.get("participant_id")), None)
+
+
 async def _message(
     event: dict[str, Any],
     *,
@@ -426,10 +437,7 @@ async def _message(
     else:
         # A channel contact or a public chat visitor: the actor is a snapshot with no profile, its participant
         # (the same ``participant_id``) has it (``context._user`` does the same for the live context).
-        participant = None
-        if actor["kind"] == "external":
-            participant = next((p for p in participants or [] if p.get("participant_id") == actor.get("participant_id")), None)
-        person = production_user(actor, participant)
+        person = production_user(actor, _participant_of(actor, participants))
         legacy_actor, author, user = "user", _author_display(person), _stored(person)
     # F7: production's ``_assistant_delivery_data(context)`` on every assistant message (own agent, or
     # another agent alone in the thread, since both render as ``assistant`` here); never on a person's
@@ -475,6 +483,12 @@ async def _message(
     elif legacy_actor == "user" and actor["kind"] == "external":
         # Production's ``_with_inbound_source_data`` on the visitor's own message.
         data = public_chat_source_data(channel, channel_meta)
+    stored = payload.get("data")
+    if isinstance(stored, dict) and stored:
+        # What the message itself carries (``payload.data``: the ingress stamps a WhatsApp inbound's ``source`` there, with
+        # per-message values the thread cannot give) wins key by key over what is derived from the thread above, so a
+        # ``source`` of its own is never mixed with the derived one. The one rule inside and outside a delivery.
+        data = {**(data or {}), **deepcopy(stored)}
     return _base(event, type="message", actor=legacy_actor, author=author, user=user, content=content or None, data=data)
 
 
@@ -526,20 +540,22 @@ def _agent_event(event: dict[str, Any], *, recipient_instance_id: str, assistant
     return None
 
 
-def _form_response(event: dict[str, Any]) -> ThreadEvent:
+def _form_response(event: dict[str, Any], participants: list[dict[str, Any]] | None = None) -> ThreadEvent:
     """A person's answer to ``send.form``: production's ``form.response`` event, without content."""
-    payload = event["payload"]
-    person = production_user(event["actor"])
+    payload, actor = event["payload"], event["actor"]
+    person = production_user(actor, _participant_of(actor, participants))
     data = {"form_event_id": payload["form_event_id"], "values": deepcopy(payload["values"]), "cancelled": payload["cancelled"]}
     return _base(event, type="form.response", actor="user", author=_author_display(person), user=_stored(person), data=data)
 
 
-def _queue_update(event: dict[str, Any], *, recipient_instance_id: str, assistant_name: str) -> ThreadEvent | None:
+def _queue_update(
+    event: dict[str, Any], *, recipient_instance_id: str, assistant_name: str, participants: list[dict[str, Any]] | None = None
+) -> ThreadEvent | None:
     """A queue change: production's ``thread.update`` event (a title change writes none)."""
     payload, actor = event["payload"], event["actor"]
     if PREVIOUS_QUEUE not in payload:
         return None
-    user = production_user(actor)
+    user = production_user(actor, _participant_of(actor, participants))
     if _own(actor, recipient_instance_id):
         user = User(user_id=user.user_id, user_name=assistant_name)
     if actor["kind"] == "agent":
@@ -579,8 +595,10 @@ async def to_thread_event(
     assistant message (``assistant_delivery_data``, F7). Without them (the default, ``None``), no
     delivery is added, as before this field existed.
     ``participants`` are the thread's (the delivery context's): an ``external`` actor of a message carries
-    only its ``participant_id``, so its name, e-mail and declared pre-chat come from its participant. The
-    visitor's own message gets ``data.source`` from ``channel``/``channel_meta`` (``public_chat_source_data``).
+    only its ``participant_id``, so its name, e-mail and declared pre-chat come from its participant (on a message,
+    a form answer and a queue change). The visitor's own message gets ``data.source`` from ``channel``/``channel_meta``
+    (``public_chat_source_data``) unless its ``payload.data`` has one (a WhatsApp inbound's, stamped at ingest): the
+    ``payload.data`` of any message is its ``data``, and its keys win over the derived ones.
 
     Actors: the own agent is ``assistant``; a person or channel contact is ``user``;
     ``tool_result.created`` is ``tool``; a queue change is ``system``. Another agent's
@@ -603,9 +621,9 @@ async def to_thread_event(
             participants=participants,
         )
     if kind == "form.responded":
-        return _form_response(event)
+        return _form_response(event, participants)
     if kind == "thread.updated":
-        return _queue_update(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name)
+        return _queue_update(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name, participants=participants)
     return _agent_event(event, recipient_instance_id=recipient_instance_id, assistant_name=assistant_name)
 
 

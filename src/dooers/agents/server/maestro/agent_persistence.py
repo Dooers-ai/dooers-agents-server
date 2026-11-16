@@ -212,10 +212,8 @@ class _ThreadReads(MaestroExecutionPersistence):
     def _expose(self, event: ThreadEvent, raw: Mapping[str, Any] | None, *, as_id: str | None = None) -> ThreadEvent:
         update: dict[str, Any] = {"thread_id": self._memory.envelope["thread_id"]}
         if raw is not None:
+            # ``data`` is not touched: ``to_thread_event`` already folds the message's ``payload.data`` into it.
             update["id"] = as_id or self._published_by_me(raw) or event.id
-            data = raw["payload"].get("data") if raw["type"] == "message.created" else None
-            if isinstance(data, dict) and data:
-                update["data"] = {**(event.data or {}), **deepcopy(data)}
         return event.model_copy(update=update)
 
     async def get_events(  # type: ignore[override]
