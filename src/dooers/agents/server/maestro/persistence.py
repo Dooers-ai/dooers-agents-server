@@ -38,7 +38,7 @@ from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.persistence.base import FILTERABLE_FIELDS, EventOrder, Persistence
 from dooers.agents.server.protocol.models import Thread, ThreadEvent
 
-from .context import thread_at_cutoff, thread_from_view
+from .context import caller_thread_id, thread_at_cutoff, thread_from_view
 from .legacy_model import DEFAULT_ASSISTANT_NAME, fold_events, to_thread, to_thread_event
 from .window import MaestroContextWindow
 
@@ -116,9 +116,14 @@ class MaestroExecutionPersistence(Persistence):
         self._assistant_name = assistant_name
         self._published = published
 
-    def _reads(self, thread_id: str) -> bool:
-        """Only the delivery's thread exists here; another thread is unknown, as in production."""
-        return thread_id == self._memory.envelope["thread_id"]
+    async def _shown_id(self) -> str:
+        """The id of the thread as the handler sees it: the caller's key (``thread`` view of the context), else the Maestro id."""
+        head = await self._memory.window().load()
+        return caller_thread_id(head.get("thread"), self._memory.envelope["thread_id"])
+
+    async def _reads(self, thread_id: str) -> bool:
+        """Only the delivery's thread exists here (by its caller's key or by its Maestro id); another is unknown, as in production."""
+        return thread_id in (self._memory.envelope["thread_id"], await self._shown_id())
 
     async def _thread_state(
         self,
@@ -198,7 +203,7 @@ class MaestroExecutionPersistence(Persistence):
         the owner agent come from ``thread.created`` (the first event of the thread, read on its own); the
         title and the queue are the last change the window holds, else the ones of ``thread.created``.
         """
-        if not self._reads(thread_id):
+        if not await self._reads(thread_id):
             return None
         window, events, participants, _ = await self._thread_state()
         envelope = self._memory.envelope
@@ -229,7 +234,8 @@ class MaestroExecutionPersistence(Persistence):
             "channel": state["channel"],
             "channel_meta": state["channel_meta"],
         }
-        return to_thread(view, recipient_instance_id=envelope["instance_agent_id"], assistant_name=self._assistant_name)
+        thread = to_thread(view, recipient_instance_id=envelope["instance_agent_id"], assistant_name=self._assistant_name)
+        return thread.model_copy(update={"id": await self._shown_id()})
 
     async def get_events(
         self,
@@ -255,7 +261,7 @@ class MaestroExecutionPersistence(Persistence):
         an unknown id; only reading to the first event proves it. The window holds at most
         ``max_history_pages`` pages (``MaestroHistoryLimitError`` for a read that needs older events).
         """
-        if not self._reads(thread_id):
+        if not await self._reads(thread_id):
             return []
         while True:
             window, events, participants, uploaded = await self._thread_state()
@@ -266,7 +272,9 @@ class MaestroExecutionPersistence(Persistence):
         channel, channel_meta = await self._channel_state(window, events)
         conversion = self._conversion(participants, channel, channel_meta)
         links = _ExecutionLinks(self._memory.links, uploaded)
-        return await _all(to_thread_event(event, links=links, **conversion) for event in selected or [])
+        shown = await self._shown_id()
+        events = await _all(to_thread_event(event, links=links, **conversion) for event in selected or [])
+        return [event.model_copy(update={"thread_id": shown}) for event in events]
 
     async def _select(
         self,
@@ -338,10 +346,16 @@ class MaestroAgentMemory(AgentMemory):
     """
 
     def __init__(
-        self, memory: MaestroMemory, *, assistant_name: str = DEFAULT_ASSISTANT_NAME, published: PublishedOutputs | None = None
+        self,
+        memory: MaestroMemory,
+        *,
+        assistant_name: str = DEFAULT_ASSISTANT_NAME,
+        published: PublishedOutputs | None = None,
+        thread_id: str | None = None,
     ) -> None:
         persistence = MaestroExecutionPersistence(memory, assistant_name=assistant_name, published=published)
-        super().__init__(memory.envelope["thread_id"], persistence)
+        # ``thread_id``: the id the handler sees (the caller's key); the Maestro id when there is none.
+        super().__init__(thread_id or memory.envelope["thread_id"], persistence)
         self._maestro = memory
 
     async def hydrate_artifact(self, reference: MaestroArtifactReference) -> MaestroHydratedArtifact:

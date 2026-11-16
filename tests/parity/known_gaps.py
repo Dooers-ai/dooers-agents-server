@@ -95,9 +95,18 @@ delivery: the contact's messages keep the ``payload.data`` the ingress stamped, 
 which ``FakeAgentApi`` now mirrors into ``FakeMaestro``) matches exactly, and ``public_chat_form_response`` (a visitor's form
 answer read the same way: profile and ``data.source``) differs only by ``agent_websocket``. The raw capture leaves two fields
 out. ``id``: inside a delivery Maestro names the events it stored, and the SDK id of a message the SDK published
-(``client_event_id``) is applied only on a read outside one (``MaestroAgentPersistence._expose``). ``thread_id``: KNOWN OPEN
-GAP, not a permanent difference: inside a delivery the handler sees Maestro's thread UUID, while production gives the key of
-the caller; closing it needs an addition to the Maestro contract (own task).
+(``client_event_id``) is applied only on a read outside one (``MaestroAgentPersistence._expose``). ``thread_id`` is back in
+the raw capture (see the next entry).
+
+Thread key (2026-11-16, review follow-up): the gap the raw capture used to leave out is closed. The handler saw Maestro's thread
+UUID in ``on.context.thread_id``, ``memory.get_thread().id`` and the raw history, while production gives the key the caller chose
+(``wa:inst:...``). ``Public.ContextThread.external_key`` (a contract addition) carries that key; the SDK shows it in every place
+the handler reads, and still calls Maestro with the UUID. A public chat visitor thread has a key of Maestro's own
+(``public:<link>:...``): production shows the handler a plain id there, so Maestro sends ``null`` and the handler keeps the UUID.
+``thread_key_dispatch`` (``server.dispatch(thread_id="wa:inst:...")``, a handler that reads the id in the three places) compares
+the real value, which ``normalize`` would mask in a ``thread_id`` field, by capturing it as the text ``thread_id=<value>``;
+``public_chat_thread_ids`` checks that the public chat handler never sees ``public:...``. Both match the legacy result
+(``public_chat_thread_ids`` but for the same declared WebSocket difference as the other public chat scenarios).
 """
 
 from __future__ import annotations
@@ -254,6 +263,8 @@ GAPS: dict[str, Gap] = {
     # Follow-up of the final review: a visitor's form answer, read by the handler inside the delivery
     # (``memory.get_history_raw``), has the visitor's profile and ``data.source`` too. Same single declared difference.
     "public_chat_form_response": _declared("agent_websocket", deliveries=_RESPONDED * 2),
+    # The handler of a public chat thread sees a plain id, never Maestro's own ``public:...`` key (thread key follow-up).
+    "public_chat_thread_ids": _declared("agent_websocket", deliveries=_RESPONDED),
 }
 
 GAP_REASONS: dict[str, str] = {name: gap.reason for name, gap in GAPS.items()}

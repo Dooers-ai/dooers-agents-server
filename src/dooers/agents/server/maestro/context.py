@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -183,7 +183,19 @@ def thread_from_view(view: dict[str, Any]) -> dict[str, Any]:
         "queue": view["queue"],
         "channel": view["channel"],
         "channel_meta": deepcopy(view["channel_meta"]),
+        # The key the caller chose for the thread (``Public.ContextThread.external_key``); ``None`` when there is
+        # none and for a public chat thread (its key is the Maestro's own). An older Maestro sends none.
+        "external_key": view.get("external_key"),
     }
+
+
+def caller_thread_id(view: Mapping[str, Any] | None, maestro_thread_id: str) -> str:
+    """The thread id a handler sees: the caller's key when the thread has one, else the Maestro id.
+
+    Production shows the handler the id the caller chose (``wa:inst:...``, the ``thread_id`` of ``dispatch``).
+    Every call back to the Maestro uses ``maestro_thread_id``; only what the handler reads shows the key.
+    """
+    return (view or {}).get("external_key") or maestro_thread_id
 
 
 def thread_at_cutoff(events: list[dict[str, Any]], base: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -390,7 +402,7 @@ async def _incoming(
         # to production's (public chat: "public_chat" on the wire, "dooers-public-chat" in production).
         channel = _EXTERNAL_CHANNEL.get(actor["channel"], actor["channel"])
     context = AgentContext(
-        thread_id=envelope["thread_id"],
+        thread_id=caller_thread_id(snapshot.get("thread"), envelope["thread_id"]),
         agent_id=envelope["instance_agent_id"],
         event_id=origin["event_id"],
         organization_id=envelope["organization_id"],
@@ -542,7 +554,7 @@ async def maestro_handler_context(
         assert_options_current()
         from .persistence import MaestroAgentMemory
 
-        agent_memory = MaestroAgentMemory(memory, assistant_name=assistant_name, published=published)
+        agent_memory = MaestroAgentMemory(memory, assistant_name=assistant_name, published=published, thread_id=incoming.context.thread_id)
         if published is not None:
             # Plano 5, Tarefa 7: o sink manda pelo WhatsApp as mensagens de uma thread de WhatsApp
             # (F6) com os mesmos ``create_dooers_whatsapp_outbound``/``MaestroAgentApi`` de produção.

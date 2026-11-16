@@ -1,0 +1,151 @@
+"""The handler sees the caller's thread key inside a delivery too (the ``external_key`` of the thread view).
+
+Production gives the handler the thread id the caller chose (``wa:inst:{instance}:{+E164}`` for WhatsApp,
+the ``thread_id`` of ``dispatch``/``ingest``). In a Maestro delivery the envelope and the events carry the
+Maestro thread UUID; ``Public.ContextThread.external_key`` carries the caller's key (``null`` when there is
+none, and for a public chat visitor thread, whose key belongs to the Maestro). Every value the handler reads
+(context, ``ThreadEvent``, ``Thread``) shows that key; every call back to the Maestro keeps the UUID.
+"""
+
+from __future__ import annotations
+
+from uuid import uuid4
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from dooers.agents.server.maestro.context import maestro_handler_context
+from dooers.agents.server.maestro.persistence import MaestroAgentMemory
+from dooers.agents.server.protocol.maestro import default_contracts
+from tests.test_maestro_context import fixture_server, prepare, private
+from tests.test_maestro_core_context import AGENT_ACTOR, THREAD
+from tests.test_maestro_legacy_model import MaestroThread
+from tests.test_maestro_memory_parity import PARTICIPANTS, ContextMemory
+
+KEY = "wa:inst:inst-1:+5511999990000"
+
+
+@pytest.fixture(scope="module")
+def key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture(scope="module")
+def bundle():
+    return default_contracts()
+
+
+def _memory(external_key: str | None | type(...) = KEY) -> tuple[MaestroThread, ContextMemory]:
+    thread = MaestroThread(default_contracts())
+    for number in range(3):
+        thread.message(AGENT_ACTOR, [{"type": "text", "text": f"m{number}"}])
+    view = {**THREAD, "thread_id": thread.thread_id}
+    if external_key is not ...:
+        view["external_key"] = external_key
+    return thread, ContextMemory(thread, list(PARTICIPANTS), thread_view=view)
+
+
+# -- on.context.thread_id --
+
+
+async def test_the_context_thread_id_is_the_callers_key(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        page["thread"] = {**THREAD, "thread_id": memory._envelope["thread_id"], "external_key": KEY}
+        assert bundle.is_valid("Public.ContextResponse", page)
+        async with maestro_handler_context(memory, private) as prepared:
+            assert prepared.on.context.thread_id == KEY
+            # The calls back to the Maestro keep the UUID.
+            assert memory._envelope["thread_id"] != KEY
+
+
+@pytest.mark.parametrize("external_key", [None, ...])
+async def test_without_a_key_the_context_thread_id_is_the_maestro_id(key, bundle, external_key):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        page["thread"] = {**THREAD, "thread_id": memory._envelope["thread_id"]}
+        if external_key is not ...:
+            page["thread"]["external_key"] = external_key
+        async with maestro_handler_context(memory, private) as prepared:
+            assert prepared.on.context.thread_id == memory._envelope["thread_id"]
+
+
+async def test_an_older_maestro_without_the_thread_view_keeps_the_maestro_id(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        page.pop("thread", None)
+        async with maestro_handler_context(memory, private) as prepared:
+            assert prepared.on.context.thread_id == memory._envelope["thread_id"]
+
+
+# -- memory --
+
+
+async def test_the_handlers_memory_shows_the_key_in_events_and_thread():
+    thread, context = _memory()
+    memory = MaestroAgentMemory(context, thread_id=KEY)
+    assert memory._thread_id == KEY
+    raw = await memory.get_history_raw(limit=10)
+    assert raw and {event.thread_id for event in raw} == {KEY}
+    assert (await memory.get_thread()).id == KEY
+    # The Maestro id still reads the same thread (an internal caller, as the SDK's own code).
+    assert (await memory._persistence.get_thread(thread.thread_id)).id == KEY
+
+
+async def test_the_memory_of_a_thread_without_a_key_shows_the_maestro_id():
+    thread, context = _memory(None)
+    memory = MaestroAgentMemory(context, thread_id=thread.thread_id)
+    assert {event.thread_id for event in await memory.get_history_raw(limit=10)} == {thread.thread_id}
+    assert (await memory.get_thread()).id == thread.thread_id
+
+
+async def test_an_unknown_thread_id_is_still_unknown():
+    _, context = _memory()
+    memory = MaestroAgentMemory(context, thread_id=KEY)
+    assert await memory._persistence.get_thread(str(uuid4())) is None
+    assert await memory._persistence.get_events(str(uuid4())) == []
+
+
+# -- outside a delivery: the same rule (``MaestroAgentPersistence``) --
+
+VISITOR = {
+    "kind": "external",
+    "external_id": "guest:abc123",
+    "channel": "public_chat",
+    "connection_type": "guest",
+    "participant_id": str(uuid4()),
+    "state": "active",
+    "joined_sequence": "1",
+    "left_sequence": None,
+}
+PUBLIC_KEY = "public:11111111-1111-4111-8111-111111111111:guest:guest:abc123"
+
+
+def _persistence():
+    from types import SimpleNamespace
+
+    from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
+
+    api = SimpleNamespace(config=SimpleNamespace(instance_agent_id=str(uuid4()), max_history_pages=5))
+    return MaestroAgentPersistence(api)  # type: ignore[arg-type]
+
+
+async def test_a_thread_read_outside_a_delivery_shows_the_callers_key():
+    from tests.test_maestro_legacy_model import _thread_view
+
+    persistence, thread_id = _persistence(), str(uuid4())
+    thread = persistence._thread(_thread_view(thread_id, external_key=KEY))
+    assert thread.id == KEY
+    assert persistence._keys[thread_id] == KEY
+
+
+async def test_a_public_chat_thread_read_outside_a_delivery_shows_a_plain_id_never_the_maestro_key():
+    """Production shows the id of a public chat thread as a UUID: its key (``public:...``) is the Maestro's own."""
+    from tests.test_maestro_legacy_model import _thread_view
+
+    persistence, thread_id = _persistence(), str(uuid4())
+    view = _thread_view(thread_id, external_key=PUBLIC_KEY)
+    view["participants"].append(VISITOR)
+    assert persistence._thread(view).id == thread_id
+    assert persistence._keys[thread_id] == thread_id
+    assert await persistence._caller_key(thread_id) == thread_id

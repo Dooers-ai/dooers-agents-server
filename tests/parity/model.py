@@ -247,12 +247,31 @@ async def capture_histories(memory: Any) -> None:
 RAW_HISTORY = "raw"
 #: Left out of a raw capture. ``id``: inside a delivery Maestro names the events it stored; the SDK id of a message the SDK
 #: published (``client_event_id``) is applied only on the reads outside one (``MaestroAgentPersistence._expose``).
-#: ``thread_id``: a known open gap (see ``known_gaps.py``): the handler sees Maestro's thread UUID, production gives the
-#: caller's key.
-_RAW_ID_FIELDS = ("id", "thread_id")
+#: ``thread_id`` stays: the handler sees the caller's key in both (``Public.ContextThread.external_key``); ``normalize``
+#: still masks its value, so the scenarios that care about the value compare it with ``capture_thread_ids``.
+_RAW_ID_FIELDS = ("id",)
 
 
 async def capture_raw_history(memory: Any, **query: Any) -> None:
     """What the handler's own ``memory.get_history_raw`` returns inside the run (the last call wins), without the ids."""
     events = [event.model_dump(exclude=set(_RAW_ID_FIELDS)) for event in await memory.get_history_raw(**query)]
     current_capture().histories[RAW_HISTORY] = events
+
+
+#: Where ``capture_thread_ids`` stores what the handler saw: a key of ``ParityResult.histories`` no format uses.
+THREAD_IDS = "thread_ids"
+
+
+async def capture_thread_ids(on: Any, memory: Any) -> None:
+    """The thread id the handler sees in each place, as text ``normalize`` does not mask (it masks ``thread_id`` fields).
+
+    ``on.context.thread_id``, ``memory.get_thread().id`` and the ``thread_id`` of each raw history event, each as
+    ``"thread_id=<value>"``: a string that is no known id, so two runs agree only on the real value.
+    """
+    raw = await memory.get_history_raw(limit=50)
+    thread = await memory.get_thread()
+    current_capture().histories[THREAD_IDS] = {
+        "context": f"thread_id={on.context.thread_id}",
+        "get_thread": f"thread_id={thread.id}",
+        "raw": [f"thread_id={event.thread_id}" for event in raw],
+    }

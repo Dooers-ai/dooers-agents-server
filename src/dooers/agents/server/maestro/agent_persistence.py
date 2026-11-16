@@ -189,6 +189,11 @@ class _Reader:
 class _ThreadReads(MaestroExecutionPersistence):
     """The reads of a handler's memory over one thread of the agent API, with the ids the caller knows."""
 
+    async def _shown_id(self) -> str:
+        # The caller's own reference (``_expose``), not the ``external_key`` of the agent API view: that one is
+        # the Maestro's for a public chat thread, and the view of a delivery is read through ``context.py``.
+        return self._memory.envelope["thread_id"]
+
     def _published_by_me(self, raw: Mapping[str, Any]) -> str | None:
         """The SDK event id of an event this agent published through the API (its ``client_event_id``)."""
         if raw.get("published_by_instance_agent_id") == self._memory.envelope["instance_agent_id"]:
@@ -248,6 +253,19 @@ class _ThreadReads(MaestroExecutionPersistence):
         conversion = self._conversion(list(head["participants"]), channel, channel_meta)
         converted = await to_thread_event(target, links=self._memory.links, **conversion)
         return None if converted is None else self._expose(converted, target, as_id=as_id)
+
+
+def callers_key(view: Mapping[str, Any]) -> str | None:
+    """The key the caller chose for a thread of the agent API (``Public.AgentThread``), or ``None``.
+
+    A public chat visitor thread has an ``external_key`` too (``public:<link>:...``), but it is Maestro's own: production
+    shows the handler a plain id there, so it is no caller's key. Only the visitor path of Maestro gives a participant a
+    ``connection_type`` (the agent cannot), which tells that thread apart. A delivery's own ``thread`` view says the same in
+    ``Public.ContextThread.external_key`` (``null`` there), so inside and outside a delivery the rule is one.
+    """
+    if any(p.get("kind") == "external" and p.get("connection_type") for p in view.get("participants", ())):
+        return None
+    return view.get("external_key")
 
 
 def _content(parts: Iterable[Any] | None) -> list[dict[str, Any]]:
@@ -334,13 +352,13 @@ class MaestroAgentPersistence(Persistence):
     # -- helpers --
 
     def _thread(self, view: dict[str, Any], caller_id: str | None = None) -> Thread:
-        key = view.get("external_key") or view["thread_id"]
+        key = callers_key(view) or view["thread_id"]
         self._keys[view["thread_id"]] = key
         thread = to_thread(view, recipient_instance_id=self._config.instance_agent_id, assistant_name=self._assistant_name)
         return thread.model_copy(update={"id": caller_id or key})
 
     async def _caller_key(self, maestro_thread_id: str) -> str:
-        """The id the SDK shows for a Maestro thread: its ``external_key``, else the Maestro id."""
+        """The id the SDK shows for a Maestro thread: the key its caller chose (``callers_key``), else the Maestro id."""
         if maestro_thread_id not in self._keys:
             try:
                 self._thread(await self._api.get_thread(maestro_thread_id))

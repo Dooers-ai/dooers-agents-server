@@ -212,6 +212,14 @@ sem mudança, sobre `MaestroExecutionPersistence` (`persistence.py`). Por isso
 - `get_thread()`: `updated_at` e `last_event_at` são a hora do último evento lido (corte e
   ecos). Produção muda os dois só nos eventos do agente. Os papéis da pessoa ficam no padrão
   de `User` até o plano 5 (a entrega do Maestro ainda não traz o contexto do Core).
+- O `thread_id` que o handler vê dentro da entrega é a chave que o chamador escolheu
+  (`dispatch`, `ingest`, WhatsApp: `wa:inst:...`), como na produção: vem de
+  `Public.ContextThread.external_key`. Vale em `on.context.thread_id`, `memory.get_thread().id`
+  e no `thread_id` de cada `ThreadEvent` lido. Sem chave, vale o UUID do Maestro. A thread do
+  visitante do chat público tem uma chave do próprio Maestro (`public:...`): o Maestro envia
+  `null` e o handler vê o UUID. Fora da entrega a regra é a mesma (`callers_key`, que reconhece a
+  thread do visitante pelo participante `connection_type`). Toda chamada de volta ao Maestro
+  usa o UUID.
 - Na thread com vários agentes ativos, a mensagem de outro agente é de `user`, com o
   prefixo `[agente: <nome>] `. As mensagens da pessoa e do próprio agente ficam iguais às
   de produção.

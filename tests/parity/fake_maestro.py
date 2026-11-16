@@ -1315,6 +1315,9 @@ class FakeMaestro:
             "channel_meta": deepcopy(thread["channel_meta"]),
             "created_at": thread["created_at"],
             "owner_instance_agent_id": thread["owner_instance_agent_id"],
+            # The key the caller chose; a public chat visitor thread (``ensure_external_thread``; ``created_by`` is
+            # ``public_chat:<link>`` in Maestro) has a key of Maestro's own, never shown to a handler.
+            "external_key": None if thread_id in self._external_threads.values() else thread["external_key"],
         }
 
     def _append(

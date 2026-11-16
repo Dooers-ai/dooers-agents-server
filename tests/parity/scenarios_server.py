@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import Any
 
 from dooers.agents.server.features.channels.whatsapp.delivery_receipt import apply_whatsapp_delivery_receipt
@@ -17,6 +18,7 @@ from tests.parity.model import (
     ASSISTANT_NAME,
     FORM_EVENT_REF,
     ORG_ID,
+    THREAD_IDS,
     USER,
     WHATSAPP_AGENT_PHONE,
     WHATSAPP_CHANNEL_META,
@@ -32,6 +34,8 @@ from tests.parity.model import (
     Turn,
     capture_incoming,
     capture_raw_history,
+    capture_thread_ids,
+    current_capture,
 )
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nparity-image"
@@ -68,6 +72,26 @@ async def _server_dispatch(server: Any, handler: Any) -> dict[str, Any]:
     fixed = await server.dispatch(handler, AGENT_ID, "Thread com id fixo", thread_id="thread-fixa-1", **_same_identity())
     calls.append(await _stream_view(fixed))
     return {"dispatch": calls}
+
+
+#: The key a caller chooses for a thread: what the handler sees as its ``thread_id`` in production.
+CALLER_THREAD_KEY = "wa:inst:inst-1:+5511999990000"
+
+
+async def _thread_ids_reader(on, send, memory, analytics, settings):
+    """Reads the thread id from every place a handler can (context, ``get_thread``, raw history) inside the delivery."""
+    yield send.run_start()
+    await capture_thread_ids(on, memory)
+    yield send.text("ok")
+    yield send.run_end()
+
+
+async def _server_dispatch_key(server: Any, handler: Any) -> dict[str, Any]:
+    """The caller picks the thread id. What the SDK gives back, outside the delivery, is the key too."""
+    stream = await server.dispatch(handler, AGENT_ID, "Oi", thread_id=CALLER_THREAD_KEY, **_same_identity())
+    await stream.collect()
+    outside = await (await server.memory(CALLER_THREAD_KEY)).get_history_raw(limit=50)
+    return {"thread_key": {"stream": f"thread_id={stream.thread_id}", "outside": [f"thread_id={e.thread_id}" for e in outside]}}
 
 
 PEER_CHANNEL_META = {
@@ -329,6 +353,26 @@ async def _public_chat_reply(on, send, memory, analytics, settings):
     yield send.run_end()
 
 
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+async def _public_chat_thread_ids(on, send, memory, analytics, settings):
+    """The handler of a public chat thread sees a plain id (a UUID), never the Maestro's own ``public:...`` key."""
+    yield send.run_start()
+    await capture_thread_ids(on, memory)
+    seen = current_capture().histories[THREAD_IDS]
+    values = [seen["context"], seen["get_thread"], *seen["raw"]]
+    ids = {value.removeprefix("thread_id=") for value in values}
+    # The values differ between runs (random ids): compare their shape and that every place agrees.
+    current_capture().histories[THREAD_IDS] = {
+        "one_id_everywhere": len(ids) == 1,
+        "plain_uuid": all(_UUID.match(value) for value in ids),
+        "public_key_leaked": any(value.startswith("public:") for value in ids),
+    }
+    yield send.text("ok")
+    yield send.run_end()
+
+
 async def _public_chat_form_reader(on, send, memory, analytics, settings):
     """Turn 1 asks the visitor for a form; on the answer, reads the raw events inside the delivery."""
     yield send.run_start()
@@ -362,6 +406,7 @@ PUBLIC_AUTHENTICATED_CONNECT = Connect(
 SERVER_SCENARIOS: dict[str, Scenario] = {
     "server_dispatch": Scenario(handler=_echo, incoming=ScenarioInput(flow="script", script=_server_dispatch)),
     "server_ingest": Scenario(handler=_echo, incoming=ScenarioInput(flow="script", script=_server_ingest)),
+    "thread_key_dispatch": Scenario(handler=_thread_ids_reader, incoming=ScenarioInput(flow="script", script=_server_dispatch_key)),
     "repository_crud": Scenario(handler=_echo, incoming=ScenarioInput(flow="script", script=_repository_crud)),
     "memory_by_thread_id": Scenario(handler=_photo_reply, incoming=ScenarioInput(flow="script", script=_memory_by_thread_id)),
     "chat_upload": Scenario(handler=_upload_reader, incoming=ScenarioInput(flow="script", script=_chat_upload)),
@@ -397,6 +442,25 @@ SERVER_SCENARIOS: dict[str, Scenario] = {
                     },
                 ),
                 Turn(message="Pode me ligar?", metadata=PUBLIC_CHAT_CHANNEL),
+            ),
+            observe=frozenset({"threads"}),
+        ),
+    ),
+    "public_chat_thread_ids": Scenario(
+        handler=_public_chat_thread_ids,
+        incoming=ScenarioInput(
+            flow="websocket",
+            connect=GUEST_CONNECT,
+            turns=(
+                Turn(
+                    message="Olá",
+                    metadata={
+                        "guest_name": "Carlos Lima",
+                        "guest_email": "carlos@example.com",
+                        "guest_phone": "+5511977776666",
+                        **PUBLIC_CHAT_CHANNEL,
+                    },
+                ),
             ),
             observe=frozenset({"threads"}),
         ),

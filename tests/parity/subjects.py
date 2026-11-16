@@ -27,7 +27,7 @@ from tests.parity.model import (
 )
 from tests.parity.scenarios_incoming import HISTORY_FORMATS
 from tests.parity.scenarios_send import CHART_VARIANTS, FORM_TEXT_INPUT_TYPES
-from tests.parity.scenarios_server import PNG_BYTES, WHATSAPP_SENDS
+from tests.parity.scenarios_server import CALLER_THREAD_KEY, PNG_BYTES, WHATSAPP_SENDS
 
 Check = Callable[[ParityResult], None]
 
@@ -338,6 +338,21 @@ def _public_chat_form_response(result: ParityResult) -> None:
     assert answer["data"]["values"] == {"nome": "Carlos"}
 
 
+def _thread_key_dispatch(result: ParityResult) -> None:
+    """Dispatch with a chosen thread id: the handler, the stream and the memory outside all give that key."""
+    key = f"thread_id={CALLER_THREAD_KEY}"
+    seen = result.histories["thread_ids"]
+    assert seen["context"] == seen["get_thread"] == key
+    assert seen["raw"] and set(seen["raw"]) == {key}
+    outside = result.outputs["thread_key"]
+    assert outside["stream"] == key and set(outside["outside"]) == {key}
+
+
+def _public_chat_thread_ids(result: ParityResult) -> None:
+    """The handler of a public chat thread sees one plain id everywhere, never the key of the Maestro."""
+    assert result.histories["thread_ids"] == {"one_id_everywhere": True, "plain_uuid": True, "public_key_leaked": False}
+
+
 def _public_chat(connection_type: str, owner_id: str) -> Check:
     def check(result: ParityResult) -> None:
         assert result.outputs["core_validations"] == 1
@@ -420,6 +435,8 @@ SUBJECTS: dict[str, Subject] = {
     "whatsapp_history_raw": Subject(("events", "histories.raw"), _whatsapp_history_raw),
     "server_dispatch": Subject(("events", "outputs.dispatch"), _server_dispatch),
     "server_ingest": Subject(("events", "outputs.ingest"), _server_ingest),
+    "thread_key_dispatch": Subject(("events", "histories.thread_ids", "outputs.thread_key"), _thread_key_dispatch),
+    "public_chat_thread_ids": Subject(("events", "histories.thread_ids"), _public_chat_thread_ids),
     "repository_crud": Subject(("events", "outputs.repository"), _repository),
     "memory_by_thread_id": Subject(("events", "outputs.memory"), _memory),
     "chat_upload": Subject(("events", "outputs.chat_upload", "outputs.chat_upload_errors", "incoming.content"), _chat_upload),

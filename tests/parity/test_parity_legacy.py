@@ -81,6 +81,8 @@ EXPECTED_SCENARIOS = {
     "whatsapp_history_raw",
     "public_chat_form_response",
     "server_dispatch",
+    "thread_key_dispatch",
+    "public_chat_thread_ids",
     "server_ingest",
     "repository_crud",
     "memory_by_thread_id",
