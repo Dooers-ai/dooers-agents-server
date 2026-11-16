@@ -439,3 +439,11 @@ def test_public_api_imports_in_any_order(server_first):  # F8
         lines.insert(0, "import dooers.agents.server")
     proc = subprocess.run([sys.executable, "-c", "\n".join(lines)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_turn_internals_are_not_public_api():
+    from dooers.tools.connectors.runtime import TurnContext, current_turn
+
+    assert {"current_turn", "TurnContext"}.isdisjoint(connectors.__all__)
+    assert callable(current_turn) and TurnContext.__name__ == "TurnContext"  # still importable from their module
+    assert 'body["content"]' in connectors.__doc__  # the module example: call() returns the body, not the event

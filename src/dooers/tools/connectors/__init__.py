@@ -3,7 +3,8 @@
     from dooers.tools import connectors
 
     tools = await connectors.tools()            # ToolSet: .openai(), .anthropic(), ..., await .run(call)
-    event = await connectors.call("agenda", "create_event", {...})
+    body = await connectors.call("agenda", "create_event", {...})
+    event = body["content"]                     # call() returns the service body; the tool's result is in ["content"]
     await connectors.list()                     # what this agent may use in this turn, and why the rest is missing
 
 ``dooers.agents.server`` imports ``runtime`` from here, so this module must stay import-light:
@@ -23,11 +24,11 @@ from dooers.tools.connectors.errors import (
     InvalidArguments,
     PermissionDenied,
 )
-from dooers.tools.connectors.runtime import TurnContext, current_turn
 
 if TYPE_CHECKING:
     from dooers.tools.connectors.formats import ToolSpec
     from dooers.tools.connectors.toolset import ToolSet, call, tools
+    from dooers.tools.connectors.toolset import list_connectors as list  # noqa: F401 (typed connectors.list, kept out of __all__)
 
 # "list" is left out on purpose: ``from dooers.tools.connectors import *`` would shadow the builtin.
 __all__ = [
@@ -39,9 +40,7 @@ __all__ = [
     "PermissionDenied",
     "ToolSet",
     "ToolSpec",
-    "TurnContext",
     "call",
-    "current_turn",
     "tools",
 ]
 
