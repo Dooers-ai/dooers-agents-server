@@ -562,13 +562,14 @@ Tools from the organization's connectors (Google Calendar, GitHub), executed by 
 ```python
 from dooers.tools import connectors
 
-tools = await connectors.tools()
-completion = await openai.chat.completions.create(model="gpt-4.1", messages=messages, tools=tools.openai())
+tools = await connectors.tools()  # raises ConnectorError if the list can't be fetched (the guide shows the fallback)
+extra = {"tools": tools.openai()} if tools.names else {}  # OpenAI rejects tools=[]
+completion = await openai.chat.completions.create(model="gpt-4.1", messages=messages, **extra)
 message = completion.choices[0].message
 if message.tool_calls:
     messages.append(message.model_dump(exclude_none=True))
     for call in message.tool_calls:
-        messages.append(await tools.run(call))  # never raises: the LLM gets status and message
+        messages.append(await tools.run(call))  # connector, network and permission errors reach the LLM as status and message
     # ...and call the model again (full loop in the guide)
 ```
 

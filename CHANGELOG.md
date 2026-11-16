@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-running `langchain()` / `openai_agents()` tools (both import their package lazily;
   there is no new required dependency). `await toolset.run(call)` executes an OpenAI,
   Responses, Anthropic or Gemini tool call and returns the result message in the same
-  format. It never raises for connector, network or permission errors: the LLM gets
+  format (a `(name, arguments)` tuple or a legacy `{"name", "arguments"}` call returns the
+  plain result). It never raises for connector, network or permission errors: the LLM gets
   `status` and a short `message`. `toolset.bind(name, **values)` fixes arguments in code
   and removes them from the schema the LLM sees.
 - `connectors.call(connector, tool, arguments)` runs one tool without an LLM and raises
@@ -26,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`needs_approval_without_presence`, `person_required`, `blocked`).
 - When a call needs the person (connect an account, approve the action), the SDK writes a
   `connector.interaction` card to the chat, waits for the answer (180 s to connect, 120 s
-  to approve, or `interaction_timeout` for both) and runs the call again on its own.
-  `ToolSet` calls are recorded in the thread as `tool.call` / `tool.result`. These events
+  to approve, or `interaction_timeout` for both) and runs the call again on its own. A 5xx
+  or network error during the wait is retried until the deadline.
+  `ToolSet` calls are recorded in the thread as `tool.call` / `tool.result`, titled with the
+  tool's catalog title. These events
   are written outside the handler's `yield`, so `dispatch().collect()` does not return
   them.
 - `event.create` accepts an optional top-level `presence_token`. The SDK exchanges it with

@@ -16,13 +16,17 @@ A Dooers guarda as credenciais, aplica as permissões do Studio e executa as too
 ```python
 from openai import AsyncOpenAI
 from dooers.tools import connectors
+from dooers.tools.connectors import ConnectorError, ToolSet
 
 openai = AsyncOpenAI()
 
 
 async def agent_handler(incoming, send, memory, analytics, settings):
-    yield send.run_start()
-    tools = await connectors.tools()
+    yield send.run_start()  # antes dos conectores: veja "Conectar e aprovar no chat"
+    try:
+        tools = await connectors.tools()
+    except ConnectorError:  # serviço fora do ar ou não configurado: o agente segue sem conectores
+        tools = ToolSet([])
     messages = [
         {"role": "system", "content": "Você agenda consultas da clínica."},
         *await memory.get_history(limit=20, format="openai"),
@@ -43,7 +47,9 @@ async def agent_handler(incoming, send, memory, analytics, settings):
 ```
 
 - `tools.run(call)` executa a chamada e devolve a mensagem `{"role": "tool", ...}` pronta para a próxima volta.
-- `run` **nunca levanta** por erro de conector, rede ou permissão. O LLM recebe `status` e `message` e explica à pessoa.
+- `run` **nunca levanta** por erro de conector, rede ou permissão. O LLM recebe `status` e `message` e explica à pessoa. Só levanta `ValueError` quando `call` não tem o formato de nenhum provedor, o que é erro no seu código.
+- `connectors.tools()` levanta `ConnectorError` quando não consegue buscar a lista. Sem o `except`, o turno falha inteiro; com `ToolSet([])`, o agente responde sem tools.
+- Passe `tools` só quando `tools.names` não estiver vazio. A OpenAI recusa `tools=[]`.
 - O chat mostra cada chamada como `tool.call` e `tool.result`.
 - Se você mistura tools suas com as do conector, só passe a `run` as chamadas com `call.function.name in tools.names`. Um nome fora do conjunto volta como `denied`, sem chegar ao serviço.
 
@@ -72,7 +78,7 @@ result = await graph.ainvoke({"messages": [("user", incoming.message)]})
 yield send.text(result["messages"][-1].content)
 ```
 
-Precisa de `pip install langchain-core`. Cada `StructuredTool` usa o JSON Schema do conector como `args_schema` e executa sozinha.
+Precisa de `pip install langchain-core`. Cada `StructuredTool` usa o JSON Schema do conector como `args_schema` e executa sozinha. `run` não aceita o `ToolCall` do LangChain: use `tools.langchain()`.
 
 ## Outros provedores
 
@@ -81,8 +87,8 @@ Precisa de `pip install langchain-core`. Cada `StructuredTool` usa o JSON Schema
 | OpenAI Chat Completions | `tools.openai()` | um item de `message.tool_calls` | `{"role": "tool", "tool_call_id", "content"}` |
 | OpenAI Responses | `tools.openai_responses()` | o item `function_call` | `{"type": "function_call_output", "call_id", "output"}` |
 | Anthropic | `tools.anthropic()` | o bloco `tool_use` | `{"type": "tool_result", "tool_use_id", "content"}`, para o `content` de uma mensagem `user` |
-| Gemini | `tools.gemini()`, em `types.Tool(function_declarations=...)` | o `function_call` | `{"function_response": {"name", "response"}}` |
-| Qualquer um | `tools.specs` | a tupla `(nome, argumentos)` | o dicionário de resultado |
+| Gemini | `tools.gemini()`, em `types.Tool(function_declarations=...)` | o `function_call` | `{"function_response": {"id", "name", "response"}}`, com `id` só quando o `function_call` traz um |
+| Qualquer um | `tools.specs` | a tupla `(nome, argumentos)`, ou `{"name", "arguments"}` com os argumentos em string JSON (o `function_call` antigo da OpenAI) | o dicionário de resultado |
 
 Para filtrar, use `connectors.tools(only=["agenda_recepcao"], read_only=True)`. O nome de cada tool para o LLM é `{conector}__{tool}`, por exemplo `agenda_recepcao__create_event`.
 
@@ -144,7 +150,9 @@ for conector in await connectors.list():
 Quando falta conectar a conta ou a tool pede aprovação, o SDK põe um cartão no chat, espera a pessoa e repete a chamada sozinho. O seu código não trata a retomada.
 
 - O prazo padrão é de 180 segundos para conectar e 120 para aprovar. `interaction_timeout` em `tools()` ou `call()` substitui os dois.
-- Mantenha `interaction_timeout` em **até 240 segundos**. Durante a espera o socket do chat fica em silêncio, e o cliente derruba a conexão depois de 300 segundos sem resposta.
+- Abra o run (`yield send.run_start()`) **antes** de chamar os conectores. Durante a espera o socket do chat fica em silêncio. Com um run aberto, o cliente aguenta 300 segundos assim; sem run, derruba a conexão depois de 90 segundos, antes de acabar a espera de aprovação, que é de 120.
+- Mantenha `interaction_timeout` em **até 240 segundos**, para caber nos 300 segundos do cliente.
+- Se o serviço falha no meio da espera (5xx ou rede), o SDK pergunta de novo até o prazo. O cartão continua valendo.
 - Só a pessoa que está no chat aprova. A conta da empresa só é conectada por dono ou gerente da organização; para os outros, o cartão pede para chamar um admin.
 
 ## Status
@@ -156,7 +164,7 @@ Quando falta conectar a conta ou a tool pede aprovação, o SDK põe um cartão 
 | `declined` | A pessoa recusou. | `ApprovalDeclined` |
 | `interaction_timeout` | A pessoa não respondeu a tempo. | `InteractionTimeout` |
 | `denied` | Sem permissão: organização, agente, pessoa ou tool fora do conjunto. | `PermissionDenied` |
-| `invalid_arguments` | Argumentos inválidos, inclusive JSON malformado vindo do LLM. | `InvalidArguments` |
+| `invalid_arguments` | Argumentos inválidos, inclusive JSON malformado vindo do LLM ou valor do `bind` que não vira JSON. | `InvalidArguments` |
 | `provider_error` | Erro do provedor, do serviço de conectores ou de rede. | `ConnectorError` |
 | `error` | Chamada fora do turno ou `DOOERS_CONNECTOR_SERVICE_URL` ausente. | `ConnectorError` |
 
