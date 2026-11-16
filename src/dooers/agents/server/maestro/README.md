@@ -737,7 +737,10 @@ Regras:
 - **Id da thread.** `create_thread` manda `external_key` igual ao id do SDK. Um `thread_id`
   que não é UUID é uma `external_key`. A busca tenta a `external_key` do agente e depois o id
   do Maestro. A resposta usa o `thread_id` do chamador. Uma lista, `get_event` e `get_run`
-  usam a `external_key` da thread, ou o id do Maestro se ela não tem chave.
+  usam a chave do chamador (`callers_key`): a `external_key` da thread quando o agente a
+  escolheu, ou o id do Maestro. A thread de chat público tem uma `external_key` do próprio
+  Maestro (`public:...`), que nunca aparece: ela mostra o id do Maestro, como a produção mostra
+  um id comum. Dentro de uma entrega vale a mesma regra (`external_key` do contexto da thread).
 - **Id do evento.** `create_event` manda o id do SDK como `client_event_id`. `get_event` e
   `remove_event` aceitam esse id ou o `event_id` do Maestro. Um evento que o handler produziu
   não tem id do SDK: seu id é o `event_id` do Maestro, o mesmo que `list_events` e
