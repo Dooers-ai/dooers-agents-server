@@ -89,6 +89,7 @@ from tests.parity.model import (
     DASHBOARD_CONNECT,
     FORM_EVENT_REF,
     ORG_ID,
+    PUBLIC_CHAT_LINK_ID,
     TOOLS_BASE,
     WHATSAPP_HMAC_SECRET,
     WHATSAPP_OUTBOUND_ID,
@@ -468,6 +469,71 @@ def _delivered_by_maestro(spec: ScenarioInput) -> bool:
     return spec.flow != "script" and spec.connect is None and spec.channel == "dooers-platform"
 
 
+def _is_public_chat_scenario(spec: ScenarioInput) -> bool:
+    """A public chat visitor (``tests/parity/model.py:109``'s ``Connect.connection_type``).
+
+    Section 7.3 of the design: the visitor never reaches the Maestro-mode Router. It talks to Maestro
+    directly (the core token exchange and ``ensurePublicChatThread``, plan 6 tasks 2-3), so this is a
+    sibling of ``_run_maestro_deliveries``/``_run_maestro_server``, not a case either one handles.
+    """
+    return spec.connect is not None and spec.connect.connection_type in {"guest", "public_authenticated"}
+
+
+def _public_chat_external_key(connect: Connect) -> str:
+    """``visitorThreadKey`` (``public-chat.ts``): ``public:<link>:<connection_type>:<external_id>``."""
+    return f"public:{PUBLIC_CHAT_LINK_ID}:{connect.connection_type}:{connect.core_user.user_id}"
+
+
+def _public_chat_channel_meta(spec: ScenarioInput) -> dict[str, Any] | None:
+    """``channel_meta`` of the visitor's thread: the first turn that carries one (``PUBLIC_CHAT_CHANNEL``)."""
+    for turn in spec.turns:
+        if turn.metadata and turn.metadata.get("channel_meta"):
+            return dict(turn.metadata["channel_meta"])
+    return None
+
+
+def _public_chat_guest_profile(spec: ScenarioInput) -> dict[str, Any] | None:
+    """The visitor's declared pre-chat (``guest_name``/``guest_email``/``guest_phone`` of the first turn's
+    metadata): what the core's ``thread.create.public_chat`` decision would carry as the visitor's profile.
+    """
+    if not spec.turns:
+        return None
+    metadata = spec.turns[0].metadata or {}
+    profile = {key[len("guest_") :]: metadata[key] for key in ("guest_name", "guest_email", "guest_phone") if metadata.get(key)}
+    return profile or None
+
+
+async def _run_maestro_public_chat(maestro: FakeMaestro, scenario: Scenario) -> dict[str, Any]:
+    """The public chat visitor's own path (design section 7.3): never the Maestro-mode Router.
+
+    The visitor's browser talks to Maestro directly (the core token exchange, then
+    ``ensurePublicChatThread``): the agent never sees a ``connect``/``event.create`` frame for it. Each
+    turn is the visitor's own publication (``FakeMaestro.publish_external``), delivered the same way a
+    web chat person's message is (``_run_maestro_deliveries``'s own loop).
+    """
+    spec = scenario.incoming
+    connect = spec.connect
+    assert connect is not None
+
+    async def resources(scope: Any) -> MaestroPrivateResources:
+        return MaestroPrivateResources(scope, MemoryPersistence(), {}, {})
+
+    agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+    adapter = create_text_delivery_adapter(agent_config, scenario.handler, resources)
+    thread_id = maestro.ensure_external_thread(
+        connect.core_user,
+        external_key=_public_chat_external_key(connect),
+        connection_type=connect.connection_type,
+        channel_meta=_public_chat_channel_meta(spec),
+        guest_profile=_public_chat_guest_profile(spec),
+    )
+    for number, turn in enumerate(spec.turns, start=1):
+        trigger = maestro.publish_external(thread_id, connect.core_user, _maestro_content(turn), client_event_id=f"client-{number}")
+        for delivery in maestro.deliveries_for(trigger):
+            await maestro.deliver(adapter, delivery)
+    return {}
+
+
 def _maestro_content(turn: Turn) -> list[dict[str, Any]]:
     """What the web chat publishes: the wire parts, or the message as one text part."""
     return _wire_content(turn) or [{"type": "text", "text": turn.message}]
@@ -842,14 +908,20 @@ async def _maestro_read_back(maestro: FakeMaestro, observe: frozenset[str]) -> t
 async def run_maestro(name: str) -> ParityResult:
     scenario = SCENARIOS[name]
     spec = scenario.incoming
-    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME, core_people=[spec.user, *spec.core_people], queues=spec.queues)
+    public_chat = _is_public_chat_scenario(spec)
+    #: The public chat visitor is what Core's connection context knows (``spec.user`` is irrelevant to it:
+    #: that path never reaches ``AgentServer.handle``/``.dispatch``, so it never sees that identity).
+    core_people = [spec.connect.core_user] if public_chat and spec.connect is not None else [spec.user]
+    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME, core_people=[*core_people, *spec.core_people], queues=spec.queues)
     persistence = MemoryPersistence()
-    server_mode = not _delivered_by_maestro(spec)
+    server_mode = not public_chat and not _delivered_by_maestro(spec)
     fake_agent_api = _prepare_agent_api(spec) if server_mode else None
     with _offline_environment(persistence, spec.connect or DASHBOARD_CONNECT, maestro, spec.media, agent_api=fake_agent_api) as fakes:
         capture, token = open_capture(scenario.history_formats)
         try:
-            if server_mode:
+            if public_chat:
+                outputs = await _run_maestro_public_chat(maestro, scenario)
+            elif server_mode:
                 assert fake_agent_api is not None
                 outputs = await _run_maestro_server(maestro, fake_agent_api, scenario, fakes)
             else:

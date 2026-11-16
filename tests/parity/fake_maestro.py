@@ -102,6 +102,12 @@ VISIBLE_REPLY_OUTPUTS = frozenset({"message.create", "form.create", "chart.creat
 MAX_AGENT_MESSAGE_PARTS = 20
 #: Name Maestro gives a web chat person in actors and participants (no Core profile in Maestro).
 WEB_CHAT_PERSON_NAME = "Humano"
+#: ``Public.Thread.channel`` of a public chat visitor's own thread (plan 6, ``public-chat.ts``'s
+#: ``PUBLIC_CHAT_CHANNEL``). The visitor's own actor/participant ``channel`` field is a different thing
+#: (the messaging channel, ``externalChannelSchema``: ``"public_chat"``), never this value.
+PUBLIC_CHAT_THREAD_CHANNEL = "dooers-public-chat"
+#: externalActorFields.channel of the public chat visitor's own actor/participant (``externalChannelSchema``).
+PUBLIC_CHAT_MESSAGE_CHANNEL = "public_chat"
 #: The thread SDK fields of index 4.3 that every ``Public.Thread`` projection of Maestro carries.
 THREAD_SDK_FIELDS = {
     "queue": None,
@@ -240,6 +246,12 @@ class FakeMaestro:
         self.rejections: list[tuple[str, str]] = []
         #: event_id -> e-mail and identity IDs declared by the publishing agent (agent context only).
         self.declared_profiles: dict[str, dict[str, Any]] = {}
+        #: external_key -> thread_id (``ensurePublicChatThread``'s own idempotency: the same key always
+        #: gives the same thread).
+        self._external_threads: dict[str, str] = {}
+        #: thread_id -> the visitor's declared pre-chat (``guest_name``/``guest_email``/``guest_phone`` of the
+        #: first message's metadata), agent-only (``visitorAgentFields.guest_profile``), never a browser.
+        self._guest_profiles: dict[str, dict[str, Any]] = {}
         #: Test hook (plan 5, task 8): called with ``(thread_id, event)`` right after ``_append`` stores it, so the
         #: harness can mirror a delivery's own writes into ``FakeAgentApi`` as they happen (a handler output a later
         #: call of the SAME delivery already needs, e.g. ``record_channel_delivery`` after a WhatsApp send).
@@ -387,6 +399,101 @@ class FakeMaestro:
         self.threads[thread_id] = self.contracts.validate("Public.Thread", thread)
         self.events[thread_id] = []
 
+    def ensure_external_thread(
+        self,
+        visitor: User,
+        *,
+        external_key: str,
+        connection_type: str,
+        channel_meta: dict[str, Any] | None = None,
+        guest_profile: dict[str, Any] | None = None,
+    ) -> str:
+        """``ensurePublicChatThread`` (plan 6, ``public-chat.ts``): the visitor talks to Maestro directly,
+        never through the Maestro-mode Router. The same ``external_key`` always gives the same thread
+        (idempotent, as in production: two tabs of the same visitor share it). The visitor and the link's
+        agent are the thread's only two participants, both ``role: "member"`` (an external participant's
+        role is always ``member``, per the contract; the agent never owns a visitor's thread either).
+
+        ``guest_profile`` (the visitor's own declared pre-chat, never verified by the core) is kept apart
+        from the stored participant (agent-only, ``visitorAgentFields.guest_profile``): the plain
+        ``Public.Thread`` participant a browser could read carries none of it.
+        """
+        thread_id = self._external_threads.get(external_key)
+        if thread_id is not None:
+            return thread_id
+        thread_id, now = str(uuid4()), _now()
+        visitor_participant = {
+            "participant_id": str(uuid4()),
+            "state": "active",
+            "joined_sequence": "1",
+            "left_sequence": None,
+            "kind": "external",
+            "external_id": visitor.user_id,
+            "channel": PUBLIC_CHAT_MESSAGE_CHANNEL,
+            "connection_type": connection_type,
+            "role": "member",
+        }
+        agent = {
+            "participant_id": str(uuid4()),
+            "display_name": self.assistant_name,
+            "state": "active",
+            "joined_sequence": "1",
+            "left_sequence": None,
+            "kind": "agent",
+            "principal_id": INSTANCE_AGENT_ID,
+            "instance_agent_id": INSTANCE_AGENT_ID,
+            "role": "member",
+            "capabilities": [],
+            "availability": "available",
+        }
+        thread = {
+            "organization_id": ORGANIZATION_ID,
+            "scope_kind": "workspace" if WORKSPACE_ID else "personal",
+            "workspace_id": WORKSPACE_ID,
+            "thread_id": thread_id,
+            "mode": "maestro",
+            "title": "",
+            "state": "active",
+            "version": 1,
+            "participants": [visitor_participant, agent],
+            "permissions": dict.fromkeys(_NO_PERMISSIONS, True) | {"supervise": False},
+            "capabilities": [],
+            "last_sequence": "0",
+            "cursor": f"thread.{thread_id}.0",
+            "supervision_policy": "strict",
+            "policy_version": 1,
+            "created_at": now,
+            "updated_at": now,
+            "queue": None,
+            "channel": PUBLIC_CHAT_THREAD_CHANNEL,
+            "channel_meta": deepcopy(channel_meta) if channel_meta else None,
+            "external_key": external_key,
+            "owner_instance_agent_id": INSTANCE_AGENT_ID,
+        }
+        self.threads[thread_id] = self.contracts.validate("Public.Thread", thread)
+        self.events[thread_id] = []
+        view = {**deepcopy(thread), "permissions": dict(_NO_PERMISSIONS), "last_sequence": "1", "cursor": f"thread.{thread_id}.1"}
+        self._append(thread_id, self._external_actor(visitor_participant), {"thread": view}, event_type="thread.created")
+        self._external_threads[external_key] = thread_id
+        if guest_profile:
+            self._guest_profiles[thread_id] = dict(guest_profile)
+        return thread_id
+
+    def publish_external(self, thread_id: str, visitor: User, content: list[dict[str, Any]], *, client_event_id: str) -> dict[str, Any]:
+        """The visitor's own message (``message.publish``), mirroring ``publish`` but with an external actor."""
+        request = self._client_request(
+            "message.create",
+            "Public.MessageCreateRequest",
+            {"type": "message.create", "client_event_id": client_event_id, "content": deepcopy(content), "mentions": []},
+            f"(part types: {[part.get('type') for part in content]})",
+        )
+        participant = self._external_participant(thread_id, external_id=visitor.user_id)
+        self._check_attachments(request["content"], visitor.user_id)
+        payload = {"client_event_id": request["client_event_id"], "content": request["content"], "mentions": request["mentions"]}
+        event = self._append(thread_id, self._external_actor(participant), payload)
+        self._link_attachments(event)
+        return event
+
     def admit_agent_event(self, thread_id: str, event_type: str, actor: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         """One event of an already-admitted agent-api thread, mirrored here verbatim (same actor/payload)."""
         return self._append(thread_id, actor, payload, event_type=event_type)
@@ -509,8 +616,10 @@ class FakeMaestro:
     # -- delivery side --
 
     def deliveries_for(self, event: dict[str, Any]) -> list[Delivery]:
-        """Routing with one agent: a person's message invokes it; a form response goes to the form's author."""
-        if event["actor"]["kind"] != "human":
+        """Routing with one agent: a person's or a public chat visitor's message invokes it; a form
+        response goes to the form's author.
+        """
+        if event["actor"]["kind"] not in ("human", "external"):
             return []
         thread_id = event["thread_id"]
         if event["type"] == "form.responded":
@@ -1034,6 +1143,28 @@ class FakeMaestro:
             "display_name": person["display_name"],
         }
 
+    def _external_participant(self, thread_id: str, *, external_id: str) -> dict[str, Any]:
+        thread = self.threads.get(thread_id)
+        matches = [
+            participant
+            for participant in (thread["participants"] if thread else [])
+            if participant["kind"] == "external" and participant["external_id"] == external_id and participant["state"] == "active"
+        ]
+        if len(matches) != 1:
+            raise FakeMaestroRejected("thread.access", f"external {external_id} is not an active participant of the thread")
+        return matches[0]
+
+    @staticmethod
+    def _external_actor(participant: dict[str, Any]) -> dict[str, Any]:
+        """``visitorActor`` (``public-chat.ts``): no ``display_name`` (unlike the web chat's own placeholder)."""
+        return {
+            "kind": "external",
+            "external_id": participant["external_id"],
+            "channel": participant["channel"],
+            "connection_type": participant["connection_type"],
+            "participant_id": participant["participant_id"],
+        }
+
     def _form_author(self, thread_id: str, form_event_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """The production form (``form.created`` of an agent) and its author, an active agent participant."""
         form = next((event for event in self.events.get(thread_id, []) if event["event_id"] == form_event_id), None)
@@ -1064,13 +1195,30 @@ class FakeMaestro:
         return view
 
     def _with_profile(self, view: dict[str, Any], thread_id: str) -> dict[str, Any]:
-        """``withProfile``: an active human the core knows gets name (when it has one), e-mail, identity IDs and roles.
+        """``withProfile``: agent-only fields of an actor or participant (never a browser).
+
+        A human gets them from the core's connection context (``_with_human_profile``), actor or
+        participant alike (the contract allows ``email``/``identity_ids``/the roles on both). A public
+        chat visitor's PARTICIPANT gets its own Core profile or the ``guest`` role, plus its own
+        declared pre-chat (``_with_external_profile``); its ACTOR never does (``Public.AgentEvent``'s
+        ``external`` actor branch has no such fields — only ``channel``/``connection_type``/
+        ``display_name``/``external_id``/``participant_id``, unlike the human branch): ``"role"`` is
+        on a participant only, so that is how the two are told apart here.
+        """
+        if not self.connection_context:
+            return view
+        if view.get("kind") == "human" and "principal_id" in view:
+            return self._with_human_profile(view, thread_id)
+        if view.get("kind") == "external" and "external_id" in view and "role" in view:
+            return self._with_external_profile(view, thread_id)
+        return view
+
+    def _with_human_profile(self, view: dict[str, Any], thread_id: str) -> dict[str, Any]:
+        """An active human the core knows gets name (when it has one), e-mail, identity IDs and roles.
 
         The e-mail is ``null`` when the core has none; a name the core lacks leaves the placeholder.
         An actor or participant that already has an e-mail or identity IDs (the agent declared them) keeps them.
         """
-        if not self.connection_context or view.get("kind") != "human" or "principal_id" not in view:
-            return view
         person = self.core_people.get(view["principal_id"])
         active = any(
             p["kind"] == "human" and p["principal_id"] == view["principal_id"] and p["state"] == "active"
@@ -1088,6 +1236,40 @@ class FakeMaestro:
             "organization_role": person.organization_role,
             "workspace_role": person.workspace_role,
         }
+
+    def _with_external_profile(self, view: dict[str, Any], thread_id: str) -> dict[str, Any]:
+        """A public chat visitor's own Core profile, or the ``guest`` role, plus its declared pre-chat.
+
+        Authenticated (``connection_type != "guest"``): name, e-mail, identity IDs and the roles of the
+        signed-in user, from ``core_people`` (keyed by ``external_id``, the production user id) — the
+        same merge a human gets, system_role always ``"user"`` (``_with_human_profile``). Guest: no name,
+        no e-mail, no identity IDs, and ``"guest"`` in the three roles (``visitorContextSchema``'s own
+        docstring); ``guest_profile`` (the visitor's own declared name/e-mail/phone, never verified by the
+        core) is added either way, agent-only (``visitorAgentFields.guest_profile``, index 4.3.1).
+        """
+        active = any(
+            p["kind"] == "external" and p.get("external_id") == view["external_id"] and p["state"] == "active"
+            for p in self.threads[thread_id]["participants"]
+        )
+        if not active or "email" in view or "identity_ids" in view:
+            return view
+        extra: dict[str, Any] = {}
+        if view.get("connection_type") == "guest":
+            extra.update(system_role="guest", organization_role="guest", workspace_role="guest")
+        else:
+            person = self.core_people.get(view["external_id"])
+            extra.update(
+                **({"display_name": person.user_name} if person is not None and person.user_name else {}),
+                email=(person.user_email or None) if person is not None else None,
+                identity_ids=list(person.identity_ids) if person is not None else [],
+                system_role="user",
+                organization_role=person.organization_role if person is not None else "member",
+                workspace_role=person.workspace_role if person is not None else "member",
+            )
+        guest_profile = self._guest_profiles.get(thread_id)
+        if guest_profile:
+            extra["guest_profile"] = deepcopy(guest_profile)
+        return {**view, **extra}
 
     def _workspace(self) -> dict[str, Any]:
         """``workspace`` of the context: the core's queue catalog and its slugs."""

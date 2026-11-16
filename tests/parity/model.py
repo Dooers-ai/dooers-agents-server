@@ -45,6 +45,10 @@ WHATSAPP_CUSTOMER = "+5511999990000"
 WHATSAPP_AGENT_PHONE = "+5511888880000"
 WHATSAPP_HMAC_SECRET = "parity-hmac-secret"
 WHATSAPP_OUTBOUND_ID = "wamid.out.1"
+#: Fixed id of the public chat link the ``public_chat_*`` scenarios use (``visitorThreadKey``'s
+#: ``public_chat_link_id`` component). The exact value does not matter, only that it stays stable
+#: across the turns of the same scenario (``ensurePublicChatThread`` is keyed by it).
+PUBLIC_CHAT_LINK_ID = "55555555-5555-4555-8555-555555555555"
 
 # Non-default organization and workspace roles, so a mode that loses Core's roles shows the difference.
 # ``system_role`` is ``"user"``: Core's handshake always gives it (Maestro's connection context too).
