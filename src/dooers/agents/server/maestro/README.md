@@ -615,8 +615,10 @@ essa regra, em `normal_outcome`:
   sendo erro do handler (`failed/handler_contract_error`).
 
 `run_start(agent_id=<o próprio agente>)`, como a produção faz, grava `run.update` sem
-`agent_id` (o Maestro grava o agente que executa). O run atual só muda
-quando o Maestro aceita o `run.update`.
+`agent_id` (o Maestro grava o agente que executa). Qualquer outro texto, como
+`run_start(agent_id="dooers-assistant")`, vai ao Maestro como veio e volta igual em
+`Run.agent_id`, porque na produção ele é texto livre (`str | None`, coluna TEXT). O run
+atual só muda quando o Maestro aceita o `run.update`.
 
 Completar ocorre dentro da requisição, após fechar o generator e parar/aguardar o
 heartbeat, com reserva de 30 s e margem de 10 s dentro do deadline canônico. HTTP

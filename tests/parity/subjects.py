@@ -18,6 +18,7 @@ from typing import Any
 
 from tests.parity.model import (
     AGENT_ID,
+    AGENT_LABEL,
     OTHER_AGENT_ID,
     USER,
     WHATSAPP_CUSTOMER,
@@ -418,6 +419,8 @@ SUBJECTS: dict[str, Subject] = {
     "content_policy_allowed": Subject(("events",), _all(_TWO_MESSAGES, _last_part("text", text="Mensagem de texto aceita."))),
     "run_failed": Subject(("events", "outputs.runs"), _run("failed", None, "Serviço de pedidos indisponível")),
     "run_other_agent": Subject(("events", "outputs.runs"), _run("succeeded", OTHER_AGENT_ID, None)),
+    "run_agent_label": Subject(("events", "outputs.runs"), _run("succeeded", AGENT_LABEL, None)),
+    "run_agent_label_failed": Subject(("events", "outputs.runs"), _run("failed", AGENT_LABEL, "Serviço indisponível")),
     "update_user_event": Subject(("events",), _revised_user_event),
     "update_thread_title": Subject(("events", "outputs.threads"), _thread(title="Pedido 42")),
     "update_thread_queue": Subject(("events", "outputs.threads"), _all(_types("message", "thread.update"), _thread(queue="suporte"))),

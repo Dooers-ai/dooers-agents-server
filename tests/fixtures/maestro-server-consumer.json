@@ -1736,16 +1736,16 @@
       }
     },
     {
-      "id": "server.output.run_update_agent_id_not_uuid",
+      "id": "server.output.run_update_agent_id_text",
       "schema": "Public.OutputRequest",
-      "valid": false,
+      "valid": true,
       "data": {
         "output_id": "initial:output:1",
         "type": "run.update",
         "payload": {
           "run_id": "00000000-0000-4000-8000-000000000030",
           "status": "running",
-          "agent_id": "not-a-uuid"
+          "agent_id": "dooers-assistant"
         },
         "lease_fence": "1"
       }

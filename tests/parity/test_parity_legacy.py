@@ -64,6 +64,8 @@ EXPECTED_SCENARIOS = {
     "content_policy_allowed",
     "run_failed",
     "run_other_agent",
+    "run_agent_label",
+    "run_agent_label_failed",
     "update_user_event",
     "update_thread_title",
     "update_thread_queue",

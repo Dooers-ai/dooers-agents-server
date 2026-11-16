@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MaestroGroupTurn` with ready OpenAI messages (author of each message,
   participants, answer rules) or silence. The SDK still calls no model.
 
+### Fixed
+
+- In Maestro mode, `send.run_start(agent_id="...")` takes any text, as in production
+  (`Run.agent_id` is free text). Before, the bundled contract accepted only a UUID
+  and the delivery failed with `handler_contract_error`. The run is read back with
+  the same `agent_id` the handler wrote. A UUID stays valid.
+
 ## [0.25.2] — 2026-11-03
 
 ### Fixed

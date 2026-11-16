@@ -12,6 +12,7 @@ from typing import Any
 
 from dooers.agents.server.protocol.models import User
 from tests.parity.model import (
+    AGENT_LABEL,
     FORM_EVENT_REF,
     OTHER_AGENT_ID,
     QUEUES,
@@ -81,6 +82,18 @@ async def _run_other_agent(on, send, memory, analytics, settings):
     yield send.run_start(agent_id=OTHER_AGENT_ID)
     yield send.text("Aqui é o agente de cobrança.")
     yield send.run_end()
+
+
+async def _run_agent_label(on, send, memory, analytics, settings):
+    yield send.run_start(agent_id=AGENT_LABEL)
+    yield send.text("Aqui é o assistente.")
+    yield send.run_end()
+
+
+async def _run_agent_label_failed(on, send, memory, analytics, settings):
+    yield send.run_start(agent_id=AGENT_LABEL)
+    yield send.text("Não consegui responder.")
+    yield send.run_end(status="failed", error="Serviço indisponível")
 
 
 _PLAN_OPTIONS = [{"value": "basico", "label": "Básico"}, {"value": "pro", "label": "Pro"}]
@@ -344,6 +357,8 @@ SEND_SCENARIOS: dict[str, Scenario] = {
     ),
     "run_failed": Scenario(handler=_run_failed, incoming=ScenarioInput(observe=frozenset({"runs"}))),
     "run_other_agent": Scenario(handler=_run_other_agent, incoming=ScenarioInput(observe=frozenset({"runs"}))),
+    "run_agent_label": Scenario(handler=_run_agent_label, incoming=ScenarioInput(observe=frozenset({"runs"}))),
+    "run_agent_label_failed": Scenario(handler=_run_agent_label_failed, incoming=ScenarioInput(observe=frozenset({"runs"}))),
     "update_user_event": Scenario(
         handler=_reply(
             lambda on, send: [send.update_user_event(on.context.event_id, [{"type": "text", "text": "Olá (mensagem revisada)"}])]
