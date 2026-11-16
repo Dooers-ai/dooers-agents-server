@@ -1,0 +1,82 @@
+"""Exchange of the turn's ``presence_token`` for a short-lived ``connector_session`` (core).
+
+Never logs the presence token, the runtime key or the session. A failed exchange returns ``None``
+(the service then treats the call as having no presence) and never raises into the turn.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import time
+from datetime import datetime
+
+import httpx
+
+from dooers.agents.server.observability.service_token import core_base_url, resolve_runtime_api_key
+from dooers.tools.connectors.runtime import TurnContext
+
+logger = logging.getLogger(__name__)
+
+# The JWT lives 600 s; stop reusing it this long before ``expiresAt``.
+_EXPIRY_MARGIN_SECONDS = 30.0
+
+_now = time.time  # wall clock (``expiresAt`` is an absolute timestamp); replaced in tests
+# (agent_id, sha256(presence_token)) -> (connector_session, usable_until)
+_sessions: dict[tuple[str, str], tuple[str, float]] = {}
+
+
+def reset_presence_cache() -> None:
+    _sessions.clear()
+
+
+def _parse_expires_at(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+async def connector_session(turn: TurnContext) -> str | None:
+    if not turn.presence_token:
+        return None
+    key = (turn.agent_id, hashlib.sha256(turn.presence_token.encode()).hexdigest())
+    cached = _sessions.get(key)
+    if cached and cached[1] > _now():
+        return cached[0]
+    _sessions.pop(key, None)
+
+    runtime_api_key = await resolve_runtime_api_key(turn.persistence, turn.agent_id)
+    if not runtime_api_key:
+        logger.warning("connectors: no runtime API key for agent_id=%s, skipping presence exchange", turn.agent_id)
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{core_base_url()}/api/v2/identity/connector-session",
+                json={
+                    "presenceToken": turn.presence_token,
+                    "agentId": turn.agent_id,
+                    "runtimeApiKey": runtime_api_key,
+                },
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("connectors: presence exchange failed for agent_id=%s: %s", turn.agent_id, type(exc).__name__)
+        return None
+    if response.status_code != 200:
+        logger.warning("connectors: presence exchange refused (%d) for agent_id=%s", response.status_code, turn.agent_id)
+        return None
+    try:
+        data = response.json()["data"]
+        session = data["token"]
+    except (ValueError, KeyError, TypeError):
+        logger.warning("connectors: malformed presence exchange response for agent_id=%s", turn.agent_id)
+        return None
+    if not isinstance(session, str) or not session:
+        return None
+    expires_at = _parse_expires_at(data.get("expiresAt"))
+    if expires_at is not None:
+        _sessions[key] = (session, expires_at - _EXPIRY_MARGIN_SECONDS)
+    return session

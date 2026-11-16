@@ -194,3 +194,13 @@ def pipeline_harness() -> PipelineHarness:
         analytics_collector=collector,  # type: ignore[arg-type]
     )
     return PipelineHarness(pipeline=pipeline, persistence=persistence, collector=collector, broadcasts=broadcasts)
+
+
+@pytest.fixture(autouse=True)
+def _reset_connector_state():
+    """Module-level connector caches (service token client, connector_session cache) must not leak between tests."""
+    from dooers.tools.connectors.transport import reset_transport_state
+
+    reset_transport_state()
+    yield
+    reset_transport_state()
