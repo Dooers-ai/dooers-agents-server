@@ -166,7 +166,7 @@ class MaestroArtifactsClient:
                 raise MaestroContextError("UNSUPPORTED_CAPABILITY")
             budget = client._check_current()
             maximum = client.config.max_artifact_bytes if maximum_bytes is None else maximum_bytes
-            if type(maximum) is not int or not 0 < maximum <= client.config.max_artifact_bytes:
+            if type(maximum) is not int or not 0 <= maximum <= client.config.max_artifact_bytes:
                 raise MaestroContextError("CONTEXT_LIMIT")
             async with asyncio.timeout(budget):
                 headers, expires_at = await self._headers()
@@ -183,7 +183,8 @@ class MaestroArtifactsClient:
                             or response.headers.get("content-encoding", "identity") != "identity"
                             or not length.isascii()
                             or not length.isdecimal()
-                            or not 0 < int(length) <= maximum
+                            # 0 byte is a file: production hands an empty upload as part.data == b"".
+                            or not 0 <= int(length) <= maximum
                             or reference.mime_type is not None
                             and reference.mime_type != mime
                             or reference.size_bytes is not None
@@ -291,7 +292,8 @@ class MaestroArtifactsClient:
             budget = self._operation("artifact.upload", size=len(data) if type(data) is bytes else 0)
             if (
                 type(data) is not bytes
-                or not 0 < len(data) <= client.config.max_artifact_bytes
+                # 0 byte is a file, as production's POST /uploads (UploadStore.store checks only the maximum).
+                or not 0 <= len(data) <= client.config.max_artifact_bytes
                 or not artifact_type_allowed(client.config, mime_type, filename)
                 or type(ordinal) is not int
                 or not 0 <= ordinal < MAX_PHASE_OUTPUTS

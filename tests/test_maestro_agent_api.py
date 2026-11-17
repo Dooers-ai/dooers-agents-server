@@ -252,11 +252,18 @@ async def test_upload_artifact_and_issue_link(api, fake):
 async def test_upload_artifact_checks_the_file_locally(api, fake):
     thread = await _thread(api)
     before = len(fake.requests)
-    for data, name, mime in ((b"", "vazio.txt", "text/plain"), (b"x", "a.txt", "TEXT")):
-        with pytest.raises(MaestroAgentApiError) as error:
-            await api.upload_artifact(thread["thread_id"], data, name, mime)
-        assert error.value.code == "REQUEST_INVALID"
+    with pytest.raises(MaestroAgentApiError) as error:
+        await api.upload_artifact(thread["thread_id"], b"x", "a.txt", "TEXT")
+    assert error.value.code == "REQUEST_INVALID"
     assert len(fake.requests) == before
+
+
+async def test_upload_artifact_accepts_an_empty_file_as_production(api, fake):
+    """Production's ``POST /uploads`` stores a 0-byte file (``UploadStore.store`` checks only the maximum)."""
+    thread = await _thread(api)
+    artifact = await api.upload_artifact(thread["thread_id"], b"", "vazio.txt", "text/plain")
+    assert artifact["size_bytes"] == 0
+    assert fake.requests[-1].body["metadata"]["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
 async def test_upload_artifact_accepts_any_type_as_production(api):

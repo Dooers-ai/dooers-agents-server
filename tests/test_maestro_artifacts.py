@@ -52,6 +52,18 @@ async def test_proxy_download_typed_bytes_and_repeated_authorization(private_key
             assert headers["Maestro-Execution-Capability"] == memory._client._capability
 
 
+async def test_empty_file_reaches_the_handler_as_production_hands_it(private_key, contracts):
+    """A 0-byte upload: production hands ``DocumentPart(data=b"", size_bytes=0)`` (``UploadStore`` entry)."""
+    async with fixture_server() as server:
+        memory, *_ = prepare_media(private_key, contracts, server)
+        client = media(memory)
+        server.response = b""
+        server.extra_headers = {"Content-Type": "text/plain"}
+        part = (await client.hydrate(reference(memory, size_bytes=0))).content_part(None)
+        assert type(part).__name__ == "DocumentPart"
+        assert (part.data, part.size_bytes, part.mime_type) == (b"", 0, "text/plain")
+
+
 @pytest.mark.parametrize("status", [401, 403, 404, 409, 410])
 async def test_revoked_download_closes_shared_client_no_new_request(private_key, contracts, status):
     async with fixture_server() as server:

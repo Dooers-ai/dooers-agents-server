@@ -498,7 +498,8 @@ class MaestroAgentApi:
         """
         if (
             type(data) is not bytes
-            or not 0 < len(data) <= self.config.max_artifact_bytes
+            # 0 byte is a file, as production's POST /uploads.
+            or not 0 <= len(data) <= self.config.max_artifact_bytes
             or not artifact_type_allowed(self.config, mime_type, filename)
         ):
             raise MaestroAgentApiError("REQUEST_INVALID")
