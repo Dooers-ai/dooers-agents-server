@@ -218,6 +218,10 @@ class MaestroTextExecutor:
                             # A ``dispatch`` call of this process: its handler runs and the events it yields are recorded (F5, F14).
                             maestro = context.on.context.maestro
                             entry = DISPATCHES.claim(maestro.trigger_client_event_id, admission.envelope["execution_id"])
+                            if context.attachment_failure is not None:
+                                # F5c: an attachment the handler never received. Production fails the handler and
+                                # shows the error text in the thread; never a silent runtime_rejected.
+                                raise context.attachment_failure
                             if context.content_policy_denial:
                                 result = self._denial_events(context)
                             else:

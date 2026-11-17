@@ -87,11 +87,19 @@ async def test_timeout_cancel_and_finished_client_never_expose_bytes(private_key
     async with fixture_server() as server:
         memory, *_ = prepare_media(private_key, contracts, server)
         client = media(memory)
+        # F5a: ``artifact_timeout_seconds`` (1 s here) no longer cuts a download; the execution budget does.
         server.delay = 2
         server.response = b"hello"
-        with pytest.raises(MaestroContextError):
+        server.extra_headers = {"Content-Type": "text/plain"}
+        assert (await client.hydrate(reference(memory))).data == b"hello"
+        memory._client._check_current = lambda **_: 0.5
+        with pytest.raises(MaestroContextError) as raised:
             await client.hydrate(reference(memory))
-        assert memory._client._closed
+        # The execution keeps its authority: the failure can still be shown in the thread (F5c).
+        assert raised.value.code == "CONTEXT_UNAVAILABLE"
+        assert not memory._client._closed
+        memory, *_ = prepare_media(private_key, contracts, server)
+        client = media(memory)
         memory, *_ = prepare_media(private_key, contracts, server)
         client = media(memory)
         task = asyncio.create_task(client.hydrate(reference(memory)))

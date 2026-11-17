@@ -34,22 +34,32 @@ def _error_code(raw: bytes) -> str | None:
 
 
 def artifact_type_allowed(config: Any, mime_type: str, filename: str) -> bool:
-    """Política de produção para arquivos (``infer_chat_upload_kind``: imagem, áudio ou documento).
+    """Política de produção para arquivos: qualquer tipo, como ``POST /uploads`` e ``UploadStore.store``.
 
-    ``MaestroConfig.artifact_mime_types`` vazio (padrão) aceita tudo que a política aceita.
-    Não vazio, restringe a esses tipos.
+    A produção só recusa um tipo quando há allowlist (``enforce_allowed_chat_file_kind``); um
+    ``.doc``, ``.zip`` ou ``.exe`` chega ao handler como ``DocumentPart`` (o composer manda
+    ``document``). ``MaestroConfig.artifact_mime_types`` vazio (padrão) aceita qualquer MIME bem
+    formado; não vazio, restringe a esses tipos. A allowlist de tipos de conteúdo do agente
+    (``AgentConfig.allowed_content_types``) vale na mensagem, como na produção (``content_policy``).
     """
-    from dooers.agents.server.storage.chat_upload_file_policy import infer_chat_upload_kind
-
     if (
         not isinstance(mime_type, str)
         or not isinstance(filename, str)
         or not re.fullmatch(r"[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+", mime_type)
         or not 3 <= len(mime_type) <= 128
-        or infer_chat_upload_kind(mime_type, filename) is None
     ):
         return False
     return not config.artifact_mime_types or mime_type in config.artifact_mime_types
+
+
+def media_url_upload_allowed(config: Any, mime_type: str, filename: str) -> bool:
+    """A media URL the SDK fetched (``send.image(url)``, channel ingest) becomes an attachment only for an
+    image, audio or document of the production policy (``infer_chat_upload_kind``); any other type stays a
+    ``media_link`` with the URL, as production keeps it. Files given as bytes use ``artifact_type_allowed``.
+    """
+    from dooers.agents.server.storage.chat_upload_file_policy import infer_chat_upload_kind
+
+    return artifact_type_allowed(config, mime_type, filename) and infer_chat_upload_kind(mime_type, filename) is not None
 
 
 #: Why an execution cannot hand media to the handler (logged and raised; never a URL or a token).
@@ -58,6 +68,25 @@ ARTIFACT_LINKS_UNAVAILABLE = (
     "Enable ARTIFACT_LINKS_ENABLED and set MAESTRO_ARTIFACT_LINK_KEY on the Maestro service. "
     "The SDK never gives the handler a media part without its link."
 )
+
+
+def attachment_unavailable_text(artifact_id: str) -> str:
+    """The production text for an attachment the handler cannot receive (``UploadReferenceError``)."""
+    return f"Upload reference '{artifact_id}' not found or expired"
+
+
+class MaestroAttachmentUnavailable(MaestroContextError):
+    """An attachment of the message could not be read before the handler (not a lost authority).
+
+    The executor shows it as production shows a handler failure: the text as a message of the
+    agent, the execution ``failed/handler_error`` (never a silent ``runtime_rejected``).
+    """
+
+    def __init__(self, artifact_id: str, cause: str) -> None:
+        super().__init__("CONTEXT_UNAVAILABLE")
+        self.artifact_id = artifact_id
+        self.cause = cause
+        self.args = (attachment_unavailable_text(artifact_id),)
 
 
 class MaestroArtifactLinkUnavailable(MaestroContextError):
@@ -122,12 +151,20 @@ class MaestroArtifactsClient:
         }, credential.expires_at
 
     async def hydrate(self, reference: Any, *, maximum_bytes: int | None = None) -> MaestroHydratedArtifact:
+        """The bytes of one attachment, as production hands ``part.data`` to the handler (up to 25 MiB).
+
+        The time budget is the execution's own (``_check_current``: deadline, lease and credential,
+        minus the completion budget), not a fixed ``artifact_timeout_seconds``: a legitimate 25 MiB
+        download is never cut. A stalled connection still fails on the httpx read timeout.
+        """
         client = self._client
         raw = bytearray()
         try:
             if str(UUID(reference.artifact_id)) != reference.artifact_id:
                 raise ValueError
-            budget = self._operation("artifact.download")
+            if "artifact.download" not in client._claims["operations"]:
+                raise MaestroContextError("UNSUPPORTED_CAPABILITY")
+            budget = client._check_current()
             maximum = client.config.max_artifact_bytes if maximum_bytes is None else maximum_bytes
             if type(maximum) is not int or not 0 < maximum <= client.config.max_artifact_bytes:
                 raise MaestroContextError("CONTEXT_LIMIT")
@@ -168,6 +205,10 @@ class MaestroArtifactsClient:
             raise
         except (ValueError, TypeError, AttributeError):
             raise MaestroContextError("CONTEXT_INVALID") from None
+        except (TimeoutError, httpx.HTTPError):
+            # The read did not finish (deadline, stalled or dropped connection): the execution keeps its
+            # authority, so the failure can still be shown in the thread as production shows it.
+            raise MaestroContextError("CONTEXT_UNAVAILABLE") from None
         except Exception:
             client._closed = True
             raise MaestroContextError() from None

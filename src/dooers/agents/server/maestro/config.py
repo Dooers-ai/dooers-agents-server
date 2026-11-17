@@ -9,6 +9,7 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from ..upload_store import DEFAULT_MAX_SIZE as PRODUCTION_UPLOAD_MAX_BYTES
 from .remote import MaestroRemoteTransport
 
 
@@ -119,10 +120,13 @@ class MaestroConfig:
     #: One agent message (text + contact + template + whatsapp JSON, as Maestro counts it): 1 MiB.
     max_output_bytes: int = 1048576
     product_capabilities: tuple[str, ...] = ()
-    # Empty: the production file policy (infer_chat_upload_kind). Non-empty: only these types.
+    # Empty: any type, as production (POST /uploads has no type gate). Non-empty: only these types.
     artifact_mime_types: tuple[str, ...] = ()
-    max_artifact_bytes: int = 26214400
-    max_hydrated_bytes: int = 16777216
+    #: One file, as production: ``AgentConfig.upload_max_size_bytes`` (``UploadStore``), 25 MiB.
+    max_artifact_bytes: int = PRODUCTION_UPLOAD_MAX_BYTES
+    #: Optional total of the files of one message handed to the handler. ``None``: no total, as production
+    #: (each ``part.data`` up to ``max_artifact_bytes``).
+    max_hydrated_bytes: int | None = None
     #: How far back one history read of the handler may go, in context pages of 100 events (``MaestroContextWindow``).
     max_history_pages: int = 20
     artifact_timeout_seconds: int = 5
@@ -172,8 +176,7 @@ class MaestroConfig:
             "max_dispatch_bytes": (1024, 65536),
             "max_content_bytes": (1, 65536),
             "max_output_bytes": (1, 1048576),
-            "max_artifact_bytes": (1, 26214400),
-            "max_hydrated_bytes": (1, 33554432),
+            "max_artifact_bytes": (1, PRODUCTION_UPLOAD_MAX_BYTES),
             "max_history_pages": (1, 1000),
             "artifact_timeout_seconds": (1, 10),
         }
@@ -181,6 +184,10 @@ class MaestroConfig:
             value = getattr(self, name)
             if type(value) is not int or not minimum <= value <= maximum:
                 raise MaestroConfigurationError("MAESTRO_LIMIT_INVALID")
+        if self.max_hydrated_bytes is not None and (
+            type(self.max_hydrated_bytes) is not int or not self.max_artifact_bytes <= self.max_hydrated_bytes <= 2**31
+        ):
+            raise MaestroConfigurationError("MAESTRO_LIMIT_INVALID")
         if (
             self.request_timeout_seconds < self.execution_deadline_seconds + self.completion_budget_seconds
             or self.execution_deadline_seconds

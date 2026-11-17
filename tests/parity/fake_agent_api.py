@@ -56,8 +56,6 @@ ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001"
 AGENT_ID = "00000000-0000-4000-8000-000000000010"
 RUNTIME_ID = "00000000-0000-4000-8000-000000000011"
 WORKSPACE_ID = "00000000-0000-4000-8000-000000000002"
-#: The fake Maestro files policy: just enough for the tests (the real one is ``maestro_file_policy``).
-KNOWN_MIME_TYPES = {"text/plain", "image/png", "application/pdf"}
 _FIXTURES = {case["id"]: case["data"] for case in json.loads(verify_contract_bundle()["fixtures.json"])["cases"] if case["valid"]}
 _ERRORS = {
     "INVALID_REQUEST": (400, False),
@@ -136,6 +134,8 @@ class FakeAgentApi:
     """One agent of one scope against an in-memory Maestro."""
 
     def __init__(self, *, workspace_id: str | None = None) -> None:
+        #: Types this fake refuses with VALIDATION_FAILED (a test sets it; the Maestro itself takes any type).
+        self.refused_mime_types: set[str] = set()
         self.contracts = default_contracts()
         self.workspace_id = workspace_id
         self.organization_id = ORGANIZATION_ID
@@ -739,7 +739,8 @@ class FakeAgentApi:
             metadata["size_bytes"] != len(data)
             or metadata["sha256"] != hashlib.sha256(data).hexdigest()
             or metadata["filename"] != second.filename
-            or metadata["mime_type"] not in KNOWN_MIME_TYPES
+            # The Maestro accepts any type, as production's POST /uploads (attachments sweep, R1).
+            or metadata["mime_type"] in self.refused_mime_types
         ):
             raise _Failure("VALIDATION_FAILED")
 

@@ -50,7 +50,7 @@ from dooers.agents.server.upload_store import UploadEntry, UploadStore
 
 from .agent_api import MaestroAgentApi, MaestroAgentApiError, MaestroAgentMissing
 from .agent_persistence import MaestroAgentUnsupported
-from .artifacts import artifact_type_allowed
+from .artifacts import artifact_type_allowed, media_url_upload_allowed
 from .media_fetch import MediaFetchError, decode_data_url, fetch_media, is_data_url
 from .outputs import media_link_of
 from .sink import _artifact_filename
@@ -327,7 +327,7 @@ class MaestroIngress:
             reason = error.reason
         else:
             filename = _artifact_filename(fetched.filename)
-            if artifact_type_allowed(config, fetched.mime_type, filename):
+            if media_url_upload_allowed(config, fetched.mime_type, filename):
                 return _Prepared(upload=_Upload(kind, storage, fetched.data, filename, fetched.mime_type, from_url=True), fallback=link)
             reason = "policy"
         # Only the reason: the URL may carry a token (the log rule of the sink).

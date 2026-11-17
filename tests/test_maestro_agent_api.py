@@ -252,11 +252,18 @@ async def test_upload_artifact_and_issue_link(api, fake):
 async def test_upload_artifact_checks_the_file_locally(api, fake):
     thread = await _thread(api)
     before = len(fake.requests)
-    for data, name, mime in ((b"", "vazio.txt", "text/plain"), (b"x", "a.exe", "application/x-msdownload"), (b"x", "a.txt", "TEXT")):
+    for data, name, mime in ((b"", "vazio.txt", "text/plain"), (b"x", "a.txt", "TEXT")):
         with pytest.raises(MaestroAgentApiError) as error:
             await api.upload_artifact(thread["thread_id"], data, name, mime)
         assert error.value.code == "REQUEST_INVALID"
     assert len(fake.requests) == before
+
+
+async def test_upload_artifact_accepts_any_type_as_production(api):
+    """Attachments sweep (R1): ``AgentServer.upload`` stages any file; so does the agent API upload."""
+    thread = await _thread(api)
+    artifact = await api.upload_artifact(thread["thread_id"], b"MZ", "a.exe", "application/x-msdownload")
+    assert artifact["filename"] == "a.exe" and artifact["size_bytes"] == 2
 
 
 async def test_link_route_off_is_not_retryable(api, fake):

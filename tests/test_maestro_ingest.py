@@ -467,7 +467,8 @@ async def test_ingest_media_url_that_cannot_be_uploaded_becomes_a_media_link(wor
     if failure == "unreachable":
         media = {}  # no DNS: the fetch fails
     elif failure == "refused_by_maestro":
-        # The fake Maestro knows only png, pdf and text: it refuses a gif with VALIDATION_FAILED.
+        # The fake Maestro is told to refuse a gif with VALIDATION_FAILED.
+        world.fake.refused_mime_types.add("image/gif")
         media = {PHOTO_URL: (b"GIF89a", "image/gif")}
         content = [{"type": "image", "url": PHOTO_URL, "mime_type": "image/gif", "filename": "foto.gif"}]
     else:
@@ -497,14 +498,33 @@ async def test_ingest_media_url_that_cannot_be_fetched_keeps_the_url(world, url)
     assert part == {"type": "media_link", "kind": "image", "url": url, "filename": "foto.png"}
 
 
-async def test_ingest_file_outside_the_maestro_policy_is_refused_before_any_write_and_keeps_the_file(world):
+async def test_ingest_file_of_any_type_is_uploaded_as_production_stores_it(world):
+    """Attachments sweep (R1): production stages any file (``UploadStore``); a ``.exe`` is a document attachment."""
     upload = await world.maestro.chat_upload(
         data=b"MZ\x90\x00", filename="programa.exe", mime_type="application/x-msdownload", agent_id=AGENT_ID
     )
     content = [{"type": "document", "ref_id": upload["ref_id"], "filename": "programa.exe", "mime_type": "application/x-msdownload"}]
-    with pytest.raises(MaestroAgentApiError, match="REQUEST_INVALID"):
-        await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-exe", actor="user", content=content, **COMMON)
-    assert world.fake.requests == [] and upload["ref_id"] in world.maestro.upload_store._store
+    await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-exe", actor="user", content=content, **COMMON)
+    (artifact,) = world.fake.artifacts.values()
+    assert artifact["data"] == b"MZ\x90\x00" and artifact["mime_type"] == "application/x-msdownload"
+    (part,) = world.maestro_thread("t-exe").events[-1]["payload"]["content"]
+    assert part["type"] == "attachment" and part["filename"] == "programa.exe"
+
+
+async def test_ingest_file_outside_a_maestro_allowlist_is_refused_before_any_write_and_keeps_the_file(monkeypatch, fake):
+    world = await make_world(monkeypatch, fake)
+    world.maestro._config.maestro = fake.config(artifact_mime_types=("image/png",))
+    try:
+        upload = await world.maestro.chat_upload(
+            data=b"MZ\x90\x00", filename="programa.exe", mime_type="application/x-msdownload", agent_id=AGENT_ID
+        )
+        content = [{"type": "document", "ref_id": upload["ref_id"], "filename": "programa.exe", "mime_type": "application/x-msdownload"}]
+        with pytest.raises(MaestroAgentApiError, match="REQUEST_INVALID"):
+            await world.maestro.ingest(AGENT_ID, "", user=ANA, thread_id="t-exe", actor="user", content=content, **COMMON)
+        assert world.fake.requests == [] and upload["ref_id"] in world.maestro.upload_store._store
+    finally:
+        await world.prod.close()
+        await world.maestro.close()
 
 
 # -- a failed ingest does not lose the staged file --

@@ -8,6 +8,7 @@ from dooers.agents.server.settings import (
     GUEST_THREAD_CLEANUP_INTERVAL_SECONDS,
     GUEST_THREAD_TTL_SECONDS,
 )
+from dooers.agents.server.upload_store import DEFAULT_MAX_SIZE as DEFAULT_UPLOAD_MAX_SIZE
 
 if TYPE_CHECKING:
     from dooers.agents.server.features.settings.models import SettingsSchema
@@ -101,7 +102,7 @@ class AgentConfig:
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
     agent_seed_secret: str = field(default_factory=lambda: os.environ.get("AGENT_SEED_SECRET", "").strip())
 
-    upload_max_size_bytes: int = 25 * 1024 * 1024  # 25MB
+    upload_max_size_bytes: int = DEFAULT_UPLOAD_MAX_SIZE  # 25MB (UploadStore; Maestro mode uses the same limit)
     upload_ttl_seconds: int = 300  # 5 minutes
 
     #: When True (env ``STORE_CHAT_UPLOADS``), durable blob writes may run after ``AgentServer.upload`` when the

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -35,6 +36,8 @@ from .dispatch_registry import MARKER_KEY
 from .legacy_model import production_user
 from .memory import MaestroMemory
 from .window import MaestroContextWindow
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from dooers.agents.server.handlers.incoming import AgentIncoming
@@ -140,6 +143,9 @@ class MaestroHandlerInput:
     #: The production content-policy denial text for this message (``AgentConfig.allowed_content_types``): the
     #: executor answers with it and does not run the handler. ``None``: no policy, or an allowed message.
     content_policy_denial: str | None = field(default=None, repr=False)
+    #: An attachment of the message that could not be read (F5c of the attachments sweep): the executor fails
+    #: the turn as production fails a handler (the error text in the thread) and does not run the handler.
+    attachment_failure: Exception | None = field(default=None, repr=False)
 
 
 _active: WeakKeyDictionary[asyncio.Task, MaestroExecutionContext] = WeakKeyDictionary()
@@ -317,8 +323,11 @@ def _text(value: Any) -> str | None:
 
 async def _incoming(
     memory: MaestroMemory, snapshot: dict[str, Any], cancellation: MaestroCancellation, private_resume=None, checkpoint_state=None
-) -> AgentIncoming:
-    """``snapshot`` is the context head (``MaestroContextWindow.load``); the window gives the older events it needs."""
+) -> tuple[AgentIncoming, Exception | None]:
+    """``snapshot`` is the context head (``MaestroContextWindow.load``); the window gives the older events it needs.
+
+    Also returns the attachment that could not be read (``MaestroAttachmentUnavailable``), or ``None``.
+    """
     window = memory.window()
     from dooers.agents.server.handlers.context import AgentContext
     from dooers.agents.server.handlers.incoming import AgentIncoming
@@ -435,11 +444,12 @@ async def _incoming(
         parts = [{"type": "text", "text": ""}]
     else:
         parts = origin["payload"]["content"]
-    from .artifacts import MaestroArtifactsClient
+    from .artifacts import MaestroArtifactsClient, MaestroAttachmentUnavailable
     from .memory import MaestroArtifactReference
 
     hydrated = []
     total = 0
+    attachment_failure: MaestroAttachmentUnavailable | None = None
     for part in parts:
         if part["type"] == "text":
             total += len(part["text"].encode("utf-8"))
@@ -454,9 +464,23 @@ async def _incoming(
                 part.get("mime_type"),
                 part.get("size_bytes"),
             )
-            artifact = await MaestroArtifactsClient(memory._client).hydrate(
-                ref, maximum_bytes=min(memory._client.config.max_artifact_bytes, memory._client.config.max_hydrated_bytes - total)
-            )
+            config = memory._client.config
+            # Per file, production's 25 MiB (``max_artifact_bytes``); no total for the message unless
+            # ``max_hydrated_bytes`` is set (production has none).
+            maximum = config.max_artifact_bytes
+            if config.max_hydrated_bytes is not None:
+                maximum = min(maximum, config.max_hydrated_bytes - total)
+            if attachment_failure is not None:
+                continue
+            try:
+                artifact = await MaestroArtifactsClient(memory._client).hydrate(ref, maximum_bytes=maximum)
+            except MaestroContextError as error:
+                if error.code in {"ACCESS_REVOKED", "CONTEXT_EXPIRED", "UNSUPPORTED_CAPABILITY"}:
+                    raise
+                # Not a lost authority: the turn fails in the thread, as production fails a handler.
+                logger.warning("maestro context: attachment not read before the handler (code=%s)", error.code)
+                attachment_failure = MaestroAttachmentUnavailable(part["artifact_id"], error.code)
+                continue
             total += len(artifact.data)
             hydrated.append(artifact.content_part(await memory._links.url_for(part["artifact_id"]), duration=part.get("duration")))
         elif part["type"] == "media_link":
@@ -467,12 +491,15 @@ async def _incoming(
             )
         else:
             raise MaestroContextError("UNSUPPORTED_CAPABILITY")
-        if total > memory._client.config.max_hydrated_bytes:
+        if memory._client.config.max_hydrated_bytes is not None and total > memory._client.config.max_hydrated_bytes:
             hydrated.clear()
             raise MaestroContextError("CONTEXT_LIMIT")
     if sum(len(part["text"].encode("utf-8")) for part in parts if part["type"] == "text") > memory._client.config.max_content_bytes:
         raise MaestroContextError("CONTEXT_LIMIT")
-    return AgentIncoming(
+    if attachment_failure is not None:
+        # The handler never runs: keep no bytes of the files that were read.
+        hydrated = [part for part in hydrated if isinstance(part, TextPart)]
+    incoming = AgentIncoming(
         _production_message(hydrated),
         hydrated,
         context,
@@ -480,6 +507,7 @@ async def _incoming(
         form_cancelled=form_cancelled,
         form_event_id=form_event_id,
     )
+    return incoming, attachment_failure
 
 
 def is_not_a_message(snapshot: dict[str, Any], envelope: dict[str, Any]) -> bool:
@@ -529,7 +557,7 @@ async def maestro_handler_context(
         selected_options, assert_options_current = prepare_recipient_options(
             snapshot.get("invocation_event") or snapshot["trigger_event"], memory._envelope, options_resolver
         )
-        incoming = await _incoming(memory, snapshot, cancellation, private_resume, checkpoint_state)
+        incoming, attachment_failure = await _incoming(memory, snapshot, cancellation, private_resume, checkpoint_state)
         assert_options_current()
         if selected_options:
             from dooers.agents.server.protocol.models import ChatContext
@@ -601,7 +629,7 @@ async def maestro_handler_context(
                 denial = format_allowed_content_policy_denial(
                     parts=incoming.content, allowed=content_policy.allowed, message_template=content_policy.denial_message
                 )
-            yield MaestroHandlerInput(incoming, agent_memory, resources.analytics, settings, denial)
+            yield MaestroHandlerInput(incoming, agent_memory, resources.analytics, settings, denial, attachment_failure)
         finally:
             active = False
             try:

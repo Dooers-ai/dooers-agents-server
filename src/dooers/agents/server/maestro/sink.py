@@ -656,7 +656,7 @@ class MaestroEventSink:
         await self._persist_output(media_output(event, part, runs=self._runs), ordinal)
 
     async def _media_part(self, event: AgentEvent, ordinal: int) -> dict[str, Any]:
-        from .artifacts import MaestroArtifactsClient, artifact_type_allowed
+        from .artifacts import MaestroArtifactsClient, media_url_upload_allowed
 
         data = event.data
         extra = {key: data[key] for key in ("alt", "duration") if data.get(key) is not None}
@@ -674,7 +674,7 @@ class MaestroEventSink:
             return self._media_link(event, error.reason)
         self._active()
         filename = _artifact_filename(fetched.filename)
-        if not artifact_type_allowed(self._client.config, fetched.mime_type, filename):
+        if not media_url_upload_allowed(self._client.config, fetched.mime_type, filename):
             return self._media_link(event, "policy")
         try:
             attachment = await MaestroArtifactsClient(self._client).upload(
