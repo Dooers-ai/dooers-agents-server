@@ -70,6 +70,25 @@ ARTIFACT_LINKS_UNAVAILABLE = (
 )
 
 
+#: Tries of one attachment read when the Maestro answers 429 (16 downloads at the same time in the
+#: process) or 5xx. Production's ``UploadStore`` is in memory and never answers either.
+DOWNLOAD_ATTEMPTS = 5
+#: Status of a file that is gone (removed, not linked, deleted thread): production's ``UploadReferenceError``.
+_MISSING_STATUSES = frozenset({404, 410})
+
+
+def _transient(status: int) -> bool:
+    return status == 429 or 500 <= status <= 599
+
+
+def _retry_delay(attempt: int, retry_after: str | None) -> float:
+    """Seconds before the next try: the Maestro's ``Retry-After`` (0.25 to 5 s) or 0.25, 0.5, 1, 2 s."""
+    text = (retry_after or "").strip()
+    if text.isascii() and text.isdecimal():
+        return min(5.0, max(0.25, float(text)))
+    return min(2.0, 0.25 * 2 ** (attempt - 1))
+
+
 def attachment_unavailable_text(artifact_id: str) -> str:
     """The production text for an attachment the handler cannot receive (``UploadReferenceError``)."""
     return f"Upload reference '{artifact_id}' not found or expired"
@@ -156,6 +175,12 @@ class MaestroArtifactsClient:
         The time budget is the execution's own (``_check_current``: deadline, lease and credential,
         minus the completion budget), not a fixed ``artifact_timeout_seconds``: a legitimate 25 MiB
         download is never cut. A stalled connection still fails on the httpx read timeout.
+
+        M2: a 429 or 5xx is tried again (up to ``DOWNLOAD_ATTEMPTS``, ``Retry-After`` or 0.25 to 2 s
+        backoff) while the execution budget allows; each try asks for the credential again. A 404 or
+        410 is a file that is gone: ``CONTEXT_UNAVAILABLE`` (the person sees production's
+        ``Upload reference ... not found or expired``) and the client stays open. 401, 403 and 409
+        are a lost authority (``ACCESS_REVOKED``, the client closes), as before.
         """
         client = self._client
         raw = bytearray()
@@ -169,39 +194,51 @@ class MaestroArtifactsClient:
             if type(maximum) is not int or not 0 <= maximum <= client.config.max_artifact_bytes:
                 raise MaestroContextError("CONTEXT_LIMIT")
             async with asyncio.timeout(budget):
-                headers, expires_at = await self._headers()
-                headers.update(await client.config.transport_headers(client.config.callback_base_url))
                 transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
                 async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False) as http:
                     url = f"{client.config.callback_base_url}/artifacts/{reference.artifact_id}/download"
-                    async with http.stream("GET", url, headers=headers) as response:
-                        self._status(response.status_code, 200)
-                        mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
-                        length = response.headers.get("content-length", "")
-                        if (
-                            not artifact_type_allowed(client.config, mime, reference.filename or "attachment")
-                            or response.headers.get("content-encoding", "identity") != "identity"
-                            or not length.isascii()
-                            or not length.isdecimal()
-                            # 0 byte is a file: production hands an empty upload as part.data == b"".
-                            or not 0 <= int(length) <= maximum
-                            or reference.mime_type is not None
-                            and reference.mime_type != mime
-                            or reference.size_bytes is not None
-                            and reference.size_bytes != int(length)
-                        ):
-                            raise MaestroContextError("CONTEXT_LIMIT")
-                        async for chunk in response.aiter_raw():
-                            client._check_current()
-                            if time.time() >= expires_at:
-                                raise MaestroContextError("ACCESS_REVOKED")
-                            if len(raw) + len(chunk) > min(int(length), maximum):
-                                raise MaestroContextError("CONTEXT_LIMIT")
-                            raw.extend(chunk)
-                        client._check_current()
-                        if len(raw) != int(length) or time.time() >= expires_at:
-                            raise MaestroContextError("CONTEXT_INVALID")
-                        return MaestroHydratedArtifact(reference.artifact_id, reference.filename or "attachment", mime, bytes(raw))
+                    attempt = 1
+                    while True:
+                        headers, expires_at = await self._headers()
+                        headers.update(await client.config.transport_headers(client.config.callback_base_url))
+                        async with http.stream("GET", url, headers=headers) as response:
+                            if _transient(response.status_code) and attempt < DOWNLOAD_ATTEMPTS:
+                                delay = _retry_delay(attempt, response.headers.get("retry-after"))
+                            else:
+                                if response.status_code in _MISSING_STATUSES:
+                                    raise MaestroContextError("CONTEXT_UNAVAILABLE")
+                                self._status(response.status_code, 200)
+                                mime = response.headers.get("content-type", "").split(";")[0].strip().lower()
+                                length = response.headers.get("content-length", "")
+                                if (
+                                    not artifact_type_allowed(client.config, mime, reference.filename or "attachment")
+                                    or response.headers.get("content-encoding", "identity") != "identity"
+                                    or not length.isascii()
+                                    or not length.isdecimal()
+                                    # 0 byte is a file: production hands an empty upload as part.data == b"".
+                                    or not 0 <= int(length) <= maximum
+                                    or reference.mime_type is not None
+                                    and reference.mime_type != mime
+                                    or reference.size_bytes is not None
+                                    and reference.size_bytes != int(length)
+                                ):
+                                    raise MaestroContextError("CONTEXT_LIMIT")
+                                async for chunk in response.aiter_raw():
+                                    client._check_current()
+                                    if time.time() >= expires_at:
+                                        raise MaestroContextError("ACCESS_REVOKED")
+                                    if len(raw) + len(chunk) > min(int(length), maximum):
+                                        raise MaestroContextError("CONTEXT_LIMIT")
+                                    raw.extend(chunk)
+                                client._check_current()
+                                if len(raw) != int(length) or time.time() >= expires_at:
+                                    raise MaestroContextError("CONTEXT_INVALID")
+                                return MaestroHydratedArtifact(reference.artifact_id, reference.filename or "attachment", mime, bytes(raw))
+                        # The connection is closed; wait only while the execution still has the time.
+                        if client._check_current() <= delay:
+                            raise MaestroContextError("CONTEXT_UNAVAILABLE")
+                        await asyncio.sleep(delay)
+                        attempt += 1
         except MaestroContextError:
             raise
         except (ValueError, TypeError, AttributeError):

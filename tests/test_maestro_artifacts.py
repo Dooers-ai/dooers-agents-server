@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from dooers.agents.server.maestro.artifacts import MaestroArtifactsClient
+from dooers.agents.server.maestro.artifacts import DOWNLOAD_ATTEMPTS, MaestroArtifactsClient
 from dooers.agents.server.maestro.client import MaestroContextError
 from dooers.agents.server.maestro.context import maestro_handler_context
 from dooers.agents.server.maestro.memory import MaestroArtifactReference
@@ -64,7 +64,7 @@ async def test_empty_file_reaches_the_handler_as_production_hands_it(private_key
         assert (part.data, part.size_bytes, part.mime_type) == (b"", 0, "text/plain")
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 409, 410])
+@pytest.mark.parametrize("status", [401, 403, 409])
 async def test_revoked_download_closes_shared_client_no_new_request(private_key, contracts, status):
     async with fixture_server() as server:
         memory, *_ = prepare_media(private_key, contracts, server)
@@ -75,6 +75,71 @@ async def test_revoked_download_closes_shared_client_no_new_request(private_key,
             with pytest.raises(MaestroContextError):
                 await client.hydrate(reference(memory))
         assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize("status", [404, 410])
+async def test_missing_file_is_shown_and_keeps_the_client_open(private_key, contracts, status):
+    """M2: a file that is gone is production's ``UploadReferenceError``: visible text, never a silent close."""
+    async with fixture_server() as server:
+        memory, *_ = prepare_media(private_key, contracts, server)
+        client = media(memory)
+        server.status = status
+        server.response = {"error": {"code": "NOT_FOUND", "message": "x", "retryable": False, "request_id": str(uuid4())}}
+        for _ in range(2):
+            with pytest.raises(MaestroContextError) as raised:
+                await client.hydrate(reference(memory))
+            assert raised.value.code == "CONTEXT_UNAVAILABLE"
+        assert not memory._client._closed
+        assert len(server.requests) == 2
+
+
+@pytest.mark.parametrize("transient", [429, 500, 502, 503, 504])
+async def test_transient_download_failure_is_tried_again_within_the_execution(private_key, contracts, transient):
+    """M2: 429 (16 downloads at the same time) or 5xx waits ``Retry-After`` and reads again."""
+    async with fixture_server() as server:
+        memory, *_ = prepare_media(private_key, contracts, server)
+        client = media(memory)
+        # The fixture appends the request before answering: the third one is served.
+        served = lambda: len(server.requests) >= 3  # noqa: E731
+        server.status = lambda _first: 200 if served() else transient
+        server.response = lambda _first: b"hello" if served() else b'{"error":{}}'
+        server.extra_headers = lambda _first: {"Content-Type": "text/plain"} if served() else {"Retry-After": "0"}
+        started = asyncio.get_running_loop().time()
+        assert (await client.hydrate(reference(memory, size_bytes=5))).data == b"hello"
+        assert len(server.requests) == 3
+        # Retry-After 0 waits the 0.25 s floor, twice.
+        assert asyncio.get_running_loop().time() - started >= 0.5
+        assert not memory._client._closed
+
+
+async def test_transient_download_failure_stops_after_the_attempts_and_shows_the_failure(private_key, contracts):
+    async with fixture_server() as server:
+        memory, *_ = prepare_media(private_key, contracts, server)
+        client = media(memory)
+        server.status = 503
+        server.response = b'{"error":{}}'
+        server.extra_headers = {"Retry-After": "0"}
+        with pytest.raises(MaestroContextError) as raised:
+            await client.hydrate(reference(memory))
+        assert raised.value.code == "CONTEXT_UNAVAILABLE"
+        assert len(server.requests) == DOWNLOAD_ATTEMPTS == 5
+        assert not memory._client._closed
+
+
+async def test_transient_download_failure_never_waits_past_the_execution_budget(private_key, contracts):
+    async with fixture_server() as server:
+        memory, *_ = prepare_media(private_key, contracts, server)
+        client = media(memory)
+        server.status = 429
+        server.response = b'{"error":{}}'
+        server.extra_headers = {"Retry-After": "5"}
+        memory._client._check_current = lambda **_: 1.0
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(MaestroContextError) as raised:
+            await client.hydrate(reference(memory))
+        assert raised.value.code == "CONTEXT_UNAVAILABLE"
+        assert len(server.requests) == 1
+        assert asyncio.get_running_loop().time() - started < 1
 
 
 @pytest.mark.parametrize(
