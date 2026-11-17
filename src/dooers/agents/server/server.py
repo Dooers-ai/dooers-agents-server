@@ -5,6 +5,8 @@ import logging
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
+
 from dooers.agents.server.auth_validation import AuthValidationClient
 from dooers.agents.server.broadcast import (
     BroadcastManager,
@@ -453,6 +455,11 @@ class AgentServer:
                 data = await websocket.receive_text()
                 try:
                     frame = parse_frame(data)
+                except ValidationError as e:
+                    # The error's input may be the whole payload (presence_token included): log only where and why.
+                    errors = e.errors(include_input=False, include_url=False)
+                    _agents.warning("failed to parse WebSocket C2S frame: len=%d errors=%s", len(data), errors)
+                    raise ValueError(f"invalid C2S frame ({e.error_count()} validation errors)") from None
                 except Exception as e:
                     _agents.warning(
                         "failed to parse WebSocket C2S frame: len=%d err=%s",

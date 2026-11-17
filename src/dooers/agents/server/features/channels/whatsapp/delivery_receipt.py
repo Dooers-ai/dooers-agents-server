@@ -13,6 +13,29 @@ logger = logging.getLogger("dooers.whatsapp.delivery_receipt")
 
 _servers: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 
+# A late webhook must not walk the bubble backwards. ``failed`` is terminal.
+_STATUS_RANK = {"accepted": 1, "sent": 1, "delivered": 2, "read": 3, "failed": 4}
+
+
+def _canonical_status(status: str) -> str:
+    status = status.strip().lower()
+    return "failed" if status == "error" else status
+
+
+def _receipt_moves_forward(current: str, incoming: str) -> bool:
+    incoming = _canonical_status(incoming)
+    if not incoming:
+        return False
+    current = _canonical_status(current)
+    if current == "failed":
+        return False
+    if incoming == "failed":
+        return True
+    incoming_rank = _STATUS_RANK.get(incoming)
+    if incoming_rank is None:
+        return False
+    return incoming_rank >= _STATUS_RANK.get(current, 0)
+
 
 def bind_agent_server(server: Any) -> None:
     """Remember the live server so a receipt can push ``event.append`` to open consoles."""
@@ -34,11 +57,13 @@ async def apply_whatsapp_delivery_receipt(
     agent_id: str,
     body: bytes,
 ) -> bool:
-    """Mark the outbound event failed when tools-whatsapp posts a delivery receipt.
+    """Write the receipt status onto the outbound event.
 
-    Returns True when an event was updated. Unknown wamids return False so the
-    caller can try again: the status webhook sometimes beats the insert of the id.
-    Agents that only check ``connectivity_check`` never dispatch this payload.
+    ``failed`` sticks. ``read`` does not go back to ``delivered``. Unknown wamids
+    return False so the caller can try again: the status webhook sometimes beats
+    the insert of the id. A stale status returns True, because retrying will not
+    change it. Agents that only check ``connectivity_check`` never dispatch this
+    payload.
     """
     data = _as_dict(body)
     if not data or not data.get("delivery_receipt"):
@@ -64,9 +89,18 @@ async def apply_whatsapp_delivery_receipt(
         )
         return False
 
-    status = str(data.get("status") or "failed").strip().lower() or "failed"
+    status = _canonical_status(str(data.get("status") or "failed"))
     current = dict(event.data or {})
     delivery = dict(current.get("delivery") or {})
+    if not _receipt_moves_forward(str(delivery.get("status") or ""), status):
+        logger.info(
+            "delivery receipt kept wa_message_id=%s status=%s incoming=%s thread=%s",
+            wa_message_id,
+            delivery.get("status"),
+            status,
+            event.thread_id,
+        )
+        return True
     delivery["status"] = status
     delivery["wa_message_id"] = wa_message_id
     if data.get("error_code") is not None:

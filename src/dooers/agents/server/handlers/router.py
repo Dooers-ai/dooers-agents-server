@@ -1563,6 +1563,7 @@ class Router:
             queue=frame.payload.queue if not frame.payload.thread_id else None,
             allowed_queues=_queue_catalog_slugs(self._workspace_queues),
             queues=list(self._workspace_queues),
+            presence_token=frame.payload.presence_token,
         )
 
         try:

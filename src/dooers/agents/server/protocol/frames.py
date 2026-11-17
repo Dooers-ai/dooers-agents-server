@@ -75,6 +75,8 @@ class EventCreatePayload(BaseModel):
     chat_context: ChatContext | None = None
     #: Used only when ``thread_id`` is omitted (new thread). Ignored otherwise.
     queue: str | None = None
+    #: Short-lived presence JWT for connector tools. Never stored in metadata or events, never in repr.
+    presence_token: str | None = Field(default=None, repr=False)
 
 
 class C2S_Connect(BaseModel):
@@ -281,7 +283,7 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
-# --- Run control / long-term memory / schedules (0.26.0) ---
+# --- Run control / long-term memory / schedules (0.27.0) ---
 
 
 class RunCancelPayload(BaseModel):

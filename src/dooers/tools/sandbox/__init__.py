@@ -28,9 +28,9 @@ import httpx
 from dooers.agents.server.observability.service_token import (
     RUNTIME_API_KEY_SECRET_NAME,
     ServiceTokenClient,
+    core_base_url,
     resolve_runtime_api_key,
 )
-from dooers.agents.server.settings import AGENT_CORE_BASE_URL
 from dooers.tools.rag.runtime import current_execution_context
 from dooers.tools.whatsapp.runtime import require_agent_id, require_persistence
 
@@ -95,18 +95,10 @@ def _base_url(*, required: bool = True) -> str:
     return value
 
 
-def _core_base_url() -> str:
-    return (
-        (os.environ.get("AGENT_CORE_BASE_URL") or "").strip()
-        or (os.environ.get("DOOERS_CORE_BASE_URL") or "").strip()
-        or AGENT_CORE_BASE_URL
-    ).rstrip("/")
-
-
 def _service_token_client() -> ServiceTokenClient:
     global _token_client
     if _token_client is None:
-        _token_client = ServiceTokenClient(core_base_url=_core_base_url())
+        _token_client = ServiceTokenClient(core_base_url=core_base_url())
     return _token_client
 
 

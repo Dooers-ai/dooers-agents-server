@@ -1,0 +1,244 @@
+"""Turn context (ContextVar) and side-channel event emitter for connector tools."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+import sys
+
+import pytest
+
+from dooers.agents.server.exceptions import HandlerError
+from dooers.agents.server.handlers.send import AgentEvent
+from dooers.tools.connectors.errors import (
+    ApprovalDeclined,
+    ConnectionRequired,
+    ConnectorError,
+    InteractionTimeout,
+    InvalidArguments,
+    PermissionDenied,
+)
+from dooers.tools.connectors.runtime import current_turn
+
+INTERACTION = {
+    "interaction_id": "i-1",
+    "kind": "approval",
+    "title": "Criar evento",
+    "summary": "Criar 'Consulta Ana' amanhã 10:00 em Recepção",
+    "connector": {"id": "c-1", "name": "Agenda Recepção", "icon": "google-calendar"},
+    "expires_at": "2026-11-16T10:02:00Z",
+}
+
+
+def _appended_types(harness) -> list[list[str]]:
+    return [[e.type for e in b["events"]] for b in harness.broadcasts if b["type"] == "event.append"]
+
+
+async def test_turn_context_visible_in_child_task(pipeline_harness):
+    seen = {}
+
+    async def handler(incoming, send, memory, analytics, settings):
+        async def child():
+            seen["ctx"] = current_turn()
+
+        await asyncio.create_task(child())
+        yield send.run_end()
+
+    await pipeline_harness.run(handler, presence_token="jwt", channel="dooers-platform")
+
+    ctx = seen["ctx"]
+    assert ctx.presence_token == "jwt" and ctx.thread_id
+    assert (ctx.agent_id, ctx.organization_id, ctx.workspace_id) == ("agent-1", "org-1", "ws-1")
+    assert (ctx.user_id, ctx.channel) == ("u1", "dooers-platform")
+    assert ctx.persistence is pipeline_harness.persistence
+    assert ctx.emit is not None
+    assert "jwt" not in repr(ctx)
+
+
+async def test_turn_context_reset_after_turn(pipeline_harness):
+    async def ok(incoming, send, memory, analytics, settings):
+        assert current_turn() is not None
+        yield send.run_end()
+
+    async def boom(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        raise RuntimeError("boom")
+
+    assert current_turn() is None
+    await pipeline_harness.run(ok)
+    assert current_turn() is None
+    with pytest.raises(HandlerError):
+        await pipeline_harness.run(boom)
+    assert current_turn() is None
+
+
+async def test_emit_persists_and_broadcasts_tool_call_outside_yield(pipeline_harness):
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        await current_turn().emit(send.tool_call(name="x", args={}, id="c-1"))
+        yield send.run_end()
+
+    yielded = await pipeline_harness.run(handler)
+
+    # emitted events go to persistence and broadcast, not to execute's yield stream
+    assert [e.send_type for e in yielded] == ["run_start", "run_end"]
+    calls = [e for e in pipeline_harness.persisted if e.type == "tool.call"]
+    assert len(calls) == 1
+    # run_id is read when the event is emitted, not when the turn was bound
+    (run_id,) = pipeline_harness.persistence.runs
+    assert calls[0].run_id == run_id
+    assert calls[0].data["id"] == "c-1"
+    assert ["tool.call"] in _appended_types(pipeline_harness)
+
+
+async def test_emit_connector_interaction_creates_event(pipeline_harness):
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        await current_turn().emit(AgentEvent(send_type="connector_interaction", data=dict(INTERACTION)))
+        yield send.run_end()
+
+    await pipeline_harness.run(handler)
+
+    (ev,) = [e for e in pipeline_harness.persisted if e.type == "connector.interaction"]
+    (run_id,) = pipeline_harness.persistence.runs
+    assert (ev.actor, ev.run_id, ev.data) == ("system", run_id, INTERACTION)
+    assert ["connector.interaction"] in _appended_types(pipeline_harness)
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["normal_end", "failed_turn"])
+async def test_emit_after_turn_end_is_dropped(pipeline_harness, caplog, fails):
+    """A tool task created during the turn keeps the copied context; once execute ended, its
+    events are dropped with a warning (no content logged) instead of landing in the thread."""
+    release = asyncio.Event()
+    tasks: list[asyncio.Task] = []
+
+    async def handler(incoming, send, memory, analytics, settings):
+        async def late_tool():
+            await release.wait()
+            await current_turn().emit(send.tool_result(name="x", result={"secret": "s3cr3t"}, id="c-1"))
+
+        yield send.run_start()
+        tasks.append(asyncio.create_task(late_tool()))
+        if fails:
+            raise RuntimeError("boom")
+        yield send.run_end()
+
+    if fails:
+        with pytest.raises(HandlerError):
+            await pipeline_harness.run(handler)
+    else:
+        await pipeline_harness.run(handler)
+    writes = list(pipeline_harness.persistence.writes)
+    broadcasts = len(pipeline_harness.broadcasts)
+
+    release.set()
+    await tasks[0]
+
+    assert pipeline_harness.persistence.writes == writes
+    assert len(pipeline_harness.broadcasts) == broadcasts
+    (dropped,) = [r for r in caplog.records if "after turn end" in r.getMessage()]
+    assert dropped.levelname == "WARNING" and "s3cr3t" not in dropped.getMessage()
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["normal_end", "failed_turn"])
+async def test_emit_while_the_turn_is_closing_is_dropped(pipeline_harness, monkeypatch, caplog, fails):
+    """The handler is done but ``execute`` still awaits (analytics, failing the run): a tool task's emit is late."""
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    tasks: list[asyncio.Task] = []
+    track = pipeline_harness.collector.track
+
+    async def track_then_let_the_tool_emit(**kwargs):
+        await track(**kwargs)
+        if closing.is_set() and not release.is_set():
+            release.set()
+            await tasks[0]  # the tool task emits inside the closing window
+
+    monkeypatch.setattr(pipeline_harness.collector, "track", track_then_let_the_tool_emit)
+
+    async def handler(incoming, send, memory, analytics, settings):
+        async def late_tool():
+            await release.wait()
+            await current_turn().emit(send.tool_result(name="x", result={"secret": "s3cr3t"}, id="c-1"))
+
+        if fails:
+            yield send.run_start()
+        tasks.append(asyncio.create_task(late_tool()))
+        yield send.text("oi")
+        closing.set()
+        if fails:
+            raise RuntimeError("boom")
+
+    if fails:
+        with pytest.raises(HandlerError):
+            await pipeline_harness.run(handler)
+    else:
+        await pipeline_harness.run(handler)
+
+    assert release.is_set() and tasks[0].done()
+    assert [e for e in pipeline_harness.persisted if e.type == "tool.result"] == []
+    assert any("after turn end" in r.getMessage() for r in caplog.records)
+
+
+async def test_side_channel_emit_waits_for_the_event_being_applied(pipeline_harness, monkeypatch):
+    """A tool task emits while the loop is still writing a yielded event: the two writes never interleave."""
+    persistence = pipeline_harness.persistence
+    create_event = persistence.create_event
+
+    async def create_event_that_yields(event):
+        await create_event(event)
+        for _ in range(3):
+            await asyncio.sleep(0)  # a real database gives the loop away here
+
+    monkeypatch.setattr(persistence, "create_event", create_event_that_yields)
+
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        task = asyncio.create_task(current_turn().emit(send.tool_call(name="x", args={}, id="c-1")))
+        yield send.text("oi")
+        await task
+        yield send.run_end()
+
+    await pipeline_harness.run(handler)
+
+    ops = [(op, getattr(obj, "type", None), getattr(obj, "actor", None)) for op, obj in persistence.writes]
+    text = ops.index(("create_event", "message", "assistant"))
+    call = ops.index(("create_event", "tool.call", "assistant"))
+    assert ops[text + 1][0] == "update_thread"  # the text event finished (last_event_at) before the tool call began
+    assert call > text + 1
+
+
+@pytest.mark.parametrize(
+    ("cls", "status"),
+    [
+        (ConnectorError, "error"),
+        (ConnectionRequired, "connection_required"),
+        (ApprovalDeclined, "declined"),
+        (InteractionTimeout, "interaction_timeout"),
+        (PermissionDenied, "denied"),
+        (InvalidArguments, "invalid_arguments"),
+    ],
+)
+def test_errors_carry_status_and_message(cls, status):
+    err = cls("frase curta")
+    assert isinstance(err, ConnectorError)
+    assert (err.status, err.message, str(err)) == (status, "frase curta", "frase curta")
+    assert ConnectorError("x", status="provider_error").status == "provider_error"
+
+
+def test_connection_required_carries_connect_url():
+    assert ConnectionRequired("conecte").connect_url is None
+    assert ConnectionRequired("conecte", connect_url="https://app/c").connect_url == "https://app/c"
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("dooers.tools.connectors", "dooers.agents.server"),
+        ("dooers.agents.server", "dooers.tools.connectors"),
+    ],
+)
+def test_import_order_has_no_cycle(order):
+    code = "; ".join(f"import {mod}" for mod in order)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr

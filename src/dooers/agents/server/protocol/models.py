@@ -16,6 +16,7 @@ EventType = Literal[
     "form.response",
     "chart",
     "thread.update",
+    "connector.interaction",
 ]
 ChartType = Literal["bar", "bar_horizontal", "stacked_bar", "line", "area", "pie", "donut", "scatter"]
 RunStatus = Literal["running", "succeeded", "failed", "canceled"]

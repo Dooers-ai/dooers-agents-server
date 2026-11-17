@@ -210,7 +210,7 @@ all_values = await settings.get_all(exclude=["avatar_base64"])
 await settings.set("field_id", new_value)
 ```
 
-## Frontier agent features (0.26)
+## Frontier agent features (0.27)
 
 ### Streaming
 
@@ -638,6 +638,26 @@ When enabled:
 - Each user only sees threads they created
 - Useful for multi-tenant or personal assistant scenarios
 
+## Connectors
+
+Tools from the organization's connectors (Google Calendar, GitHub), executed by Dooers inside the handler turn. The SDK handles the "connect your account" and "approve this action" cards in the chat.
+
+```python
+from dooers.tools import connectors
+
+tools = await connectors.tools()  # raises ConnectorError if the list can't be fetched (the guide shows the fallback)
+extra = {"tools": tools.openai()} if tools.names else {}  # OpenAI rejects tools=[]
+completion = await openai.chat.completions.create(model="gpt-4.1", messages=messages, **extra)
+message = completion.choices[0].message
+if message.tool_calls:
+    messages.append(message.model_dump(exclude_none=True))
+    for call in message.tool_calls:
+        messages.append(await tools.run(call))  # connector, network and permission errors reach the LLM as status and message
+    # ...and call the model again (full loop in the guide)
+```
+
+Also `anthropic()`, `gemini()`, `openai_responses()`, `langchain()`, `openai_agents()`, `bind()`, `connectors.call()` and `connectors.list()`. Guide (pt-BR): [docs/connectors.md](docs/connectors.md).
+
 ## Examples
 
 See [`examples/`](examples/) for complete working examples:
@@ -658,4 +678,5 @@ See [`examples/`](examples/) for complete working examples:
 ## See Also
 
 - [WhatsApp integration](docs/whatsapp.md) — inbound/outbound, `WhatsAppClient`, templates, Meta 24h window
+- [Connectors](docs/connectors.md) — `connectors.tools()`, `ToolSet.run`, `bind`, `call`, `list`, channels without web chat
 - [dooers-agents-client](https://github.com/Dooers-ai/dooers-agents-client) — React SDK that connects to agents built with this server

@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.26.0] — 2026-10-31
+## [0.27.0] — 2026-11-17
 
 Platform support for frontier, multi-user agents. Every new frame is additive; clients must
-check the server version (servers before 0.26.0 close the socket on an unknown frame type).
+check the server version (servers before 0.27.0 close the socket on an unknown frame type).
 
 ### Added
 
@@ -83,6 +83,61 @@ check the server version (servers before 0.26.0 close the socket on an unknown f
 - Building `AgentIncoming` outside a running event loop no longer raises `RuntimeError`.
 - `run.upsert` at the end of a run keeps the original `started_at`.
 - Inbound events recorded with a non-user actor (`ingest`, schedules) no longer fail validation.
+
+## [0.26.0] — 2026-11-16
+
+### Added
+
+- `dooers.tools.connectors`: tools from the organization's connectors (Google Calendar,
+  GitHub, ...), executed by Dooers from inside a handler turn. `await connectors.tools()`
+  returns a `ToolSet` with what this agent may use with this person right now, as
+  `openai()`, `openai_responses()`, `anthropic()` or `gemini()` definitions, or as
+  self-running `langchain()` / `openai_agents()` tools (both import their package lazily;
+  there is no new required dependency). `await toolset.run(call)` executes an OpenAI,
+  Responses, Anthropic or Gemini tool call and returns the result message in the same
+  format (a `(name, arguments)` tuple or a legacy `{"name", "arguments"}` call returns the
+  plain result). It never raises for connector, network or permission errors: the LLM gets
+  `status` and a short `message`. `toolset.bind(name, **values)` fixes arguments in code
+  and removes them from the schema the LLM sees.
+- `connectors.call(connector, tool, arguments)` runs one tool without an LLM and raises
+  `ConnectionRequired` (with `connect_url`), `ApprovalDeclined`, `InteractionTimeout`,
+  `PermissionDenied`, `InvalidArguments` or `ConnectorError`. `connectors.list()` shows
+  each connector with its tools and, under `unavailable`, the tools left out and why
+  (`needs_approval_without_presence`, `person_required`, `blocked`).
+- When a call needs the person (connect an account, approve the action), the SDK writes a
+  `connector.interaction` card to the chat, waits for the answer (180 s to connect, 120 s
+  to approve, or `interaction_timeout` for both) and runs the call again on its own. A 5xx
+  or network error during the wait is retried until the deadline.
+  `ToolSet` calls are recorded in the thread as `tool.call` / `tool.result`, titled with the
+  tool's catalog title. These events
+  are written outside the handler's `yield`, so `dispatch().collect()` does not return
+  them.
+- `event.create` accepts an optional top-level `presence_token`. The SDK exchanges it with
+  the core for a short-lived `connector_session` and never stores it. Older clients that
+  don't send it only reach connectors that don't need the person.
+- The person's identity is only sent when the code passes `on_behalf_of`; the SDK never
+  takes it from the channel or the metadata.
+- Configuration: `DOOERS_CONNECTOR_SERVICE_URL` (injected by Dooers Host). Guide:
+  [`docs/connectors.md`](docs/connectors.md).
+
+## [0.25.2] — 2026-11-03
+
+### Fixed
+
+- Turns are exported again when the agent runs on FastAPI 0.162 or newer. That FastAPI
+  traces every WebSocket connection by default ("WS /ws"), so the turn span became its
+  child; export only fires when a root span ends, so every turn waited for the socket to
+  close and was then dropped under a root without `agent.id` ("turn missing agent.id"),
+  silently and with the LLM spans and their key-source marks. The turn span is now always
+  the root of its own trace, whatever span is open around it.
+
+## [0.25.1] — 2026-11-01
+
+### Fixed
+
+- A WhatsApp delivery receipt no longer walks a bubble backwards. `read` stays
+  `read` when a late `delivered` arrives, and `failed` is not cleared by a later
+  progress status. `delivered` and `read` still advance an `accepted` send.
 
 ## [0.25.0] — 2026-10-29
 

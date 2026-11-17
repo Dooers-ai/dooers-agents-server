@@ -63,6 +63,7 @@ from dooers.agents.server.storage.chat_upload_file_policy import (
     enforce_allowed_chat_file_kind,
 )
 from dooers.agents.server.thread_queue import queue_for_create, resolve_thread_queue
+from dooers.tools.connectors.runtime import TurnContext, bind_turn, reset_turn
 from dooers.tools.whatsapp.runtime import bind_handler_context, reset_handler_context
 
 if TYPE_CHECKING:
@@ -182,6 +183,8 @@ class HandlerContext:
     #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
     persist_actor: str = "user"
     persist_author: str | None = None
+    #: Presence JWT from ``event.create`` for connector tools; never persisted.
+    presence_token: str | None = field(default=None, repr=False)
     #: Non-human origin of the turn (``{"type": "schedule", ...}``); copied to ``incoming.context.trigger``.
     trigger: dict[str, Any] | None = None
 
@@ -196,6 +199,27 @@ class PipelineResult:
     user_event: ThreadEvent
     is_new_thread: bool
     handler_content: list[ContentPart] | None = None
+
+
+@dataclass
+class _TurnState:
+    """What the event loop keeps across one turn; shared with the turn's emitter."""
+
+    context: HandlerContext
+    result: PipelineResult
+    thread_id: str
+    c2s_content_type: str
+    current_run_id: str | None = None
+    current_agent_id: str | None = None
+    current_run_started_at: datetime | None = None
+    #: Text/reasoning streams still open (``stream_id`` → draft), finalized on ``text``/``run_end``/turn end.
+    streams: dict[str, _OpenStream] = field(default_factory=dict)
+    #: The registered run of this turn, when a ``RunRegistry`` is wired (stop button).
+    active: ActiveRun | None = None
+    #: Set once the handler is done (normally or not); the emitter then drops events (see ``_emit``).
+    closed: bool = False
+    #: One ``_apply_event`` at a time: the loop and the emitter (tool tasks) never interleave their writes.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class HandlerPipeline:
@@ -439,10 +463,12 @@ class HandlerPipeline:
 
         settings = self._create_settings(agent_id=context.agent_id)
 
-        current_run_id: str | None = None
-        current_agent_id: str | None = None
-        current_run_started_at: datetime | None = None
-        streams: dict[str, _OpenStream] = {}
+        state = _TurnState(
+            context=context,
+            result=result,
+            thread_id=thread_id,
+            c2s_content_type=c2s_content_type,
+        )
 
         policy_denial: str | None = None
         if result.user_event.type == "message":
@@ -466,7 +492,20 @@ class HandlerPipeline:
             persistence=self._persistence,
             agent_id=context.agent_id,
         )
-        active = self._register_active_run(thread_id, context.agent_id)
+        turn_token = bind_turn(
+            TurnContext(
+                agent_id=context.agent_id,
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+                thread_id=thread_id,
+                user_id=context.user.user_id or None,
+                channel=context.channel or "dooers-platform",
+                presence_token=context.presence_token,
+                persistence=self._persistence,
+                emit=partial(self._emit, state=state),
+            )
+        )
+        active = state.active = self._register_active_run(thread_id, context.agent_id)
         agent_context._active_run = active
         handler_stream = _handler_event_stream()
         try:
@@ -485,685 +524,14 @@ class HandlerPipeline:
                 if active is not None and active.cancel_requested:
                     # Stop requested while the handler produced this event: drop it.
                     raise _RunCancelled()
-                event_now = _now()
-
-                if event.send_type in ("text_delta", "reasoning_delta"):
-                    await self._on_stream_delta(
-                        streams, event, context=context, thread_id=thread_id, run_id=current_run_id, now=event_now
-                    )
-                    yield event
-                    continue
-
-                if event.send_type == "run_start":
-                    current_run_id = _generate_id()
-                    current_agent_id = event.data.get("agent_id")
-                    current_run_started_at = event_now
-                    if active is not None:
-                        active.run_id = current_run_id
-                    run = Run(
-                        id=current_run_id,
-                        thread_id=thread_id,
-                        agent_id=current_agent_id,
-                        status="running",
-                        started_at=event_now,
-                    )
-                    await self._persistence.create_run(run)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "run.upsert",
-                            "run": run,
-                        },
-                    )
-
-                    result.user_event.run_id = current_run_id
-                    await self._persistence.update_event(result.user_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [result.user_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_C2S.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=result.user_event.id,
-                        data={"type": c2s_content_type},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "run_end":
-                    await self._finalize_open_streams(streams, context=context, thread_id=thread_id)
-                    if current_run_id:
-                        run = Run(
-                            id=current_run_id,
-                            thread_id=thread_id,
-                            agent_id=current_agent_id,
-                            status=event.data.get("status", "succeeded"),
-                            started_at=current_run_started_at or event_now,
-                            ended_at=event_now,
-                            error=event.data.get("error"),
-                        )
-                        await self._persistence.update_run(run)
-                        await self._broadcast(
-                            context.agent_id,
-                            {
-                                "type": "run.upsert",
-                                "run": run,
-                            },
-                        )
-                        current_run_id = None
-                        current_agent_id = None
-
-                elif event.send_type == "text" and streams.get(event.data.get("stream_id") or "") is not None:
-                    await self._finalize_stream(
-                        streams.pop(event.data["stream_id"]),
-                        context=context,
-                        thread_id=thread_id,
-                        final_text=event.data.get("text"),
-                        source_event=event,
-                    )
-
-                elif event.send_type == "reasoning" and streams.get(event.data.get("stream_id") or "") is not None:
-                    await self._finalize_stream(
-                        streams.pop(event.data["stream_id"]),
-                        context=context,
-                        thread_id=thread_id,
-                        final_text=event.data.get("text"),
-                        source_event=event,
-                    )
-
-                elif event.send_type == "text":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="message",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=[WireS2C_TextPart(text=event.data["text"])],
-                        data=self._assistant_delivery_data(context),
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "text"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "reasoning":
-                    # Assistant reasoning: separate event type (kept out of `content`
-                    # so it never feeds memory.get_history / the LLM). Not dispatched
-                    # to external channels (WhatsApp) — internal display only.
-                    thread_event = ThreadEvent(
-                        id=_generate_id(),
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="reasoning",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        data={"text": event.data["text"]},
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-
-                elif event.send_type == "audio":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="message",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=[
-                            WireS2C_AudioPart(
-                                url=event.data["url"],
-                                mime_type=event.data.get("mime_type"),
-                                duration=event.data.get("duration"),
-                            )
-                        ],
-                        data=self._assistant_delivery_data(context),
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "audio"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "image":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="message",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=[
-                            WireS2C_ImagePart(
-                                url=event.data["url"],
-                                mime_type=event.data.get("mime_type"),
-                                alt=event.data.get("alt"),
-                                filename=event.data.get("filename"),
-                                ref_id=event.data.get("ref_id"),
-                            )
-                        ],
-                        data=self._assistant_delivery_data(context),
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "image"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "document":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="message",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=[
-                            WireS2C_DocumentPart(
-                                url=event.data["url"],
-                                filename=event.data["filename"],
-                                mime_type=event.data["mime_type"],
-                                size_bytes=event.data.get("size_bytes"),
-                                ref_id=event.data.get("ref_id"),
-                            )
-                        ],
-                        data=self._assistant_delivery_data(context),
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "document"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "contact":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="message",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=[
-                            WireS2C_ContactPart(
-                                display_name=event.data.get("display_name") or "",
-                                vcard=event.data.get("vcard"),
-                                phones=event.data.get("phones") or [],
-                            )
-                        ],
-                        data=self._assistant_delivery_data(context),
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "contact"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "template":
-                    template_name = str(event.data.get("template_name") or "").strip()
-                    template_language = str(event.data.get("template_language") or "").strip()
-                    display = f"[template: {template_name} ({template_language})]"
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="message",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=[WireS2C_TextPart(text=display)],
-                        data={
-                            **(self._assistant_delivery_data(context) or {}),
-                            "template": {
-                                "name": template_name,
-                                "language": template_language,
-                                "components": event.data.get("template_components") or [],
-                            },
-                        },
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "template", "name": template_name},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "form":
-                    event_id = _generate_id()
-                    elements_raw = event.data.get("elements", [])
-                    form_element_models = {
-                        "text_input": WireS2C_FormTextElement,
-                        "textarea_input": WireS2C_FormTextareaElement,
-                        "select_input": WireS2C_FormSelectElement,
-                        "radio_input": WireS2C_FormRadioElement,
-                        "checkbox_input": WireS2C_FormCheckboxElement,
-                        "file_input": WireS2C_FormFileElement,
-                    }
-                    validated_elements = []
-                    for el in elements_raw:
-                        el_type = el.get("type", "")
-                        model_cls = form_element_models.get(el_type)
-                        if model_cls:
-                            validated_elements.append(model_cls(**el).model_dump(exclude_unset=True))
-                        else:
-                            logger.warning("Unknown form element type: %s", el_type)
-                            validated_elements.append(el)
-
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="form",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=None,
-                        data={
-                            "message": event.data.get("message", ""),
-                            "elements": validated_elements,
-                            "submit_label": event.data.get("submit_label", "Send"),
-                            "cancel_label": event.data.get("cancel_label", "Cancel"),
-                            "size": event.data.get("size", "medium"),
-                        },
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "form"},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "chart":
-                    event_id = _generate_id()
-                    chart_payload = WireS2C_ChartEventData(**event.data).model_dump(exclude_unset=True)
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="chart",
-                        actor="assistant",
-                        author=event.data.get("author") or self._assistant_name,
-                        content=None,
-                        data=chart_payload,
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.MESSAGE_S2C.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"type": "chart", "chart_type": chart_payload.get("chart_type")},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "tool_call":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="tool.call",
-                        actor="assistant",
-                        data={
-                            "id": event.data["id"],
-                            "name": event.data["name"],
-                            "display_name": event.data.get("display_name"),
-                            "args": event.data["args"],
-                        },
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.TOOL_CALLED.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"name": event.data["name"]},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "tool_result":
-                    thread_event = ThreadEvent(
-                        id=_generate_id(),
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="tool.result",
-                        actor="tool",
-                        data={
-                            "id": event.data.get("id"),
-                            "name": event.data["name"],
-                            "display_name": event.data.get("display_name"),
-                            "args": event.data.get("args"),
-                            "result": event.data["result"],
-                        },
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-
-                elif event.send_type == "tool_transaction":
-                    event_id = _generate_id()
-                    thread_event = ThreadEvent(
-                        id=event_id,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        type="tool.transaction",
-                        actor="assistant",
-                        data={
-                            "id": event.data["id"],
-                            "name": event.data["name"],
-                            "display_name": event.data.get("display_name"),
-                            "args": event.data["args"],
-                            "result": event.data["result"],
-                        },
-                        created_at=event_now,
-                    )
-                    await self._persistence.create_event(thread_event)
-                    await self._broadcast(
-                        context.agent_id,
-                        {
-                            "type": "event.append",
-                            "thread_id": thread_id,
-                            "events": [thread_event],
-                        },
-                    )
-                    await self._track_event(
-                        context.agent_id,
-                        AnalyticsEvent.TOOL_CALLED.value,
-                        thread_id=thread_id,
-                        user_id=context.user.user_id,
-                        run_id=current_run_id,
-                        event_id=event_id,
-                        data={"name": event.data["name"]},
-                        organization_id=context.organization_id,
-                        workspace_id=context.workspace_id,
-                    )
-
-                elif event.send_type == "event_update":
-                    target_event_id = event.data["event_id"]
-                    existing_event = await self._persistence.get_event(target_event_id)
-                    if not existing_event:
-                        logger.warning("[agents] event_update: event %s not found", target_event_id)
-                    else:
-                        existing_event.content = [deserialize_s2c_part(p) for p in event.data["content"]]
-                        await self._persistence.update_event(existing_event)
-                        await self._broadcast(
-                            context.agent_id,
-                            {
-                                "type": "event.append",
-                                "thread_id": existing_event.thread_id,
-                                "events": [existing_event],
-                            },
-                        )
-
-                elif event.send_type == "thread_update":
-                    thread = await self._persistence.get_thread(thread_id)
-                    if thread:
-                        if event.data.get("title") is not None:
-                            thread.title = event.data["title"]
-                        previous_queue = thread.queue
-                        if "queue" in event.data:
-                            try:
-                                thread.queue = resolve_thread_queue(
-                                    event.data.get("queue"),
-                                    workspace_id=thread.workspace_id,
-                                    allowed=context.allowed_queues,
-                                )
-                            except ValueError:
-                                logger.warning(
-                                    "[agents] thread_update rejected queue=%s thread=%s",
-                                    event.data.get("queue"),
-                                    thread_id,
-                                )
-                            else:
-                                if thread.queue != previous_queue:
-                                    queue_event = ThreadEvent(
-                                        id=_generate_id(),
-                                        thread_id=thread_id,
-                                        run_id=current_run_id,
-                                        type="thread.update",
-                                        actor="system",
-                                        author=self._assistant_name,
-                                        user=User(user_id=context.agent_id, user_name=self._assistant_name),
-                                        data={
-                                            "field": "queue",
-                                            "from": previous_queue,
-                                            "to": thread.queue,
-                                        },
-                                        created_at=event_now,
-                                    )
-                                    await self._persistence.create_event(queue_event)
-                                    await self._broadcast(
-                                        context.agent_id,
-                                        {
-                                            "type": "event.append",
-                                            "thread_id": thread_id,
-                                            "events": [queue_event],
-                                        },
-                                    )
-                        thread.updated_at = event_now
-                        await self._persistence.update_thread(thread)
-                        await self._broadcast(
-                            context.agent_id,
-                            {
-                                "type": "thread.upsert",
-                                "thread": thread,
-                            },
-                        )
-
-                elif event.send_type == "participant_add":
-                    from dooers.agents.server.thread_access import actor_id_is_participant
-
-                    thread = await self._persistence.get_thread(thread_id)
-                    if not thread:
-                        logger.warning("[agents] participant_add: thread %s not found", thread_id)
-                    else:
-                        # Lazy backfill agent on old threads before manage check.
-                        if not actor_id_is_participant(context.agent_id, thread):
-                            await self._persistence.upsert_thread_participant(
-                                thread_id,
-                                User(user_id=context.agent_id, user_name=self._assistant_name),
-                            )
-                            thread = await self._persistence.get_thread(thread_id) or thread
-                        if not actor_id_is_participant(context.agent_id, thread):
-                            logger.warning(
-                                "[agents] participant_add denied: agent %s not a participant of %s",
-                                context.agent_id,
-                                thread_id,
-                            )
-                        else:
-                            raw = event.data.get("user") or {}
-                            new_user = User(
-                                user_id=str(raw.get("user_id") or ""),
-                                user_name=raw.get("user_name"),
-                                user_email=raw.get("user_email"),
-                                identity_ids=list(raw.get("identity_ids") or []),
-                            )
-                            if new_user.user_id or new_user.user_email:
-                                await self._persistence.upsert_thread_participant(thread_id, new_user)
-                                updated = await self._persistence.get_thread(thread_id)
-                                if updated:
-                                    await self._broadcast(
-                                        context.agent_id,
-                                        {
-                                            "type": "thread.upsert",
-                                            "thread": updated,
-                                        },
-                                    )
-
-                if event.send_type not in ("thread_update", "participant_add"):
-                    await self._update_thread_last_event(thread_id, event_now)
-
+                async with state.lock:
+                    await self._apply_event(event, state)
                 yield event
 
-            await self._finalize_open_streams(streams, context=context, thread_id=thread_id)
+            async with state.lock:
+                # Under the lock: a tool task still emitting waits, then finds the turn closed.
+                await self._finalize_open_streams(state.streams, context=context, thread_id=thread_id)
+                state.closed = True
 
             if result.user_event.run_id is None:
                 await self._track_event(
@@ -1179,37 +547,23 @@ class HandlerPipeline:
                 )
 
         except (_RunCancelled, asyncio.CancelledError) as exc:
+            state.closed = True
             requested = active is not None and active.cancel_requested
             if isinstance(exc, asyncio.CancelledError):
                 if not requested:
                     # Shutdown / caller cancellation: record it, then let the cancellation propagate.
-                    await self._close_canceled_run(
-                        streams,
-                        handler_stream,
-                        context=context,
-                        thread_id=thread_id,
-                        run_id=current_run_id,
-                        agent_id=current_agent_id,
-                        started_at=current_run_started_at,
-                        reason="interrupted",
-                    )
+                    await self._close_canceled_run(state, handler_stream, reason="interrupted")
                     raise
                 task = asyncio.current_task()
                 if task is not None:
                     task.uncancel()
             await self._close_canceled_run(
-                streams,
-                handler_stream,
-                context=context,
-                thread_id=thread_id,
-                run_id=current_run_id,
-                agent_id=current_agent_id,
-                started_at=current_run_started_at,
-                reason=(active.cancel_reason if active else None) or "user_canceled",
+                state, handler_stream, reason=(active.cancel_reason if active else None) or "user_canceled"
             )
         except Exception as e:
+            state.closed = True
             with contextlib.suppress(Exception):
-                await self._finalize_open_streams(streams, context=context, thread_id=thread_id, interrupted=True)
+                await self._finalize_open_streams(state.streams, context=context, thread_id=thread_id, interrupted=True)
             if result.user_event.run_id is None:
                 await self._track_event(
                     context.agent_id,
@@ -1230,7 +584,7 @@ class HandlerPipeline:
                 AnalyticsEvent.ERROR_OCCURRED.value,
                 thread_id=thread_id,
                 user_id=context.user.user_id,
-                run_id=current_run_id,
+                run_id=state.current_run_id,
                 data={"error": str(e), "type": type(e).__name__},
                 organization_id=context.organization_id,
                 workspace_id=context.workspace_id,
@@ -1238,11 +592,11 @@ class HandlerPipeline:
 
             error_now = _now()
 
-            if current_run_id:
+            if state.current_run_id:
                 run = Run(
-                    id=current_run_id,
+                    id=state.current_run_id,
                     thread_id=thread_id,
-                    agent_id=current_agent_id,
+                    agent_id=state.current_agent_id,
                     status="failed",
                     started_at=error_now,
                     ended_at=error_now,
@@ -1260,7 +614,7 @@ class HandlerPipeline:
             error_event = ThreadEvent(
                 id=_generate_id(),
                 thread_id=thread_id,
-                run_id=current_run_id,
+                run_id=state.current_run_id,
                 type="message",
                 actor="system",
                 content=[WireS2C_TextPart(text=str(e))],
@@ -1279,9 +633,734 @@ class HandlerPipeline:
 
             raise HandlerError(str(e), original=e) from e
         finally:
+            state.closed = True
             if active is not None and self._run_registry is not None:
                 self._run_registry.unregister(active)
+            reset_turn(turn_token)
             reset_handler_context(runtime_tokens)
+
+    async def _emit(self, event: AgentEvent, state: _TurnState) -> None:
+        """The turn's side-channel emitter (``TurnContext.emit``).
+
+        Tasks created during the turn copy its context and can call this after the handler
+        finished (normally or not). Such late events are dropped with a warning, never raised,
+        so a tool task that outlives the turn cannot write into a closed run or crash. While
+        the loop is applying a yielded event, this waits for it (``state.lock``).
+        """
+        async with state.lock:
+            if state.closed:
+                logger.warning(
+                    "[agents] emit after turn end dropped: send_type=%s thread=%s",
+                    event.send_type,
+                    state.thread_id,
+                )
+                return
+            await self._apply_event(event, state)
+
+    async def _apply_event(self, event: AgentEvent, state: _TurnState) -> None:
+        """Persist and broadcast one handler event: the body of the ``execute`` loop, also run
+        by the turn's emitter (``_emit``) for events sent outside the handler's ``yield``."""
+        context = state.context
+        result = state.result
+        thread_id = state.thread_id
+        c2s_content_type = state.c2s_content_type
+        current_run_id = state.current_run_id
+        current_agent_id = state.current_agent_id
+        streams = state.streams
+        event_now = _now()
+
+        if event.send_type in ("text_delta", "reasoning_delta"):
+            await self._on_stream_delta(
+                streams, event, context=context, thread_id=thread_id, run_id=current_run_id, now=event_now
+            )
+            return
+
+        if event.send_type == "run_start":
+            current_run_id = state.current_run_id = _generate_id()
+            current_agent_id = state.current_agent_id = event.data.get("agent_id")
+            state.current_run_started_at = event_now
+            if state.active is not None:
+                state.active.run_id = current_run_id
+            run = Run(
+                id=current_run_id,
+                thread_id=thread_id,
+                agent_id=current_agent_id,
+                status="running",
+                started_at=event_now,
+            )
+            await self._persistence.create_run(run)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "run.upsert",
+                    "run": run,
+                },
+            )
+
+            result.user_event.run_id = current_run_id
+            await self._persistence.update_event(result.user_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [result.user_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_C2S.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=result.user_event.id,
+                data={"type": c2s_content_type},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "run_end":
+            await self._finalize_open_streams(streams, context=context, thread_id=thread_id)
+            if current_run_id:
+                run = Run(
+                    id=current_run_id,
+                    thread_id=thread_id,
+                    agent_id=current_agent_id,
+                    status=event.data.get("status", "succeeded"),
+                    started_at=state.current_run_started_at or event_now,
+                    ended_at=event_now,
+                    error=event.data.get("error"),
+                )
+                await self._persistence.update_run(run)
+                await self._broadcast(
+                    context.agent_id,
+                    {
+                        "type": "run.upsert",
+                        "run": run,
+                    },
+                )
+                state.current_run_id = None
+                state.current_agent_id = None
+
+        elif event.send_type == "text" and streams.get(event.data.get("stream_id") or "") is not None:
+            await self._finalize_stream(
+                streams.pop(event.data["stream_id"]),
+                context=context,
+                thread_id=thread_id,
+                final_text=event.data.get("text"),
+                source_event=event,
+            )
+
+        elif event.send_type == "reasoning" and streams.get(event.data.get("stream_id") or "") is not None:
+            await self._finalize_stream(
+                streams.pop(event.data["stream_id"]),
+                context=context,
+                thread_id=thread_id,
+                final_text=event.data.get("text"),
+                source_event=event,
+            )
+
+        elif event.send_type == "text":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=[WireS2C_TextPart(text=event.data["text"])],
+                data=self._assistant_delivery_data(context),
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._dispatch_whatsapp_outbound(event, context, thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "text"},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "reasoning":
+            # Assistant reasoning: separate event type (kept out of `content`
+            # so it never feeds memory.get_history / the LLM). Not dispatched
+            # to external channels (WhatsApp) — internal display only.
+            thread_event = ThreadEvent(
+                id=_generate_id(),
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="reasoning",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                data={"text": event.data["text"]},
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+
+        elif event.send_type == "audio":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=[
+                    WireS2C_AudioPart(
+                        url=event.data["url"],
+                        mime_type=event.data.get("mime_type"),
+                        duration=event.data.get("duration"),
+                    )
+                ],
+                data=self._assistant_delivery_data(context),
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._dispatch_whatsapp_outbound(event, context, thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "audio"},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "image":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=[
+                    WireS2C_ImagePart(
+                        url=event.data["url"],
+                        mime_type=event.data.get("mime_type"),
+                        alt=event.data.get("alt"),
+                        filename=event.data.get("filename"),
+                        ref_id=event.data.get("ref_id"),
+                    )
+                ],
+                data=self._assistant_delivery_data(context),
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._dispatch_whatsapp_outbound(event, context, thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "image"},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "document":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=[
+                    WireS2C_DocumentPart(
+                        url=event.data["url"],
+                        filename=event.data["filename"],
+                        mime_type=event.data["mime_type"],
+                        size_bytes=event.data.get("size_bytes"),
+                        ref_id=event.data.get("ref_id"),
+                    )
+                ],
+                data=self._assistant_delivery_data(context),
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._dispatch_whatsapp_outbound(event, context, thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "document"},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "contact":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=[
+                    WireS2C_ContactPart(
+                        display_name=event.data.get("display_name") or "",
+                        vcard=event.data.get("vcard"),
+                        phones=event.data.get("phones") or [],
+                    )
+                ],
+                data=self._assistant_delivery_data(context),
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._dispatch_whatsapp_outbound(event, context, thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "contact"},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "template":
+            template_name = str(event.data.get("template_name") or "").strip()
+            template_language = str(event.data.get("template_language") or "").strip()
+            display = f"[template: {template_name} ({template_language})]"
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="message",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=[WireS2C_TextPart(text=display)],
+                data={
+                    **(self._assistant_delivery_data(context) or {}),
+                    "template": {
+                        "name": template_name,
+                        "language": template_language,
+                        "components": event.data.get("template_components") or [],
+                    },
+                },
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._dispatch_whatsapp_outbound(event, context, thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "template", "name": template_name},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "form":
+            event_id = _generate_id()
+            elements_raw = event.data.get("elements", [])
+            form_element_models = {
+                "text_input": WireS2C_FormTextElement,
+                "textarea_input": WireS2C_FormTextareaElement,
+                "select_input": WireS2C_FormSelectElement,
+                "radio_input": WireS2C_FormRadioElement,
+                "checkbox_input": WireS2C_FormCheckboxElement,
+                "file_input": WireS2C_FormFileElement,
+            }
+            validated_elements = []
+            for el in elements_raw:
+                el_type = el.get("type", "")
+                model_cls = form_element_models.get(el_type)
+                if model_cls:
+                    validated_elements.append(model_cls(**el).model_dump(exclude_unset=True))
+                else:
+                    logger.warning("Unknown form element type: %s", el_type)
+                    validated_elements.append(el)
+
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="form",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=None,
+                data={
+                    "message": event.data.get("message", ""),
+                    "elements": validated_elements,
+                    "submit_label": event.data.get("submit_label", "Send"),
+                    "cancel_label": event.data.get("cancel_label", "Cancel"),
+                    "size": event.data.get("size", "medium"),
+                },
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "form"},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "chart":
+            event_id = _generate_id()
+            chart_payload = WireS2C_ChartEventData(**event.data).model_dump(exclude_unset=True)
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="chart",
+                actor="assistant",
+                author=event.data.get("author") or self._assistant_name,
+                content=None,
+                data=chart_payload,
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.MESSAGE_S2C.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"type": "chart", "chart_type": chart_payload.get("chart_type")},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "tool_call":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="tool.call",
+                actor="assistant",
+                data={
+                    "id": event.data["id"],
+                    "name": event.data["name"],
+                    "display_name": event.data.get("display_name"),
+                    "args": event.data["args"],
+                },
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.TOOL_CALLED.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"name": event.data["name"]},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "tool_result":
+            thread_event = ThreadEvent(
+                id=_generate_id(),
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="tool.result",
+                actor="tool",
+                data={
+                    "id": event.data.get("id"),
+                    "name": event.data["name"],
+                    "display_name": event.data.get("display_name"),
+                    "args": event.data.get("args"),
+                    "result": event.data["result"],
+                },
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+
+        elif event.send_type == "tool_transaction":
+            event_id = _generate_id()
+            thread_event = ThreadEvent(
+                id=event_id,
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="tool.transaction",
+                actor="assistant",
+                data={
+                    "id": event.data["id"],
+                    "name": event.data["name"],
+                    "display_name": event.data.get("display_name"),
+                    "args": event.data["args"],
+                    "result": event.data["result"],
+                },
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+            await self._track_event(
+                context.agent_id,
+                AnalyticsEvent.TOOL_CALLED.value,
+                thread_id=thread_id,
+                user_id=context.user.user_id,
+                run_id=current_run_id,
+                event_id=event_id,
+                data={"name": event.data["name"]},
+                organization_id=context.organization_id,
+                workspace_id=context.workspace_id,
+            )
+
+        elif event.send_type == "event_update":
+            target_event_id = event.data["event_id"]
+            existing_event = await self._persistence.get_event(target_event_id)
+            if not existing_event:
+                logger.warning("[agents] event_update: event %s not found", target_event_id)
+            else:
+                existing_event.content = [deserialize_s2c_part(p) for p in event.data["content"]]
+                await self._persistence.update_event(existing_event)
+                await self._broadcast(
+                    context.agent_id,
+                    {
+                        "type": "event.append",
+                        "thread_id": existing_event.thread_id,
+                        "events": [existing_event],
+                    },
+                )
+
+        elif event.send_type == "thread_update":
+            thread = await self._persistence.get_thread(thread_id)
+            if thread:
+                if event.data.get("title") is not None:
+                    thread.title = event.data["title"]
+                previous_queue = thread.queue
+                if "queue" in event.data:
+                    try:
+                        thread.queue = resolve_thread_queue(
+                            event.data.get("queue"),
+                            workspace_id=thread.workspace_id,
+                            allowed=context.allowed_queues,
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "[agents] thread_update rejected queue=%s thread=%s",
+                            event.data.get("queue"),
+                            thread_id,
+                        )
+                    else:
+                        if thread.queue != previous_queue:
+                            queue_event = ThreadEvent(
+                                id=_generate_id(),
+                                thread_id=thread_id,
+                                run_id=current_run_id,
+                                type="thread.update",
+                                actor="system",
+                                author=self._assistant_name,
+                                user=User(user_id=context.agent_id, user_name=self._assistant_name),
+                                data={
+                                    "field": "queue",
+                                    "from": previous_queue,
+                                    "to": thread.queue,
+                                },
+                                created_at=event_now,
+                            )
+                            await self._persistence.create_event(queue_event)
+                            await self._broadcast(
+                                context.agent_id,
+                                {
+                                    "type": "event.append",
+                                    "thread_id": thread_id,
+                                    "events": [queue_event],
+                                },
+                            )
+                thread.updated_at = event_now
+                await self._persistence.update_thread(thread)
+                await self._broadcast(
+                    context.agent_id,
+                    {
+                        "type": "thread.upsert",
+                        "thread": thread,
+                    },
+                )
+
+        elif event.send_type == "participant_add":
+            from dooers.agents.server.thread_access import actor_id_is_participant
+
+            thread = await self._persistence.get_thread(thread_id)
+            if not thread:
+                logger.warning("[agents] participant_add: thread %s not found", thread_id)
+            else:
+                # Lazy backfill agent on old threads before manage check.
+                if not actor_id_is_participant(context.agent_id, thread):
+                    await self._persistence.upsert_thread_participant(
+                        thread_id,
+                        User(user_id=context.agent_id, user_name=self._assistant_name),
+                    )
+                    thread = await self._persistence.get_thread(thread_id) or thread
+                if not actor_id_is_participant(context.agent_id, thread):
+                    logger.warning(
+                        "[agents] participant_add denied: agent %s not a participant of %s",
+                        context.agent_id,
+                        thread_id,
+                    )
+                else:
+                    raw = event.data.get("user") or {}
+                    new_user = User(
+                        user_id=str(raw.get("user_id") or ""),
+                        user_name=raw.get("user_name"),
+                        user_email=raw.get("user_email"),
+                        identity_ids=list(raw.get("identity_ids") or []),
+                    )
+                    if new_user.user_id or new_user.user_email:
+                        await self._persistence.upsert_thread_participant(thread_id, new_user)
+                        updated = await self._persistence.get_thread(thread_id)
+                        if updated:
+                            await self._broadcast(
+                                context.agent_id,
+                                {
+                                    "type": "thread.upsert",
+                                    "thread": updated,
+                                },
+                            )
+
+        elif event.send_type == "connector_interaction":
+            thread_event = ThreadEvent(
+                id=_generate_id(),
+                thread_id=thread_id,
+                run_id=current_run_id,
+                type="connector.interaction",
+                actor="system",
+                data=event.data,
+                created_at=event_now,
+            )
+            await self._persistence.create_event(thread_event)
+            await self._broadcast(
+                context.agent_id,
+                {
+                    "type": "event.append",
+                    "thread_id": thread_id,
+                    "events": [thread_event],
+                },
+            )
+
+        if event.send_type not in ("thread_update", "participant_add"):
+            await self._update_thread_last_event(thread_id, event_now)
 
     # --- run control -------------------------------------------------------------------
 
@@ -1294,29 +1373,21 @@ class HandlerPipeline:
             task = None
         return self._run_registry.register(thread_id=thread_id, agent_id=agent_id, task=task)
 
-    async def _close_canceled_run(
-        self,
-        streams: dict[str, _OpenStream],
-        handler_stream: Any,
-        *,
-        context: HandlerContext,
-        thread_id: str,
-        run_id: str | None,
-        agent_id: str | None,
-        started_at: datetime | None,
-        reason: str,
-    ) -> None:
+    async def _close_canceled_run(self, state: _TurnState, handler_stream: Any, *, reason: str) -> None:
+        context = state.context
+        thread_id = state.thread_id
+        run_id = state.current_run_id
         with contextlib.suppress(BaseException):
             await handler_stream.aclose()
-        await self._finalize_open_streams(streams, context=context, thread_id=thread_id, interrupted=True)
+        await self._finalize_open_streams(state.streams, context=context, thread_id=thread_id, interrupted=True)
         now = _now()
         if run_id:
             run = Run(
                 id=run_id,
                 thread_id=thread_id,
-                agent_id=agent_id,
+                agent_id=state.current_agent_id,
                 status="canceled",
-                started_at=started_at or now,
+                started_at=state.current_run_started_at or now,
                 ended_at=now,
                 error=reason,
             )

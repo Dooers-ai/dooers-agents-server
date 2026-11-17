@@ -502,7 +502,7 @@ def start_tracker(
         return _NoOpTracker()
     try:
         from opentelemetry import trace
-        from opentelemetry.context import attach
+        from opentelemetry.context import Context, attach
 
         attributes: dict[str, str] = {
             "agent.id": agent_id,
@@ -527,7 +527,10 @@ def start_tracker(
         # Span name: "agent/{agent_id}: {title}" or "agent/{agent_id}" when no title yet.
         span_name = f"agent/{agent_id}: {thread_title}" if thread_title else f"agent/{agent_id}"
         tracer = trace.get_tracer("dooers.agents")
-        span = tracer.start_span(span_name, attributes=attributes)
+        # Always the root of its own trace: export fires when a root span ends, and a span
+        # opened around the connection (FastAPI >= 0.162 traces every WebSocket by default)
+        # would otherwise hold every turn until the socket closes, then drop them all.
+        span = tracer.start_span(span_name, attributes=attributes, context=Context())
         token = attach(trace.set_span_in_context(span))
         return _OtelTracker(span, token)
     except Exception:
