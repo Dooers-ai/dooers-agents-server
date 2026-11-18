@@ -37,7 +37,11 @@ Dataclass; **só atributos**, sem métodos próprios.
 | `user` | `User` | Utilizador (ver tabela seguinte). |
 | `thread_title` | `str \| None` | Título do thread, se existir. |
 | `thread_created_at` | `datetime \| None` | Data de criação do thread. |
+| `queue` | `str \| None` | Slug da fila desta thread (`None` se não houver fila). |
+| `queues` | `list[WorkspaceQueueCatalog]` | Catálogo do workspace (handshake). Cada item: `slug`, `name`, `members`. |
 | `chat_context` | `ChatContext \| None` | Hints de execução deste turno (`event.create.chat_context`). Hoje: `llm_model`. |
+
+`incoming.context.members_for_queue()` devolve os membros da fila atual (ou de um slug passado). Cada membro tem `user_id`, `user_name`, `user_email`, `identity_ids`, `claims`.
 
 ### `incoming.context.chat_context` (`ChatContext`)
 
@@ -205,6 +209,8 @@ See [whatsapp.md](whatsapp.md) for `WhatsAppClient`, Studio setup, and troublesh
 | `send.form_text(...)`, `send.form_textarea(...)`, `send.form_select(...)`, `send.form_radio(...)`, `send.form_checkbox(...)`, `send.form_file(...)` | **Static helpers** — they return element dicts, not `AgentEvent`s |
 
 `size` is one of `small`, `medium`, `large`.
+
+`send.form_text(..., input_type=...)` accepts `text` \| `password` \| `email` \| `number` \| `date`. With `date`, the web client renders a native date picker; submitted values and `default` should be **`YYYY-MM-DD`**.
 
 ---
 

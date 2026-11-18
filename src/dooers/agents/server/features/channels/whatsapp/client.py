@@ -88,4 +88,4 @@ class WhatsappToolsClient:
         return await self._transport.send_message_payload(agent_id, payload)
 
     async def send_event(self, agent_id: str, event: AgentEvent) -> bool:
-        return await deliver_send_event(self._transport, agent_id, event)
+        return await deliver_send_event(self._transport, agent_id, event) is not None

@@ -374,9 +374,7 @@ def delete_chat_artifacts_for_thread(
     aid = (agent_id or "").strip()
     if not tid or not aid:
         return 0
-    prefix = build_chat_artifact_thread_prefix(
-        agent_id=aid, thread_id=tid, prefix=_managed_prefix(cfg)
-    )
+    prefix = build_chat_artifact_thread_prefix(agent_id=aid, thread_id=tid, prefix=_managed_prefix(cfg))
     backend = resolve_chat_artifact_backend(cfg)
     if backend == "gcp":
         n = gcs.delete_blobs_with_prefix((cfg.gcp_storage_bucket or "").strip(), prefix)
@@ -413,23 +411,34 @@ def chat_artifact_object_exists(cfg: AgentConfig, object_key: str) -> bool:
 
 
 def sign_chat_artifact_read_url(cfg: AgentConfig, object_key: str) -> str | None:
-    # Managed 'dooers' storage: the tenant SA has no signBlob/tokenCreator in Phase 1
-    # (direct IO / RAG), so V4 signing would fail — skip it rather than raise.
-    if (cfg.chat_storage_service or "").strip().lower() == "dooers":
+    key = (object_key or "").strip()
+    if not key:
         return None
     ttl = max(1, int(getattr(cfg, "chat_artifact_signed_url_ttl_minutes", 60) or 60))
+    # Managed storage runs as the tenant SA (no JSON key). Sign via iam.signBlob,
+    # and only for keys already under the org prefix the SA is allowed to read.
+    if (cfg.chat_storage_service or "").strip().lower() == "dooers":
+        prefix = _managed_prefix(cfg)
+        if prefix and not key.startswith(prefix):
+            logger.warning("Refusing to sign chat artifact outside managed prefix")
+            return None
+        return gcs.generate_signed_get_url_via_iam(
+            (cfg.gcp_storage_bucket or "").strip(),
+            key,
+            expiration_minutes=ttl,
+        )
     backend = resolve_chat_artifact_backend(cfg)
     if backend == "gcp":
         return gcs.generate_signed_get_url(
             (cfg.gcp_storage_bucket or "").strip(),
-            object_key,
+            key,
             expiration_minutes=ttl,
         )
     if backend == "azure":
         return azure_blob.generate_blob_read_sas_url(
             (cfg.azure_storage_connection_string or "").strip(),
             (cfg.azure_storage_container or "").strip(),
-            object_key,
+            key,
             expiration_minutes=ttl,
         )
     return None

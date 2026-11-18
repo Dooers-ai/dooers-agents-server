@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -20,6 +20,7 @@ from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.persistence.base import Persistence
+from dooers.agents.server.thread_queue import queue_for_create, resolve_thread_queue
 from dooers.agents.server.protocol.models import (
     AudioPart,
     ChatContext,
@@ -27,6 +28,7 @@ from dooers.agents.server.protocol.models import (
     ContentPart,
     DocumentPart,
     ImagePart,
+    WorkspaceQueueCatalog,
     Run,
     TextPart,
     Thread,
@@ -142,6 +144,15 @@ class HandlerContext:
     event_type: str = "message"
     metadata: dict[str, Any] | None = None
     chat_context: ChatContext | None = None
+    #: Requested queue on ``event.create`` for a new thread (None = unqueued).
+    queue: str | None = None
+    #: Catalog slugs from Core for this workspace connection (empty = no catalog).
+    allowed_queues: list[str] | None = None
+    #: Handshake queue roster copied onto ``incoming.context.queues``.
+    queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
+    #: Actor stored for the inbound event (``setup`` / ``ingest``). Default user.
+    persist_actor: str = "user"
+    persist_author: str | None = None
 
     def __post_init__(self):
         if self.user is None:
@@ -169,7 +180,7 @@ class HandlerPipeline:
         allowed_content_types: frozenset[str] | None = None,
         content_policy_denial_message: str | None = None,
         agent_config: AgentConfig | None = None,
-        whatsapp_outbound: Callable[[AgentEvent, HandlerContext], Awaitable[None]] | None = None,
+        whatsapp_outbound: Callable[[AgentEvent, HandlerContext], Awaitable[dict[str, Any] | None]] | None = None,
     ):
         self._persistence = persistence
         self._broadcast_callback = broadcast_callback
@@ -195,15 +206,21 @@ class HandlerPipeline:
             # the visitor's display name/email so manager views don't show
             # raw `guest:<hex>` ids.
             enriched_user = _enrich_user_from_metadata(context.user, context.metadata)
+            agent_user = User(user_id=context.agent_id, user_name=self._assistant_name)
             thread = Thread(
                 id=thread_id,
                 agent_id=context.agent_id,
                 organization_id=context.organization_id,
                 workspace_id=context.workspace_id,
                 owner=enriched_user,
-                users=[enriched_user],
+                users=[enriched_user, agent_user] if enriched_user.user_id else [agent_user],
                 title=context.thread_title,
                 metadata=context.metadata,
+                queue=queue_for_create(
+                    context.queue,
+                    workspace_id=context.workspace_id,
+                    allowed=context.allowed_queues,
+                ),
                 created_at=now,
                 updated_at=now,
                 last_event_at=now,
@@ -240,15 +257,21 @@ class HandlerPipeline:
             else:
                 # Auto-create thread for deterministic IDs (e.g., dispatch with pre-computed thread_id)
                 enriched_user = _enrich_user_from_metadata(context.user, context.metadata)
+                agent_user = User(user_id=context.agent_id, user_name=self._assistant_name)
                 thread = Thread(
                     id=thread_id,
                     agent_id=context.agent_id,
                     organization_id=context.organization_id,
                     workspace_id=context.workspace_id,
                     owner=enriched_user,
-                    users=[enriched_user],
+                    users=[enriched_user, agent_user] if enriched_user.user_id else [agent_user],
                     title=context.thread_title,
                     metadata=context.metadata,
+                    queue=queue_for_create(
+                        context.queue,
+                        workspace_id=context.workspace_id,
+                        allowed=context.allowed_queues,
+                    ),
                     created_at=now,
                     updated_at=now,
                     last_event_at=now,
@@ -286,14 +309,19 @@ class HandlerPipeline:
             storage_parts = [WireS2C_TextPart(text=text)]
 
         user_event_id = _generate_id()
+        author = context.persist_author
+        if author is None and context.persist_actor == "user":
+            author = _user_author_display(context.user)
+        elif author is None and context.persist_actor == "assistant":
+            author = self._assistant_name
         user_event = ThreadEvent(
             id=user_event_id,
             thread_id=thread_id,
             run_id=None,
             type=context.event_type,
-            actor="user",
-            author=_user_author_display(context.user),
-            user=context.user,
+            actor=context.persist_actor,  # type: ignore[arg-type]
+            author=author,
+            user=context.user if context.persist_actor == "user" else None,
             content=storage_parts if context.event_type != "form.response" else None,
             data=self._with_inbound_source_data(context.data, context),
             created_at=now,
@@ -339,6 +367,8 @@ class HandlerPipeline:
             user=context.user,
             thread_title=thread.title,
             thread_created_at=thread.created_at,
+            queue=thread.queue,
+            queues=list(context.queues),
             chat_context=context.chat_context,
         )
         incoming = AgentIncoming(
@@ -472,7 +502,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -537,7 +567,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -578,7 +608,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -619,7 +649,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -660,7 +690,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -705,7 +735,7 @@ class HandlerPipeline:
                         created_at=event_now,
                     )
                     await self._persistence.create_event(thread_event)
-                    await self._dispatch_whatsapp_outbound(event, context)
+                    await self._dispatch_whatsapp_outbound(event, context, thread_event)
                     await self._broadcast(
                         context.agent_id,
                         {
@@ -943,6 +973,46 @@ class HandlerPipeline:
                     if thread:
                         if event.data.get("title") is not None:
                             thread.title = event.data["title"]
+                        previous_queue = thread.queue
+                        if "queue" in event.data:
+                            try:
+                                thread.queue = resolve_thread_queue(
+                                    event.data.get("queue"),
+                                    workspace_id=thread.workspace_id,
+                                    allowed=context.allowed_queues,
+                                )
+                            except ValueError:
+                                logger.warning(
+                                    "[agents] thread_update rejected queue=%s thread=%s",
+                                    event.data.get("queue"),
+                                    thread_id,
+                                )
+                            else:
+                                if thread.queue != previous_queue:
+                                    queue_event = ThreadEvent(
+                                        id=_generate_id(),
+                                        thread_id=thread_id,
+                                        run_id=current_run_id,
+                                        type="thread.update",
+                                        actor="system",
+                                        author=self._assistant_name,
+                                        user=User(user_id=context.agent_id, user_name=self._assistant_name),
+                                        data={
+                                            "field": "queue",
+                                            "from": previous_queue,
+                                            "to": thread.queue,
+                                        },
+                                        created_at=event_now,
+                                    )
+                                    await self._persistence.create_event(queue_event)
+                                    await self._broadcast(
+                                        context.agent_id,
+                                        {
+                                            "type": "event.append",
+                                            "thread_id": thread_id,
+                                            "events": [queue_event],
+                                        },
+                                    )
                         thread.updated_at = event_now
                         await self._persistence.update_thread(thread)
                         await self._broadcast(
@@ -953,7 +1023,47 @@ class HandlerPipeline:
                             },
                         )
 
-                if event.send_type != "thread_update":
+                elif event.send_type == "participant_add":
+                    from dooers.agents.server.thread_access import actor_id_is_participant
+
+                    thread = await self._persistence.get_thread(thread_id)
+                    if not thread:
+                        logger.warning("[agents] participant_add: thread %s not found", thread_id)
+                    else:
+                        # Lazy backfill agent on old threads before manage check.
+                        if not actor_id_is_participant(context.agent_id, thread):
+                            await self._persistence.upsert_thread_participant(
+                                thread_id,
+                                User(user_id=context.agent_id, user_name=self._assistant_name),
+                            )
+                            thread = await self._persistence.get_thread(thread_id) or thread
+                        if not actor_id_is_participant(context.agent_id, thread):
+                            logger.warning(
+                                "[agents] participant_add denied: agent %s not a participant of %s",
+                                context.agent_id,
+                                thread_id,
+                            )
+                        else:
+                            raw = event.data.get("user") or {}
+                            new_user = User(
+                                user_id=str(raw.get("user_id") or ""),
+                                user_name=raw.get("user_name"),
+                                user_email=raw.get("user_email"),
+                                identity_ids=list(raw.get("identity_ids") or []),
+                            )
+                            if new_user.user_id or new_user.user_email:
+                                await self._persistence.upsert_thread_participant(thread_id, new_user)
+                                updated = await self._persistence.get_thread(thread_id)
+                                if updated:
+                                    await self._broadcast(
+                                        context.agent_id,
+                                        {
+                                            "type": "thread.upsert",
+                                            "thread": updated,
+                                        },
+                                    )
+
+                if event.send_type not in ("thread_update", "participant_add"):
                     await self._update_thread_last_event(thread_id, event_now)
 
                 yield event
@@ -1043,7 +1153,12 @@ class HandlerPipeline:
         finally:
             reset_handler_context(runtime_tokens)
 
-    async def _dispatch_whatsapp_outbound(self, event: AgentEvent, context: HandlerContext) -> None:
+    async def _dispatch_whatsapp_outbound(
+        self,
+        event: AgentEvent,
+        context: HandlerContext,
+        thread_event: ThreadEvent | None = None,
+    ) -> None:
         if not self._whatsapp_outbound:
             return
         outbound_event = self._resolve_whatsapp_event(event, context)
@@ -1059,7 +1174,29 @@ class HandlerPipeline:
             context.channel,
             event.send_type,
         )
-        await self._whatsapp_outbound(outbound_event, context)
+        outcome = await self._whatsapp_outbound(outbound_event, context)
+        await self._record_whatsapp_delivery(thread_event, outcome)
+
+    async def _record_whatsapp_delivery(self, thread_event: ThreadEvent | None, outcome: Any) -> None:
+        if thread_event is None or not isinstance(outcome, dict):
+            return
+        status = str(outcome.get("status") or "").strip()
+        if status not in {"accepted", "failed"}:
+            return
+        data = dict(thread_event.data or {})
+        delivery = dict(data.get("delivery") or {})
+        delivery["status"] = status
+        wa_message_id = str(outcome.get("wa_message_id") or "").strip()
+        if wa_message_id:
+            delivery["wa_message_id"] = wa_message_id
+        if outcome.get("error_code") is not None:
+            delivery["error_code"] = outcome.get("error_code")
+        message = str(outcome.get("error_message") or "").strip()
+        if message:
+            delivery["error_message"] = message[:500]
+        data["delivery"] = delivery
+        thread_event.data = data
+        await self._persistence.update_event(thread_event)
 
     @staticmethod
     def _resolve_whatsapp_event(event: AgentEvent, context: HandlerContext) -> AgentEvent:
@@ -1138,6 +1275,13 @@ class HandlerPipeline:
                 instance_id = str(whatsapp.get("instance_id") or "").strip()
                 if instance_id:
                     source["instance_id"] = instance_id
+                if "from_me" in whatsapp:
+                    source["from_me"] = bool(whatsapp.get("from_me"))
+                if "self_chat" in whatsapp:
+                    source["self_chat"] = bool(whatsapp.get("self_chat"))
+                wa_mid = str(whatsapp.get("wa_message_id") or "").strip()
+                if wa_mid:
+                    source["wa_message_id"] = wa_mid
         elif channel == "dooers-public-chat":
             public_chat_label = str(channel_meta.get("public_chat_label") or "").strip()
             if not public_chat_label:

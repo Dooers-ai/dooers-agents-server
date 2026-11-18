@@ -158,7 +158,7 @@ async def verify_dooers_whatsapp_tool_inbound_with_persistence(
     if not header or not (agent_id or "").strip():
         return False
     services_secrets = await persistence.get_service_secrets(agent_id.strip())
-    return verify_dooers_whatsapp_tool_inbound_signature(
+    ok = verify_dooers_whatsapp_tool_inbound_signature(
         services_secrets,
         body,
         header,
@@ -166,6 +166,14 @@ async def verify_dooers_whatsapp_tool_inbound_with_persistence(
         agent_id=agent_id,
         log=log,
     )
+    if not ok:
+        return False
+    from dooers.agents.server.features.channels.whatsapp.delivery_receipt import (
+        apply_whatsapp_delivery_receipt,
+    )
+
+    await apply_whatsapp_delivery_receipt(persistence, agent_id.strip(), body)
+    return True
 
 
 def resolve_dooers_whatsapp_outbound_message_hmac(services_secrets: dict[str, Any], instance_id: str) -> str:
