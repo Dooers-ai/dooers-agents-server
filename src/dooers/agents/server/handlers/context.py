@@ -28,7 +28,7 @@ class AgentContext:
     #: Workspace queue catalog from the connect handshake (snapshot).
     queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
     chat_context: ChatContext | None = None
-    #: Why this turn runs when no person typed it, e.g. ``{"type": "schedule", "schedule_id": ...}``.
+    #: Why this turn runs when no person typed it, e.g. ``{"type": "task", "task_id": ..., "run_id": ...}``.
     trigger: dict[str, Any] | None = None
     #: People taking part in the thread (from the thread row; the agent itself excluded).
     participants: list[User] = field(default_factory=list)

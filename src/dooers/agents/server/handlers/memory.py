@@ -5,7 +5,6 @@ from dooers.agents.server.protocol.models import Thread, ThreadArtifact, ThreadE
 
 if TYPE_CHECKING:
     from dooers.agents.server.features.memory.api import LongTermMemory
-    from dooers.agents.server.features.schedules.api import AgentSchedules
     from dooers.agents.server.persistence.base import EventOrder, Persistence
 
 # openai: plain string per message (legacy).
@@ -32,10 +31,10 @@ class AgentMemory:
 
     * ``memory.get_history(...)`` — this conversation.
     * ``memory.long_term`` — what the agent remembers about this user/workspace across threads.
-    * ``memory.schedules`` — reminders and recurring tasks for this user.
 
-    ``long_term`` / ``schedules`` are always present; check ``.available`` (no database feature,
-    guest users and dispatch without a user leave them unavailable).
+    ``long_term`` is always present; check ``.available`` (no database feature, guest users and
+    dispatch without a user leave it unavailable). Reminders and scheduled work live in the Dooers
+    Tasks service (``dooers.tools.tasks``), not here.
     """
 
     def __init__(
@@ -44,7 +43,6 @@ class AgentMemory:
         persistence: "Persistence",
         *,
         long_term: "LongTermMemory | None" = None,
-        schedules: "AgentSchedules | None" = None,
     ):
         self._thread_id = thread_id
         self._persistence = persistence
@@ -53,12 +51,7 @@ class AgentMemory:
             from dooers.agents.server.features.memory.models import MemoryOwner
 
             long_term = LongTermMemory(None, MemoryOwner(agent_id=""))
-        if schedules is None:
-            from dooers.agents.server.features.schedules.api import AgentSchedules
-
-            schedules = AgentSchedules(None, agent_id="", organization_id="", workspace_id="", user_id="")
         self.long_term = long_term
-        self.schedules = schedules
 
     @property
     def thread_id(self) -> str:

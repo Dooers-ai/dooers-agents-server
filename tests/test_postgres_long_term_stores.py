@@ -1,4 +1,4 @@
-"""Integration: long-term memory and schedule stores against a real PostgreSQL.
+"""Integration: the long-term memory store against a real PostgreSQL.
 
 Runs only when ``AGENT_TEST_POSTGRES_DSN`` points at a disposable database, e.g.
 ``postgresql://postgres@127.0.0.1:55432/sdk_test``.
@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
 
 from dooers.agents.server.features.memory import LongTermMemory, MemoryOwner, PostgresMemoryStore
-from dooers.agents.server.features.schedules import AgentSchedules, PostgresScheduleStore
 from dooers.agents.server.persistence.postgres import PostgresPersistence
 
 DSN = os.environ.get("AGENT_TEST_POSTGRES_DSN", "")
@@ -38,7 +36,7 @@ async def persistence():
         yield p
     finally:
         async with p._pool.acquire() as conn:
-            for table in ("memories", "memory_prefs", "schedules", "threads", "events", "runs", "settings", "analytics_events"):
+            for table in ("memories", "memory_prefs", "threads", "events", "runs", "settings", "analytics_events"):
                 await conn.execute(f"DROP TABLE IF EXISTS {p._prefix}{table} CASCADE")
         await p.disconnect()
 
@@ -105,31 +103,3 @@ async def test_memory_author_columns_and_sharing_sql(persistence):
     assert bruno.can_modify(seen[0], manager=False) is False
     assert ana.can_modify(seen[0], manager=False) is True
     assert bruno.can_modify(seen[0], manager=True) is True
-
-
-async def test_schedule_store_sql_claims_with_lease(persistence):
-    store = PostgresScheduleStore(persistence)
-    await store.migrate()
-    api = AgentSchedules(
-        store, agent_id="a1", organization_id="o1", workspace_id="w1", user_id="u1", thread_id="t1", default_timezone="America/Sao_Paulo"
-    )
-    record = await api.create(title="Daily", instruction="news", recurrence={"freq": "daily", "at_time": "09:00"})
-    assert record.next_run_at and record.timezone == "America/Sao_Paulo"
-    listed = await api.list()
-    assert [r.id for r in listed] == [record.id] and listed[0].recurrence.at_time == "09:00"
-
-    await store.update(record.id, {"next_run_at": datetime.now(UTC) - timedelta(seconds=5)})
-    claimed = await store.claim_due(agent_id="a1", now=datetime.now(UTC), limit=5, lease_seconds=60, owner="r1")
-    assert [r.id for r in claimed] == [record.id]
-    # Leased: another replica cannot claim it.
-    assert await store.claim_due(agent_id=None, now=datetime.now(UTC), limit=5, lease_seconds=60, owner="r2") == []
-    released = await store.release(
-        record.id, "r1", {"run_count": 1, "last_status": "succeeded", "next_run_at": datetime.now(UTC) + timedelta(days=1)}
-    )
-    assert released and released.run_count == 1
-    assert await store.count_active(agent_id="a1", organization_id="o1", user_id="u1") == 1
-    paused = await api.pause(record.id)
-    assert paused and paused.status == "paused"
-    assert await store.claim_due(agent_id="a1", now=datetime.now(UTC) + timedelta(days=2), limit=5, lease_seconds=60, owner="r1") == []
-    await api.cancel(record.id)
-    assert await api.list() == [] and len(await api.list(include_closed=True)) == 1

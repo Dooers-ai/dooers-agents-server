@@ -19,12 +19,12 @@ agent — a privacy leak once one agent serves a whole organization.
 | Socket concurrency | One worker task per connection runs queued turns in order; the receive loop keeps serving frames. In-flight turn survives disconnect, queued ones are dropped. |
 | Isolation | `PipelineBroadcaster`: thread frames go to subscribers + participants (`write` access). Supervisors must subscribe (with reason) to watch live. |
 | Memory | SQL tables in the agent DB; scopes `user` (agent, org, workspace, user — private) and `workspace` (shared with the members; editable by managers and its author); author recorded on every memory; sharing a personal memory is an explicit action (`share()`); `AgentContext.is_shared` to keep personal memory out of multi-person threads; full-text + pinning/usage/recency ranking; preferences per (agent, org, user). |
-| Schedules | Explicit recurrence model (no cron from LLMs), local time + zoneinfo, lease claim with `SKIP LOCKED`, misfires fire once. Runs are `system` events with `trigger`. |
+| Scheduled tasks | On the Dooers Tasks service, fired by Cloud Tasks (a poller inside a scale-to-zero agent misses them). Explicit recurrence model (no cron from LLMs) on the local wall clock. The core re-checks the scheduler's access at fire time and calls `run_task` with a `purpose: task` token for that person. |
 | Artifacts | `store_artifact` reuses chat storage keys so hydration re-signs URLs by `ref_id`. |
 | Sandbox | `dooers.tools.sandbox` mirrors `dooers.tools.rag` (service token, runtime context). |
 
 ## Next
 
 - Optional embeddings for memory once the gateway exposes `/v1/embeddings`.
-- Platform tick (core) for `run_due_schedules` on scale-to-zero agents; push/e-mail notifications.
+- Push/e-mail notifications when a task runs or fails.
 - Cross-replica `run.cancel` (pub/sub) when agents run with more than one instance.

@@ -17,7 +17,6 @@ from dooers.agents.server.broadcast import (
     PipelineBroadcaster,
     broadcast_thread_upsert,
     make_memory_notifier,
-    make_schedule_notifier,
 )
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
@@ -41,9 +40,6 @@ from dooers.agents.server.protocol.frames import (
     C2S_MemoryUpdate,
     C2S_Ping,
     C2S_RunCancel,
-    C2S_ScheduleDelete,
-    C2S_ScheduleList,
-    C2S_ScheduleUpdate,
     C2S_SettingsMergeServiceSecrets,
     C2S_SettingsPatch,
     C2S_SettingsPublicSchema,
@@ -69,7 +65,6 @@ from dooers.agents.server.protocol.frames import (
     S2C_MemoryListResult,
     S2C_MemoryPrefs,
     S2C_Pong,
-    S2C_ScheduleListResult,
     S2C_SettingsPublicSchemaResult,
     S2C_ThreadArtifactsListResult,
     S2C_ThreadDeleted,
@@ -77,7 +72,6 @@ from dooers.agents.server.protocol.frames import (
     S2C_ThreadSearchResult,
     S2C_ThreadSnapshot,
     S2C_ThreadUpsert,
-    ScheduleListResultPayload,
     ServerToClient,
     SettingsPublicSchemaResultPayload,
     ThreadArtifactsListResultPayload,
@@ -107,8 +101,6 @@ if TYPE_CHECKING:
     from dooers.agents.server.features.analytics.collector import AnalyticsCollector
     from dooers.agents.server.features.memory.api import MemoryNotifier
     from dooers.agents.server.features.memory.store import MemoryStore
-    from dooers.agents.server.features.schedules.api import ScheduleNotifier
-    from dooers.agents.server.features.schedules.store import ScheduleStore
     from dooers.agents.server.features.settings.broadcaster import SettingsBroadcaster
     from dooers.agents.server.features.settings.models import SettingsSchema
     from dooers.agents.server.runs import RunRegistry
@@ -209,17 +201,13 @@ class Router:
         view_grants: ThreadViewGrantStore | None = None,
         run_registry: RunRegistry | None = None,
         memory_store: MemoryStore | None = None,
-        schedule_store: ScheduleStore | None = None,
         memory_notifier: MemoryNotifier | None = None,
-        schedule_notifier: ScheduleNotifier | None = None,
         pipeline_broadcaster: PipelineBroadcaster | None = None,
         background_turns: bool | None = None,
     ):
         self._run_registry = run_registry
         self._memory_store = memory_store
-        self._schedule_store = schedule_store
         self._memory_notifier = memory_notifier or make_memory_notifier(registry)
-        self._schedule_notifier = schedule_notifier or make_schedule_notifier(registry)
         self._pipeline_broadcaster = pipeline_broadcaster or PipelineBroadcaster(
             registry=registry,
             persistence=persistence,
@@ -286,9 +274,7 @@ class Router:
             whatsapp_outbound=whatsapp_outbound,
             run_registry=run_registry,
             memory_store=memory_store,
-            schedule_store=schedule_store,
             memory_notifier=self._memory_notifier,
-            schedule_notifier=self._schedule_notifier,
         )
 
     @property
@@ -415,12 +401,6 @@ class Router:
                 await self._handle_memory_prefs_get(ws, frame)
             case C2S_MemoryPrefsUpdate():
                 await self._handle_memory_prefs_update(ws, frame)
-            case C2S_ScheduleList():
-                await self._handle_schedule_list(ws, frame)
-            case C2S_ScheduleUpdate():
-                await self._handle_schedule_update(ws, frame)
-            case C2S_ScheduleDelete():
-                await self._handle_schedule_delete(ws, frame)
 
             case C2S_Ping():
                 await self._handle_ping(ws, frame)
@@ -717,70 +697,6 @@ class Router:
         await self._send_ack(ws, frame.id)
         recipients = self._registry.connections_for_user(self._agent_id or "", api.owner.user_id) or [ws]
         await self._send_prefs(recipients, prefs, True)
-
-    # --- schedules -------------------------------------------------------------------------
-
-    def _schedules_api(self):
-        from dooers.agents.server.features.schedules.api import AgentSchedules
-
-        user = self._user or User(user_id="")
-        return AgentSchedules(
-            self._schedule_store,
-            agent_id=self._agent_id or "",
-            organization_id=self._organization_id,
-            workspace_id=self._workspace_id,
-            user_id=user.user_id or "",
-            user_name=user.user_name,
-            user_email=user.user_email,
-            notifier=self._schedule_notifier,
-        )
-
-    async def _handle_schedule_list(self, ws: WebSocketProtocol, frame: C2S_ScheduleList) -> None:
-        api = self._schedules_api()
-        if not self._agent_id or not api.available:
-            await self._send(
-                ws,
-                S2C_ScheduleListResult(id=_generate_id(), payload=ScheduleListResultPayload(schedules=[], available=False)),
-            )
-            return
-        records = await api.list(include_closed=frame.payload.include_closed)
-        if frame.payload.thread_id:
-            records = [r for r in records if r.thread_id == frame.payload.thread_id]
-        await self._send(
-            ws,
-            S2C_ScheduleListResult(id=_generate_id(), payload=ScheduleListResultPayload(schedules=records, available=True)),
-        )
-
-    async def _schedule_target(self, ws: WebSocketProtocol, frame_id: str, schedule_id: str):
-        api = self._schedules_api()
-        if not self._agent_id or not api.available:
-            await self._send_ack(ws, frame_id, ok=False, error={"code": "SCHEDULES_UNAVAILABLE", "message": "Scheduling is not available"})
-            return None
-        if await api.get(schedule_id) is None:
-            await self._send_ack(ws, frame_id, ok=False, error={"code": "NOT_FOUND", "message": "Schedule not found"})
-            return None
-        return api
-
-    async def _handle_schedule_update(self, ws: WebSocketProtocol, frame: C2S_ScheduleUpdate) -> None:
-        api = await self._schedule_target(ws, frame.id, frame.payload.schedule_id)
-        if api is None:
-            return
-        try:
-            if frame.payload.status == "paused":
-                await api.pause(frame.payload.schedule_id)
-            else:
-                await api.resume(frame.payload.schedule_id)
-        except ValueError as e:
-            await self._send_ack(ws, frame.id, ok=False, error={"code": "INVALID_STATE", "message": str(e)})
-            return
-        await self._send_ack(ws, frame.id)
-
-    async def _handle_schedule_delete(self, ws: WebSocketProtocol, frame: C2S_ScheduleDelete) -> None:
-        api = await self._schedule_target(ws, frame.id, frame.payload.schedule_id)
-        if api is None:
-            return
-        await api.cancel(frame.payload.schedule_id)
-        await self._send_ack(ws, frame.id)
 
     async def cleanup(self) -> None:
         self._stop_turn_worker()

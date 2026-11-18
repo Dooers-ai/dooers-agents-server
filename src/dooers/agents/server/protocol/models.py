@@ -494,6 +494,8 @@ class ConnectionContext(BaseModel):
     workspace: ConnectionWorkspace
     agent: ConnectionAgent
     policies: ConnectionPolicies = ConnectionPolicies()
+    #: ``chat`` (a person opened the chat) or ``task`` (the core started a scheduled task for them).
+    purpose: str | None = None
 
 
 class ThreadEvent(BaseModel):

@@ -12,20 +12,17 @@ from dooers.agents.server.broadcast import (
     BroadcastManager,
     PipelineBroadcaster,
     make_memory_notifier,
-    make_schedule_notifier,
 )
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
+from dooers.agents.server.exceptions import TaskRunRejected
 from dooers.agents.server.features.analytics.agent_analytics import AgentAnalytics
 from dooers.agents.server.features.analytics.collector import AnalyticsCollector
+from dooers.agents.server.features.analytics.models import AnalyticsEvent
 from dooers.agents.server.features.memory.api import LongTermMemory
 from dooers.agents.server.features.memory.models import MemoryOwner, MemoryRecord
 from dooers.agents.server.features.memory.store import MemoryStore, PostgresMemoryStore
-from dooers.agents.server.features.schedules.api import AgentSchedules
-from dooers.agents.server.features.schedules.models import ScheduleRecord, ScheduleRunResult
-from dooers.agents.server.features.schedules.recurrence import next_run_after
-from dooers.agents.server.features.schedules.store import PostgresScheduleStore, ScheduleStore
 from dooers.agents.server.features.settings.agent_settings import AgentSettings
 from dooers.agents.server.features.settings.broadcaster import SettingsBroadcaster
 from dooers.agents.server.handlers.content_policy import normalize_allowed_content_types
@@ -139,14 +136,9 @@ class AgentServer:
         #: Executions in this process (``run.cancel`` from any socket finds them here).
         self._run_registry = RunRegistry()
         self._memory_store: MemoryStore | None = None
-        self._schedule_store: ScheduleStore | None = None
-        self._schedule_handler: Handler | None = None
-        self._schedule_task: asyncio.Task | None = None
-        self._schedule_lock = asyncio.Lock()
         self._instance_id = f"agent-{uuid.uuid4().hex[:12]}"
         self._pipeline_broadcaster: PipelineBroadcaster | None = None
         self._memory_notify_impl = make_memory_notifier(self._registry)
-        self._schedule_notify_impl = make_schedule_notifier(self._registry)
 
     async def _hydrate_thread_events_impl(
         self,
@@ -369,7 +361,6 @@ class AgentServer:
         )
 
         self._initialized = True
-        self._maybe_start_schedule_loop()
         from dooers.agents.server.features.channels.whatsapp.delivery_receipt import bind_agent_server
 
         bind_agent_server(self)
@@ -444,9 +435,7 @@ class AgentServer:
             view_grants=self._view_grants,
             run_registry=self._run_registry,
             memory_store=self._memory_store,
-            schedule_store=self._schedule_store,
             memory_notifier=self._notify_memory,
-            schedule_notifier=self._notify_schedule,
             pipeline_broadcaster=self._pipeline_broadcaster,
         )
 
@@ -509,8 +498,9 @@ class AgentServer:
         trigger: dict[str, Any] | None = None,
         actor: str = "user",
         data: dict[str, Any] | None = None,
+        presence_token: str | None = None,
     ) -> DispatchStream:
-        """Run ``handler`` outside a WebSocket (REST, webhooks, schedules).
+        """Run ``handler`` outside a WebSocket (REST, webhooks, scheduled task runs).
 
         ``actor="system"`` with a ``trigger`` records the inbound event as platform-originated
         (e.g. a reminder firing) instead of as something the user typed.
@@ -538,6 +528,7 @@ class AgentServer:
             persist_actor=actor,
             persist_author=None if actor == "user" else (self._config.assistant_name if actor == "assistant" else "System"),
             data=data,
+            presence_token=presence_token,
         )
 
         result = await pipeline.setup(context)
@@ -652,27 +643,108 @@ class AgentServer:
         owner = MemoryOwner(agent_id=agent_id, organization_id=organization_id, workspace_id=workspace_id, user_id=user_id)
         return LongTermMemory(self._memory_store, owner, notifier=self._notify_memory)
 
-    async def schedules(
-        self,
-        *,
-        agent_id: str,
-        user_id: str,
-        organization_id: str = "",
-        workspace_id: str = "",
-        thread_id: str | None = None,
-        timezone: str | None = None,
-    ) -> AgentSchedules:
-        await self._ensure_initialized()
-        return AgentSchedules(
-            self._schedule_store,
-            agent_id=agent_id,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            thread_id=thread_id,
-            default_timezone=timezone,
-            notifier=self._notify_schedule,
+    async def run_task(self, handler: Handler, *, authorization: str | None, body: dict[str, Any]) -> dict[str, Any]:
+        """Run a scheduled task: ``POST /internal/tasks/run`` from the Dooers Tasks service.
+
+        The bearer token is the handshake token the core minted for the person who scheduled the
+        task (``purpose: task``) after re-checking, at that moment, that they may still use this
+        agent. It is validated with the core like a chat session; the turn then runs as that person
+        in the task's conversation, with ``incoming.context.trigger = {"type": "task", ...}``.
+        Returns once the run finished and its outcome was reported to the Tasks service (Cloud
+        Tasks holds the request open for that). A run that is not the task's current one (a retried
+        delivery, a task changed meanwhile) is skipped.
+        """
+        from dooers.tools import tasks
+
+        token = (authorization or "").strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if not token:
+            raise TaskRunRejected(401, "missing token")
+        persistence = await self._ensure_initialized()
+        assert self._auth_validator is not None
+        result = await self._auth_validator.validate(auth_token=token, agent_id=str(body.get("agent_id") or ""), guest_user_id="")
+        if not result.valid or result.purpose != "task" or result.user is None or not result.user.user_id or not result.agent_id:
+            raise TaskRunRejected(401, result.reason or "not a task run token")
+        task_id = str(body.get("task_id") or "")
+        run_id = str(body.get("run_id") or "")
+        if not task_id or not run_id:
+            raise TaskRunRejected(400, "task_id and run_id are required")
+        workspace_id = result.workspace_id or ""
+        personal = not workspace_id
+        identity = tasks.Identity(result.agent_id, token, result.user.user_id, persistence)
+
+        current = await tasks.get(task_id, personal=personal, identity=identity)
+        if current.get("status") != "running" or str(current.get("current_run_id") or "") != run_id:
+            logger.info("[agents] task run skipped task=%s run=%s status=%s", task_id, run_id, current.get("status"))
+            return {"ok": True, "skipped": True}
+
+        thread_id = str(body.get("thread_id") or "") or None
+        if thread_id:
+            thread = await persistence.get_thread(thread_id)
+            if thread is None or thread.agent_id != result.agent_id:
+                thread_id = None
+        instruction = str(body.get("instruction") or current.get("goal") or current.get("title") or "")
+        trigger = {
+            "type": "task",
+            "task_id": task_id,
+            "run_id": run_id,
+            "title": str(body.get("title") or current.get("title") or ""),
+            "due_at": body.get("due_at"),
+            "recurring": bool(body.get("recurring")),
+        }
+        succeeded, summary, error = True, "", ""
+        out_thread = thread_id
+        try:
+            stream = await self.dispatch(
+                handler,
+                agent_id=result.agent_id,
+                message=instruction,
+                user=result.user,
+                organization_id=result.organization_id or "",
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                thread_title=trigger["title"] or None,
+                trigger=trigger,
+                actor="system",
+                presence_token=token,
+            )
+            out_thread = stream.thread_id
+            events = await stream.collect()
+            for event in events:
+                if event.send_type == "text" and event.data.get("text"):
+                    summary = str(event.data["text"])
+                elif event.send_type == "run_end" and event.data.get("status") == "failed":
+                    succeeded, error = False, str(event.data.get("error") or "run failed")
+        except Exception as exc:  # noqa: BLE001 — the run failed; the task says so
+            logger.exception("[agents] task run failed task=%s", task_id)
+            succeeded, error = False, f"{type(exc).__name__}: {str(exc)[:300]}"
+        await self._track_task_run(result, task_id, run_id, succeeded)
+        await tasks.report_run(
+            task_id,
+            run_id=run_id,
+            succeeded=succeeded,
+            summary=summary[:500] or None,
+            error=error or None,
+            personal=personal,
+            identity=identity,
         )
+        return {"ok": True, "outcome": "succeeded" if succeeded else "failed", "thread_id": out_thread}
+
+    async def _track_task_run(self, result: Any, task_id: str, run_id: str, succeeded: bool) -> None:
+        if self._analytics_collector is None:
+            return
+        try:
+            await self._analytics_collector.track(
+                agent_id=result.agent_id,
+                event=AnalyticsEvent.TASK_RUN.value,
+                organization_id=result.organization_id or "",
+                workspace_id=result.workspace_id or "",
+                user_id=result.user.user_id if result.user else None,
+                data={"task_id": task_id, "run_id": run_id, "status": "succeeded" if succeeded else "failed"},
+            )
+        except Exception:  # noqa: BLE001 — analytics never fails a run
+            logger.debug("[agents] task run analytics failed", exc_info=True)
 
     @property
     def run_registry(self) -> RunRegistry:
@@ -723,155 +795,6 @@ class AgentServer:
             return None
         url = await asyncio.to_thread(sign_chat_artifact_read_url, self._config, object_key)
         return {"ref_id": ref_id, "url": url or uri, "object_key": object_key, "size_bytes": len(data)}
-
-    # --- schedules ------------------------------------------------------------------------
-
-    def enable_schedules(self, handler: Handler) -> None:
-        """Run due schedules with ``handler``.
-
-        Starts an in-process poller (``AgentConfig.schedules_poll_interval_seconds``) once the
-        server is initialized. On hosts that scale to zero, also expose an endpoint that calls
-        :meth:`run_due_schedules` so a platform scheduler can wake the agent.
-        """
-        self._schedule_handler = handler
-        if self._initialized:
-            self._maybe_start_schedule_loop()
-
-    def _maybe_start_schedule_loop(self) -> None:
-        interval = int(self._config.schedules_poll_interval_seconds or 0)
-        if (
-            interval <= 0
-            or self._schedule_handler is None
-            or self._schedule_store is None
-            or (self._schedule_task is not None and not self._schedule_task.done())
-        ):
-            return
-        try:
-            self._schedule_task = asyncio.get_running_loop().create_task(
-                self._run_schedule_loop(interval), name="dooers-schedules"
-            )
-        except RuntimeError:
-            self._schedule_task = None
-
-    async def _run_schedule_loop(self, interval: int) -> None:
-        while True:
-            try:
-                await self.run_due_schedules()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                logger.exception("[agents] schedule tick failed")
-            await asyncio.sleep(interval)
-
-    async def run_due_schedules(
-        self,
-        handler: Handler | None = None,
-        *,
-        agent_id: str | None = None,
-        limit: int = 10,
-    ) -> list[ScheduleRunResult]:
-        """Claim and execute schedules that are due. Safe to call concurrently / from many replicas."""
-        await self._ensure_initialized()
-        run_handler = handler or self._schedule_handler
-        if run_handler is None or self._schedule_store is None:
-            return []
-        from datetime import UTC, datetime
-
-        async with self._schedule_lock:
-            due = await self._schedule_store.claim_due(
-                agent_id=agent_id,
-                now=datetime.now(UTC),
-                limit=max(1, min(limit, 50)),
-                lease_seconds=int(self._config.schedule_lease_seconds),
-                owner=self._instance_id,
-            )
-        results: list[ScheduleRunResult] = []
-        for record in due:
-            results.append(await self._execute_schedule(record, run_handler))
-        return results
-
-    async def _execute_schedule(self, record: ScheduleRecord, handler: Handler) -> ScheduleRunResult:
-        from datetime import UTC, datetime
-
-        assert self._schedule_store is not None
-        started = datetime.now(UTC)
-        trigger = {
-            "type": "schedule",
-            "schedule_id": record.id,
-            "kind": record.kind,
-            "title": record.title,
-            "instruction": record.instruction,
-            "run_number": record.run_count + 1,
-            "scheduled_for": record.next_run_at.isoformat() if record.next_run_at else None,
-            "timezone": record.timezone,
-        }
-        message = f"[{record.kind}] {record.title}\n{record.instruction}"
-        status = "succeeded"
-        error: str | None = None
-        thread_id: str | None = None
-        try:
-            stream = await self.dispatch(
-                handler=handler,
-                agent_id=record.agent_id,
-                organization_id=record.organization_id,
-                workspace_id=record.workspace_id,
-                message=message,
-                user=User(user_id=record.user_id, user_name=record.user_name, user_email=record.user_email),
-                thread_id=record.thread_id,
-                thread_title=record.title,
-                chat_context=ChatContext(timezone=record.timezone),
-                trigger=trigger,
-                actor="system",
-                data={"trigger": trigger},
-            )
-            thread_id = stream.thread_id
-            async for _event in stream:
-                pass
-        except Exception as exc:  # noqa: BLE001 — record and continue with the next schedule
-            status = "failed"
-            error = f"{type(exc).__name__}: {exc}"[:500]
-            logger.exception("[agents] schedule %s failed", record.id)
-        run_count = record.run_count + 1
-        anchor_raw = (record.metadata or {}).get("anchor")
-        try:
-            anchor = datetime.fromisoformat(anchor_raw) if anchor_raw else (record.next_run_at or started)
-        except ValueError:
-            anchor = record.next_run_at or started
-        next_run = next_run_after(
-            record.recurrence,
-            tz_name=record.timezone,
-            previous=record.next_run_at or started,
-            anchor=anchor,
-            run_count=run_count,
-        )
-        fields: dict[str, Any] = {
-            "run_count": run_count,
-            "last_run_at": started,
-            "last_status": status,
-            "last_error": error,
-            "last_thread_id": thread_id,
-            "next_run_at": next_run,
-        }
-        if next_run is None:
-            fields["status"] = "completed" if status == "succeeded" else "failed"
-        if record.thread_id is None and thread_id and record.recurrence.freq == "once":
-            fields["thread_id"] = thread_id
-        updated = await self._schedule_store.release(record.id, self._instance_id, fields)
-        if updated is not None:
-            await self._notify_schedule("upsert", updated)
-        if self._analytics_collector:
-            await self._analytics_collector.track(
-                event="schedule.fired",
-                agent_id=record.agent_id,
-                thread_id=thread_id,
-                user_id=record.user_id,
-                data={"schedule_id": record.id, "status": status, "kind": record.kind},
-                organization_id=record.organization_id,
-                workspace_id=record.workspace_id,
-            )
-        return ScheduleRunResult(
-            schedule_id=record.id, thread_id=thread_id, status=status, error=error, next_run_at=next_run  # type: ignore[arg-type]
-        )
 
     async def settings(self, agent_id: str) -> AgentSettings:
         persistence = await self._ensure_initialized()
@@ -968,15 +891,13 @@ class AgentServer:
             whatsapp_outbound=whatsapp_outbound,
             run_registry=self._run_registry,
             memory_store=self._memory_store,
-            schedule_store=self._schedule_store,
             memory_notifier=self._notify_memory,
-            schedule_notifier=self._notify_schedule,
         )
 
     async def _init_long_term_features(self, persistence: Persistence) -> None:
-        """Long-term memory and schedules need SQL; other backends run without them."""
+        """Long-term memory needs SQL; other backends run without it."""
         if not isinstance(persistence, PostgresPersistence):
-            logger.info("[agents] long-term memory/schedules disabled for database_type=%s", self._config.database_type)
+            logger.info("[agents] long-term memory disabled for database_type=%s", self._config.database_type)
             return
         if self._config.memory_enabled:
             store = PostgresMemoryStore(persistence)
@@ -986,37 +907,16 @@ class AgentServer:
                 self._memory_store = store
             except Exception:  # noqa: BLE001 — degrade, never block boot
                 logger.exception("[agents] long-term memory migration failed; feature disabled")
-        if self._config.schedules_enabled:
-            schedule_store = PostgresScheduleStore(persistence)
-            try:
-                if self._config.database_auto_migrate:
-                    await schedule_store.migrate()
-                self._schedule_store = schedule_store
-            except Exception:  # noqa: BLE001
-                logger.exception("[agents] schedules migration failed; feature disabled")
 
-    def use_stores(self, *, memory_store: MemoryStore | None = None, schedule_store: ScheduleStore | None = None) -> None:
-        """Override the long-term stores (tests, custom backends). Call before serving traffic."""
+    def use_stores(self, *, memory_store: MemoryStore | None = None) -> None:
+        """Override the long-term memory store (tests, custom backends). Call before serving traffic."""
         if memory_store is not None:
             self._memory_store = memory_store
-        if schedule_store is not None:
-            self._schedule_store = schedule_store
 
     async def _notify_memory(self, action: str, record: MemoryRecord | None, user_id: str | None) -> None:
         await self._memory_notify_impl(action, record, user_id)
 
-    async def _notify_schedule(self, action: str, record: ScheduleRecord) -> None:
-        await self._schedule_notify_impl(action, record)
-
     async def close(self) -> None:
-        if self._schedule_task:
-            self._schedule_task.cancel()
-            try:
-                await self._schedule_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._schedule_task = None
-
         if self._guest_cleanup_task:
             self._guest_cleanup_task.cancel()
             try:

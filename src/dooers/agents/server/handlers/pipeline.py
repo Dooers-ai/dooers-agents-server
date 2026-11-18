@@ -70,8 +70,6 @@ if TYPE_CHECKING:
     from dooers.agents.server.features.analytics.collector import AnalyticsCollector
     from dooers.agents.server.features.memory.api import MemoryNotifier
     from dooers.agents.server.features.memory.store import MemoryStore
-    from dooers.agents.server.features.schedules.api import ScheduleNotifier
-    from dooers.agents.server.features.schedules.store import ScheduleStore
     from dooers.agents.server.features.settings.broadcaster import SettingsBroadcaster
     from dooers.agents.server.features.settings.models import SettingsSchema
     from dooers.agents.server.runs import ActiveRun, RunRegistry
@@ -185,7 +183,7 @@ class HandlerContext:
     persist_author: str | None = None
     #: Presence JWT from ``event.create`` for connector tools; never persisted.
     presence_token: str | None = field(default=None, repr=False)
-    #: Non-human origin of the turn (``{"type": "schedule", ...}``); copied to ``incoming.context.trigger``.
+    #: Non-human origin of the turn (``{"type": "task", ...}``); copied to ``incoming.context.trigger``.
     trigger: dict[str, Any] | None = None
 
     def __post_init__(self):
@@ -238,15 +236,11 @@ class HandlerPipeline:
         whatsapp_outbound: Callable[[AgentEvent, HandlerContext], Awaitable[dict[str, Any] | None]] | None = None,
         run_registry: RunRegistry | None = None,
         memory_store: MemoryStore | None = None,
-        schedule_store: ScheduleStore | None = None,
         memory_notifier: MemoryNotifier | None = None,
-        schedule_notifier: ScheduleNotifier | None = None,
     ):
         self._run_registry = run_registry
         self._memory_store = memory_store
-        self._schedule_store = schedule_store
         self._memory_notifier = memory_notifier
-        self._schedule_notifier = schedule_notifier
         self._persistence = persistence
         self._broadcast_callback = broadcast_callback
         self._analytics_collector = analytics_collector
@@ -1405,12 +1399,11 @@ class HandlerPipeline:
         )
         logger.info("[agents] run canceled thread=%s run=%s reason=%s", thread_id, run_id, reason)
 
-    # --- long-term memory / schedules bound to the turn ----------------------------------
+    # --- long-term memory bound to the turn ---------------------------------------------
 
     def _build_memory(self, context: HandlerContext, *, thread_id: str, event_id: str) -> AgentMemory:
         from dooers.agents.server.features.memory.api import LongTermMemory
         from dooers.agents.server.features.memory.models import MemoryOwner
-        from dooers.agents.server.features.schedules.api import AgentSchedules
 
         user = context.user or User(user_id="")
         owner = MemoryOwner(
@@ -1427,19 +1420,7 @@ class HandlerPipeline:
             thread_id=thread_id,
             event_id=event_id,
         )
-        schedules = AgentSchedules(
-            self._schedule_store,
-            agent_id=context.agent_id,
-            organization_id=context.organization_id or "",
-            workspace_id=context.workspace_id or "",
-            user_id=user.user_id or "",
-            user_name=user.user_name,
-            user_email=user.user_email,
-            thread_id=thread_id,
-            default_timezone=context.chat_context.timezone if context.chat_context else None,
-            notifier=self._schedule_notifier,
-        )
-        return AgentMemory(thread_id=thread_id, persistence=self._persistence, long_term=long_term, schedules=schedules)
+        return AgentMemory(thread_id=thread_id, persistence=self._persistence, long_term=long_term)
 
     # --- streaming ----------------------------------------------------------------------
 

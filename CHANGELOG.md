@@ -51,15 +51,23 @@ check the server version (servers before 0.27.0 close the socket on an unknown f
   call. `AgentContext.participants` / `is_shared` let handlers keep personal memory out of threads
   other people read. Guests have no memory.
   `format_memories_for_prompt()` helper.
-- **Schedules** (`features/schedules`): reminders and recurring tasks (`once`, `minutely`,
-  `hourly`, `daily`, `weekly`, `monthly`, with interval, weekdays, month day, local time,
-  `until`, `count`) evaluated in the user's time zone. Handler API `memory.schedules`
-  (`create`, `list`, `pause`, `resume`, `cancel`). `AgentServer.enable_schedules(handler)`
-  starts an in-process poller; `AgentServer.run_due_schedules()` claims due rows with a lease
-  (`FOR UPDATE SKIP LOCKED`, safe across replicas) for a tick endpoint on hosts that scale to
-  zero. A firing runs the handler in the schedule's thread as a `system` event with
-  `incoming.context.trigger = {"type": "schedule", ...}`. WebSocket: `schedule.list | update |
-  delete` → `schedule.list.result`, `schedule.upsert`, `schedule.deleted`.
+- **Scheduled tasks** (`dooers.tools.tasks`): reminders and recurring work live on the Dooers
+  Tasks service, which fires them with Cloud Tasks (agents on Cloud Run scale to zero, so an
+  in-process poller cannot be trusted). `tasks.schedule(title=, instruction=, due_at=,
+  recurrence=)` (`freq` hourly/daily/weekly/monthly, `interval`, `byWeekday`, `byMonthday`,
+  `atTime`, `timezone`, `until`, `count`), `list`, `get`, `reschedule`, `cancel`. The task acts for
+  the person of the turn: the SDK exchanges the turn's core-signed handshake token
+  (`presence_token`) plus the runtime API key for a `tasks-service-core` token `on_behalf_of` that
+  person; personal tasks (default) need no workspace. When the time comes the core re-checks
+  that the person may still use the agent and calls **`AgentServer.run_task(handler,
+  authorization=, body=)`** (mount it at `POST /internal/tasks/run`): the token must be a core
+  handshake with `purpose: "task"`; the run is skipped unless it is the task's current one; the
+  handler runs in the task's conversation as that person with
+  `incoming.context.trigger = {"type": "task", "task_id", "run_id", "title", "due_at",
+  "recurring"}`, and the outcome (last text as summary, or the error) is reported back. Rejections
+  raise `TaskRunRejected(status, message)`. Configured by `DOOERS_TASKS_SERVICE_URL`.
+  `ConnectionContext.purpose` / `AuthValidationResult.purpose` (`chat` | `task`);
+  `dispatch(..., presence_token=)`.
 - **Durable agent artifacts.** `AgentServer.store_artifact(...)` uploads generated files to chat
   storage and returns a `ref_id`; `send.document(..., ref_id=, size_bytes=)` and
   `send.image(..., ref_id=, filename=)` persist it so the URL is re-signed on every replay.
@@ -68,9 +76,7 @@ check the server version (servers before 0.27.0 close the socket on an unknown f
 - **`dooers.tools.sandbox`**: managed sandbox client (`open`, `exec`, `write_file`, `read_file`,
   `close`) authenticated with a Core service token (`sandbox-service` / `sandbox:exec`), one
   sandbox per thread. Configured by `DOOERS_SANDBOX_SERVICE_URL`.
-- Config: `memory_enabled`, `schedules_enabled`, `schedules_poll_interval_seconds`
-  (`AGENT_MEMORY_ENABLED`, `AGENT_SCHEDULES_ENABLED`, `AGENT_SCHEDULES_POLL_SECONDS`),
-  `schedule_lease_seconds`. Analytics events `run.canceled`, `schedule.fired`.
+- Config: `memory_enabled` (`AGENT_MEMORY_ENABLED`). Analytics events `run.canceled`, `task.run`.
 
 ### Fixed
 
@@ -82,7 +88,7 @@ check the server version (servers before 0.27.0 close the socket on an unknown f
   started with `asyncio.gather` keep the agent/workspace/user scope.
 - Building `AgentIncoming` outside a running event loop no longer raises `RuntimeError`.
 - `run.upsert` at the end of a run keeps the original `started_at`.
-- Inbound events recorded with a non-user actor (`ingest`, schedules) no longer fail validation.
+- Inbound events recorded with a non-user actor (`ingest`, scheduled tasks) no longer fail validation.
 
 ## [0.26.0] — 2026-11-16
 

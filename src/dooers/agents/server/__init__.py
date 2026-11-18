@@ -1,7 +1,7 @@
 from dooers.agents.server.config import AgentConfig, OnSettingsUpdated
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
-from dooers.agents.server.exceptions import DispatchError, HandlerError, UnsupportedContentTypeError
+from dooers.agents.server.exceptions import DispatchError, HandlerError, TaskRunRejected, UnsupportedContentTypeError
 from dooers.agents.server.features.analytics import (
     AgentAnalytics,
     AnalyticsBatch,
@@ -33,17 +33,6 @@ from dooers.agents.server.features.memory import (
     MemoryUnavailableError,
     PostgresMemoryStore,
     format_memories_for_prompt,
-)
-from dooers.agents.server.features.schedules import (
-    AgentSchedules,
-    InMemoryScheduleStore,
-    PostgresScheduleStore,
-    Recurrence,
-    ScheduleRecord,
-    ScheduleRunResult,
-    ScheduleStore,
-    SchedulesUnavailableError,
-    describe_recurrence,
 )
 from dooers.agents.server.features.settings import (
     LLM_MODELS_FIELD_ID,
@@ -119,6 +108,7 @@ __all__ = [
     "DispatchStream",
     "DispatchError",
     "HandlerError",
+    "TaskRunRejected",
     "UnsupportedContentTypeError",
     "UploadReferenceError",
     "normalize_allowed_content_types",
@@ -168,16 +158,6 @@ __all__ = [
     "InMemoryMemoryStore",
     "PostgresMemoryStore",
     "format_memories_for_prompt",
-    # Schedules
-    "AgentSchedules",
-    "Recurrence",
-    "ScheduleRecord",
-    "ScheduleRunResult",
-    "ScheduleStore",
-    "SchedulesUnavailableError",
-    "InMemoryScheduleStore",
-    "PostgresScheduleStore",
-    "describe_recurrence",
     # Analytics
     "AnalyticsEvent",
     "AnalyticsEventPayload",

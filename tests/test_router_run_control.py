@@ -1,11 +1,10 @@
-"""Router: background turns, run.cancel, memory.* and schedule.* frames."""
+"""Router: background turns, run.cancel and memory.* frames."""
 
 from __future__ import annotations
 
 import asyncio
 
 from dooers.agents.server.features.memory import InMemoryMemoryStore
-from dooers.agents.server.features.schedules import AgentSchedules, InMemoryScheduleStore
 from dooers.agents.server.handlers.router import Router
 from dooers.agents.server.protocol.models import User
 from dooers.agents.server.protocol.parser import parse_frame
@@ -14,7 +13,7 @@ from dooers.agents.server.runs import RunRegistry
 from tests.fakes import FakeSocket, MemoryPersistence
 
 
-async def _router(handler, *, user: User, memory_store=None, schedule_store=None):
+async def _router(handler, *, user: User, memory_store=None):
     persistence = MemoryPersistence()
     registry = ConnectionRegistry()
     subscriptions: dict[str, set[str]] = {}
@@ -26,7 +25,6 @@ async def _router(handler, *, user: User, memory_store=None, schedule_store=None
         subscriptions=subscriptions,
         run_registry=runs,
         memory_store=memory_store,
-        schedule_store=schedule_store,
     )
     ws = FakeSocket()
     router._agent_id = "a1"
@@ -213,30 +211,6 @@ async def test_memory_unavailable_without_store():
     router, ws, _, _ = await _router(_noop, user=User(user_id="u1"))
     await router.route(ws, _frame({"id": "l1", "type": "memory.list", "payload": {}}))
     assert ws.frames("memory.list.result")[0]["payload"]["available"] is False
-
-
-async def test_schedule_frames():
-    store = InMemoryScheduleStore()
-    user = User(user_id="u1")
-    router, ws, _, _ = await _router(_noop, user=user, schedule_store=store)
-    api = AgentSchedules(store, agent_id="a1", organization_id="o1", workspace_id="w1", user_id="u1")
-    record = await api.create(title="Daily", instruction="news", recurrence={"freq": "daily", "at_time": "08:00"})
-
-    await router.route(ws, _frame({"id": "s1", "type": "schedule.list", "payload": {}}))
-    listed = ws.frames("schedule.list.result")[0]["payload"]["schedules"]
-    assert [s["id"] for s in listed] == [record.id]
-
-    await router.route(ws, _frame({"id": "s2", "type": "schedule.update", "payload": {"schedule_id": record.id, "status": "paused"}}))
-    assert ws.frames("schedule.upsert")[-1]["payload"]["schedule"]["status"] == "paused"
-    await router.route(ws, _frame({"id": "s3", "type": "schedule.delete", "payload": {"schedule_id": record.id}}))
-    assert ws.frames("schedule.deleted")[-1]["payload"]["schedule_id"] == record.id
-
-    # Another user's schedule is invisible.
-    other = AgentSchedules(store, agent_id="a1", organization_id="o1", workspace_id="w1", user_id="u2")
-    foreign = await other.create(title="X", instruction="y", recurrence={"freq": "daily"})
-    await router.route(ws, _frame({"id": "s4", "type": "schedule.delete", "payload": {"schedule_id": foreign.id}}))
-    acks = {f["payload"]["ack_id"]: f["payload"] for f in ws.frames("ack")}
-    assert acks["s4"]["error"]["code"] == "NOT_FOUND"
 
 
 async def _member_router(store, user):

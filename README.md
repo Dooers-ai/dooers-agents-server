@@ -250,26 +250,33 @@ Users manage their memories over the socket (`memory.list|create|update|delete|p
 
 ### Reminders and recurring tasks
 
+Scheduled work lives on the Dooers Tasks service (`DOOERS_TASKS_SERVICE_URL`), acting for the
+person of the turn:
+
 ```python
-from datetime import datetime, timedelta, UTC
+from dooers.tools import tasks
 
-await memory.schedules.create(
-    title="Weekly market brief",
-    instruction="Search the news about our competitors and summarize them",
-    kind="task",
-    recurrence={"freq": "weekly", "by_weekday": [0], "at_time": "09:00"},
-    timezone=incoming.context.timezone,
-)
+if tasks.available():
+    await tasks.schedule(
+        title="Weekly market brief",
+        instruction="Search the news about our competitors and summarize them",
+        due_at="2026-11-23T12:00:00Z",
+        recurrence={"freq": "weekly", "byWeekday": [0], "atTime": "09:00",
+                    "timezone": incoming.context.timezone or "America/Sao_Paulo"},
+    )
 
-agent_server.enable_schedules(agent_handler)      # in-process poller
-
-@app.post("/internal/schedules/tick")             # for scale-to-zero hosts
-async def tick():
-    return [r.model_dump() for r in await agent_server.run_due_schedules()]
+@app.post("/internal/tasks/run")                 # the core calls it when a task is due
+async def run_task(request: Request):
+    try:
+        return await agent_server.run_task(agent_handler,
+                                           authorization=request.headers.get("authorization"),
+                                           body=await request.json())
+    except TaskRunRejected as exc:
+        raise HTTPException(exc.status, exc.message) from exc
 ```
 
-When a schedule fires, the handler runs in the schedule's thread with
-`incoming.context.trigger == {"type": "schedule", "schedule_id": ..., "title": ..., ...}`.
+When a task runs, the handler runs in the task's conversation as the person who scheduled it,
+with `incoming.context.trigger == {"type": "task", "task_id": ..., "run_id": ..., "title": ...}`.
 
 ### Durable generated files
 

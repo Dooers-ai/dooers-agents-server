@@ -15,7 +15,7 @@ class AnalyticsEvent(StrEnum):
     TOOL_CALLED = "tool.called"
     ERROR_OCCURRED = "error.occurred"
     RUN_CANCELED = "run.canceled"
-    SCHEDULE_FIRED = "schedule.fired"
+    TASK_RUN = "task.run"
 
     # Feedback events
     FEEDBACK_LIKE = "feedback.like"

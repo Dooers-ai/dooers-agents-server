@@ -105,6 +105,8 @@ class AuthValidationResult:
     can_configure_settings: bool = False
     organization_plan: str = "free"
     workspace_queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
+    #: Why the core issued the token: ``chat`` or ``task`` (``None`` on older cores).
+    purpose: str | None = None
 
 
 class AuthValidationClient:
@@ -239,6 +241,7 @@ class AuthValidationClient:
             can_configure_settings=ctx.agent.can_configure_settings,
             organization_plan=ctx.organization.plan,
             workspace_queues=ctx.workspace.catalog(),
+            purpose=ctx.purpose,
         )
 
     async def _validate_legacy(

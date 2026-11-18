@@ -121,7 +121,7 @@ class _ThreadCache:
 class PipelineBroadcaster:
     """Turns pipeline payload dicts into S2C frames and delivers them to the right sockets.
 
-    Shared by the WebSocket router and ``AgentServer.dispatch`` (REST, schedules, channels).
+    Shared by the WebSocket router and ``AgentServer.dispatch`` (REST, task runs, channels).
     """
 
     def __init__(
@@ -223,28 +223,6 @@ def make_memory_notifier(registry: ConnectionRegistry):
             frame: Any = S2C_MemoryDeleted(id=_generate_id(), payload=MemoryDeletedPayload(memory_id=record.id))
         else:
             frame = S2C_MemoryUpsert(id=_generate_id(), payload=MemoryUpsertPayload(memory=record))
-        await registry.send_to(recipients, serialize_frame(frame))
-
-    return notify
-
-
-def make_schedule_notifier(registry: ConnectionRegistry):
-    """``schedule.upsert`` / ``schedule.deleted`` to every socket of the schedule's owner."""
-    from dooers.agents.server.protocol.frames import (
-        S2C_ScheduleDeleted,
-        S2C_ScheduleUpsert,
-        ScheduleDeletedPayload,
-        ScheduleUpsertPayload,
-    )
-
-    async def notify(action: str, record: Any) -> None:
-        recipients = registry.connections_for_user(record.agent_id, record.user_id)
-        if not recipients:
-            return
-        if action == "deleted" or record.status == "canceled":
-            frame: Any = S2C_ScheduleDeleted(id=_generate_id(), payload=ScheduleDeletedPayload(schedule_id=record.id))
-        else:
-            frame = S2C_ScheduleUpsert(id=_generate_id(), payload=ScheduleUpsertPayload(schedule=record))
         await registry.send_to(recipients, serialize_frame(frame))
 
     return notify

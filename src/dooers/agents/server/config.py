@@ -139,15 +139,6 @@ class AgentConfig:
 
     #: Long-term memory (``memory.long_term`` + ``memory.*`` frames). Needs a SQL backend.
     memory_enabled: bool = field(default_factory=lambda: _env_bool("AGENT_MEMORY_ENABLED", True))
-    #: Reminders / recurring tasks (``memory.schedules`` + ``schedule.*`` frames). Needs a SQL backend.
-    schedules_enabled: bool = field(default_factory=lambda: _env_bool("AGENT_SCHEDULES_ENABLED", True))
-    #: In-process poller for due schedules once ``AgentServer.enable_schedules`` is called (0 = off;
-    #: rely on an external tick calling ``run_due_schedules``). Env ``AGENT_SCHEDULES_POLL_SECONDS``.
-    schedules_poll_interval_seconds: int = field(
-        default_factory=lambda: int(os.environ.get("AGENT_SCHEDULES_POLL_SECONDS", "30") or "30")
-    )
-    #: How long a replica owns a claimed schedule before another may retry it.
-    schedule_lease_seconds: int = 900
     #: Turns of one WebSocket connection that may run at the same time. Turns of the SAME thread
     #: always run one after the other; different threads run in parallel up to this limit
     #: (``AGENT_MAX_PARALLEL_TURNS``). 1 restores the old one-turn-at-a-time behaviour.

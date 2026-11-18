@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field
 
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
 from dooers.agents.server.features.memory.models import MemoryPreferences, MemoryRecord
-from dooers.agents.server.features.schedules.models import ScheduleRecord
 from dooers.agents.server.features.settings.models import SettingsField, SettingsFieldGroup
 from dooers.agents.server.protocol.models import (
     ChatContext,
@@ -283,7 +282,7 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
-# --- Run control / long-term memory / schedules (0.27.0) ---
+# --- Run control / long-term memory (0.27.0) ---
 
 
 class RunCancelPayload(BaseModel):
@@ -369,38 +368,6 @@ class C2S_MemoryPrefsUpdate(BaseModel):
     payload: MemoryPrefsUpdatePayload
 
 
-class ScheduleListPayload(BaseModel):
-    thread_id: str | None = None
-    include_closed: bool = False
-
-
-class C2S_ScheduleList(BaseModel):
-    id: str
-    type: Literal["schedule.list"] = "schedule.list"
-    payload: ScheduleListPayload = Field(default_factory=ScheduleListPayload)
-
-
-class ScheduleUpdatePayload(BaseModel):
-    schedule_id: str
-    status: Literal["active", "paused"]
-
-
-class C2S_ScheduleUpdate(BaseModel):
-    id: str
-    type: Literal["schedule.update"] = "schedule.update"
-    payload: ScheduleUpdatePayload
-
-
-class ScheduleDeletePayload(BaseModel):
-    schedule_id: str
-
-
-class C2S_ScheduleDelete(BaseModel):
-    id: str
-    type: Literal["schedule.delete"] = "schedule.delete"
-    payload: ScheduleDeletePayload
-
-
 class C2S_Ping(BaseModel):
     id: str
     type: Literal["ping"] = "ping"
@@ -435,9 +402,6 @@ ClientToServer = Annotated[
     | C2S_MemoryDelete
     | C2S_MemoryPrefsGet
     | C2S_MemoryPrefsUpdate
-    | C2S_ScheduleList
-    | C2S_ScheduleUpdate
-    | C2S_ScheduleDelete
     | C2S_Ping,
     Field(discriminator="type"),
 ]
@@ -682,37 +646,6 @@ class S2C_MemoryPrefs(BaseModel):
     payload: MemoryPrefsPayload
 
 
-class ScheduleListResultPayload(BaseModel):
-    schedules: list[ScheduleRecord]
-    available: bool = True
-
-
-class S2C_ScheduleListResult(BaseModel):
-    id: str
-    type: Literal["schedule.list.result"] = "schedule.list.result"
-    payload: ScheduleListResultPayload
-
-
-class ScheduleUpsertPayload(BaseModel):
-    schedule: ScheduleRecord
-
-
-class S2C_ScheduleUpsert(BaseModel):
-    id: str
-    type: Literal["schedule.upsert"] = "schedule.upsert"
-    payload: ScheduleUpsertPayload
-
-
-class ScheduleDeletedPayload(BaseModel):
-    schedule_id: str
-
-
-class S2C_ScheduleDeleted(BaseModel):
-    id: str
-    type: Literal["schedule.deleted"] = "schedule.deleted"
-    payload: ScheduleDeletedPayload
-
-
 class S2C_Pong(BaseModel):
     id: str
     type: Literal["pong"] = "pong"
@@ -740,8 +673,5 @@ ServerToClient = (
     | S2C_MemoryUpsert
     | S2C_MemoryDeleted
     | S2C_MemoryPrefs
-    | S2C_ScheduleListResult
-    | S2C_ScheduleUpsert
-    | S2C_ScheduleDeleted
     | S2C_Pong
 )
