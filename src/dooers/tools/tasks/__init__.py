@@ -49,6 +49,7 @@ __all__ = [
     "list",
     "report_run",
     "reschedule",
+    "runs",
     "schedule",
 ]
 
@@ -191,6 +192,8 @@ async def schedule(
     thread_id: str | None = None,
     priority: str | None = None,
     personal: bool = True,
+    on_success_status: str | None = None,
+    on_failure_status: str | None = None,
 ) -> dict[str, Any]:
     """Schedule work the agent will run at ``due_at`` (ISO 8601), once or per ``recurrence``.
 
@@ -198,9 +201,16 @@ async def schedule(
     ``byMonthday``, ``atTime`` (``HH:MM``), ``timezone`` (IANA, required), ``until``, ``count``.
     ``personal`` (default): the person's own task, outside any workspace board; ``False`` files it on
     the workspace board of the conversation (needs the agent's Tasks access in that workspace).
-    The run answers in ``thread_id`` (default: this conversation).
+    The run answers in ``thread_id`` (default: this conversation). Each run of a recurring task is
+    recorded as a closed subtask of the series (:func:`runs`). Workspace tasks only:
+    ``on_success_status`` / ``on_failure_status`` are custom status ids of the workspace that each
+    run (or the one-off task) goes to.
     """
     body: dict[str, Any] = {"title": title, "instruction": instruction, "dueAt": due_at}
+    if on_success_status:
+        body["onSuccessStatus"] = on_success_status
+    if on_failure_status:
+        body["onFailureStatus"] = on_failure_status
     if recurrence:
         body["recurrence"] = recurrence
     tid = _thread_id(thread_id)
@@ -222,6 +232,13 @@ async def list(*, include_closed: bool = False, limit: int = 50, personal: bool 
 async def get(task_id: str, *, personal: bool = True, identity: Identity | None = None) -> dict[str, Any]:
     result = await _call({"operation": "get", "taskId": task_id}, personal=personal, identity=identity)
     return result.get("task") or {}
+
+
+async def runs(task_id: str, *, limit: int = 20, personal: bool = True) -> list[dict[str, Any]]:
+    """History of a recurring task: one record per run (status, ``due_at``, summary or error), newest first."""
+    result = await _call({"operation": "runs", "taskId": task_id, "limit": limit}, personal=personal)
+    data = result.get("data")
+    return data if isinstance(data, builtins.list) else []
 
 
 async def reschedule(

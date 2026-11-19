@@ -65,7 +65,9 @@ check the server version (servers before 0.27.0 close the socket on an unknown f
   handler runs in the task's conversation as that person with
   `incoming.context.trigger = {"type": "task", "task_id", "run_id", "title", "due_at",
   "recurring"}`, and the outcome (last text as summary, or the error) is reported back. Rejections
-  raise `TaskRunRejected(status, message)`. Configured by `DOOERS_TASKS_SERVICE_URL`.
+  raise `TaskRunRejected(status, message)`. Configured by `DOOERS_TASKS_SERVICE_URL`. Each run of
+  a recurring task is recorded as a closed subtask of the series: `tasks.runs(task_id)`. Workspace
+  tasks: `on_success_status` / `on_failure_status` (custom status ids) for each run's outcome.
   `ConnectionContext.purpose` / `AuthValidationResult.purpose` (`chat` | `task`);
   `dispatch(..., presence_token=)`.
 - **Durable agent artifacts.** `AgentServer.store_artifact(...)` uploads generated files to chat

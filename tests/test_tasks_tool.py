@@ -169,3 +169,27 @@ async def test_run_task_refuses_chat_tokens(service, monkeypatch):
     with pytest.raises(TaskRunRejected) as error:
         await server.run_task(handler, authorization="Bearer chat-jwt", body={"task_id": "t1", "run_id": "1"})
     assert error.value.status == 401
+
+
+async def test_runs_and_outcome_statuses(service):
+    token = _turn()
+    try:
+        await tasks.schedule(
+            title="Relatório",
+            instruction="Monte o relatório",
+            due_at="2026-11-23T12:00:00Z",
+            recurrence={"freq": "weekly", "byWeekday": [0], "timezone": "America/Sao_Paulo"},
+            personal=False,
+            on_success_status="55555555-5555-4555-8555-555555555555",
+            on_failure_status="66666666-6666-4666-8666-666666666666",
+        )
+        await tasks.runs("t1", limit=5)
+    finally:
+        reset_turn(token)
+    schedule_call = [c for c in service.calls if c["body"].get("operation") == "schedule"][0]
+    assert schedule_call["body"]["body"]["onSuccessStatus"].startswith("5555")
+    assert schedule_call["body"]["body"]["onFailureStatus"].startswith("6666")
+    runs_call = service.calls[-1]["body"]
+    assert runs_call == {"operation": "runs", "taskId": "t1", "limit": 5}
+    personal_flags = [c["body"]["personal"] for c in service.calls if "presenceToken" in c["body"]]
+    assert personal_flags == [False, True]
