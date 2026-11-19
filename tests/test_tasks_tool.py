@@ -139,6 +139,8 @@ async def test_run_task_runs_as_the_person_and_reports(service, monkeypatch):
     assert result["ok"] and result["outcome"] == "succeeded"
     assert seen["user"] == "ana" and seen["message"] == "Lembre de beber água"
     assert seen["trigger"]["type"] == "task" and seen["trigger"]["run_id"] == "1700000000"
+    first = (await server._persistence.get_events(result["thread_id"]))[0]  # type: ignore[union-attr]
+    assert first.actor == "system" and first.data["trigger"]["task_id"] == "t1"
     report = service.calls[-1]["body"]
     assert report["operation"] == "report_run"
     assert report["body"] == {"runId": "1700000000", "outcome": "succeeded", "summary": "Hora de beber água!"}

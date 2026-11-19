@@ -707,6 +707,9 @@ class AgentServer:
                 thread_title=trigger["title"] or None,
                 trigger=trigger,
                 actor="system",
+                # Recorded on the event too: the chat shows "Scheduled task: <title>" and the
+                # history knows this message came from the task, not from the person.
+                data={"trigger": trigger},
                 presence_token=token,
             )
             out_thread = stream.thread_id
