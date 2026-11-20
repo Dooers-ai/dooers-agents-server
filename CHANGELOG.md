@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] — 2026-11-20
+
+### Added
+
+- Analytics batches sent to Core carry a short-lived `analytics:write` service
+  token when the agent runtime key can mint one. If the mint fails, the batch
+  is still delivered without the header, so a Core that has not started
+  requiring the token keeps accepting it.
+- `export_agent_feedback`: a host can expose feedback download to a customer
+  system. The caller authenticates with `ANALYTICS_EXPORT_SECRET` (`Authorization:
+  Bearer`). The agent reads `GET /api/v2/analytics/agent/feedback` on Core with
+  `analytics:read` and adds `thread_id` and `message` from the local event.
+
 ## [0.26.0] — 2026-11-16
 
 ### Added
