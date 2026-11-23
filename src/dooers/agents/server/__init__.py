@@ -9,6 +9,7 @@ from dooers.agents.server.features.analytics import (
     AnalyticsEvent,
     AnalyticsEventPayload,
 )
+from dooers.agents.server.features.analytics.export import export_agent_feedback
 from dooers.agents.server.features.channels.whatsapp import (
     WhatsappOutboundCallback,
     WhatsappToolsClient,
@@ -24,6 +25,7 @@ from dooers.agents.server.features.channels.whatsapp import (
     whatsapp_thread_id,
 )
 from dooers.agents.server.features.settings import (
+    LLM_MODELS_FIELD_ID,
     AgentSettings,
     SettingsBroadcaster,
     SettingsField,
@@ -33,7 +35,6 @@ from dooers.agents.server.features.settings import (
     SettingsSchema,
     SettingsSelectOption,
     apply_chat_llm_override,
-    LLM_MODELS_FIELD_ID,
     resolve_chat_llm_override,
 )
 from dooers.agents.server.handlers.content_policy import normalize_allowed_content_types
@@ -59,8 +60,6 @@ from dooers.agents.server.protocol.models import (
     Thread,
     ThreadEvent,
     User,
-    WorkspaceQueueCatalog,
-    WorkspaceQueueMember,
     WireC2S_AudioPart,
     WireC2S_ContactPart,
     WireC2S_ContentPart,
@@ -73,6 +72,8 @@ from dooers.agents.server.protocol.models import (
     WireS2C_DocumentPart,
     WireS2C_ImagePart,
     WireS2C_TextPart,
+    WorkspaceQueueCatalog,
+    WorkspaceQueueMember,
 )
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.repository import Repository
@@ -134,6 +135,7 @@ __all__ = [
     # Analytics
     "AnalyticsEvent",
     "AnalyticsEventPayload",
+    "export_agent_feedback",
     "AnalyticsBatch",
     "AnalyticsCollector",
     "AgentAnalytics",

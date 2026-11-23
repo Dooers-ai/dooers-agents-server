@@ -5,6 +5,8 @@ import logging
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
+
 from dooers.agents.server.auth_validation import AuthValidationClient
 from dooers.agents.server.broadcast import BroadcastManager, broadcast_thread_upsert
 from dooers.agents.server.config import AgentConfig
@@ -18,6 +20,7 @@ from dooers.agents.server.handlers.content_policy import normalize_allowed_conte
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.agents.server.handlers.router import Handler, Router, WebSocketProtocol
+from dooers.agents.server.observability.service_token import core_base_url
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.persistence.postgres import PostgresPersistence
 from dooers.agents.server.protocol.frames import (
@@ -296,6 +299,7 @@ class AgentServer:
                 batch_size=batch_size,
                 flush_interval=flush_interval,
                 persistence=self._persistence,
+                core_base_url=(self._config.agent_core_base_url or "").strip() or core_base_url(),
             )
             await self._analytics_collector.start()
 
@@ -419,6 +423,11 @@ class AgentServer:
                 data = await websocket.receive_text()
                 try:
                     frame = parse_frame(data)
+                except ValidationError as e:
+                    # The error's input may be the whole payload (presence_token included): log only where and why.
+                    errors = e.errors(include_input=False, include_url=False)
+                    _agents.warning("failed to parse WebSocket C2S frame: len=%d errors=%s", len(data), errors)
+                    raise ValueError(f"invalid C2S frame ({e.error_count()} validation errors)") from None
                 except Exception as e:
                     _agents.warning(
                         "failed to parse WebSocket C2S frame: len=%d err=%s",
