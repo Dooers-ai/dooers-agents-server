@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.27.0] — 2026-11-17
+## [0.30.0] — 2026-11-23
 
 Platform support for frontier, multi-user agents. Every new frame is additive; clients must
-check the server version (servers before 0.27.0 close the socket on an unknown frame type).
+check the server version (servers before 0.30.0 close the socket on an unknown frame type).
 
 ### Added
 
@@ -91,6 +91,46 @@ check the server version (servers before 0.27.0 close the socket on an unknown f
 - Building `AgentIncoming` outside a running event loop no longer raises `RuntimeError`.
 - `run.upsert` at the end of a run keeps the original `started_at`.
 - Inbound events recorded with a non-user actor (`ingest`, scheduled tasks) no longer fail validation.
+## [0.29.0] — 2026-11-23
+
+### Changed
+
+- Reading other people's threads (supervision) now follows the platform permission
+  `thread:view_others`, which the organization grants through a custom role. Being an org
+  manager or a workspace manager is no longer enough. The core sends the permission list
+  in the connection context (`user.permissions`); with it present and without the
+  permission, the runtime never elevates, whatever the roles say. Cores that predate
+  permissions keep the previous role rules.
+- Creator settings follow the member's actual org role (`organization.member_role`),
+  since `organization.role` may now be lowered for thread supervision.
+
+### Fixed
+
+- Building an incoming message outside a running event loop (sync code, tests) no
+  longer raises `RuntimeError: no running event loop`; the RAG execution context is
+  simply not bound there.
+
+## [0.28.0] — 2026-11-21
+
+### Added
+
+- A like or dislike on a message stores the thread id and the message text
+  with the vote. The text is copied from the event the agent already saved.
+  `export_agent_feedback` uses that copy, and still looks up the local event
+  when an older row does not have it.
+
+## [0.27.0] — 2026-11-20
+
+### Added
+
+- Analytics batches sent to Core carry a short-lived `analytics:write` service
+  token when the agent runtime key can mint one. If the mint fails, the batch
+  is still delivered without the header, so a Core that has not started
+  requiring the token keeps accepting it.
+- `export_agent_feedback`: a host can expose feedback download to a customer
+  system. The caller authenticates with `ANALYTICS_EXPORT_SECRET` (`Authorization:
+  Bearer`). The agent reads `GET /api/v2/analytics/agent/feedback` on Core with
+  `analytics:read` and adds `thread_id` and `message` from the local event.
 
 ## [0.26.0] — 2026-11-16
 

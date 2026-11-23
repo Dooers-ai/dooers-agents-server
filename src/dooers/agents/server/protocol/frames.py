@@ -282,7 +282,7 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
-# --- Run control / long-term memory (0.27.0) ---
+# --- Run control / long-term memory (0.30.0) ---
 
 
 class RunCancelPayload(BaseModel):

@@ -29,6 +29,14 @@ _contexts: WeakKeyDictionary[asyncio.Task, RAGExecutionContext] = WeakKeyDiction
 _context_var: ContextVar[RAGExecutionContext | None] = ContextVar("dooers_tools_execution_context", default=None)
 
 
+def _current_task() -> asyncio.Task | None:
+    """The running task, or None outside an event loop (sync code and tests)."""
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
 def bind_execution_context(
     *,
     agent_id: str,
@@ -58,15 +66,6 @@ def bind_execution_context(
     )
     _contexts[task] = context
     _context_var.set(context)
-
-
-def _current_task() -> asyncio.Task | None:
-    # ``asyncio.current_task`` raises when no loop is running (e.g. an ``AgentIncoming``
-    # built in synchronous code or tests). No task means no context to bind.
-    try:
-        return asyncio.current_task()
-    except RuntimeError:
-        return None
 
 
 def current_execution_context() -> RAGExecutionContext | None:

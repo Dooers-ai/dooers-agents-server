@@ -210,7 +210,7 @@ all_values = await settings.get_all(exclude=["avatar_base64"])
 await settings.set("field_id", new_value)
 ```
 
-## Frontier agent features (0.27)
+## Frontier agent features (0.30)
 
 ### Streaming
 

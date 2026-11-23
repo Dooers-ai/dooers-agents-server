@@ -1,4 +1,4 @@
-# 2026-10-31 — Frontier agents on the SDK (0.27.0)
+# 2026-10-31 — Frontier agents on the SDK (0.30.0)
 
 Part of the platform plan in `Dooers-ai/dooers-agent-template` → `docs/PLANO-FRONTIER.md`.
 

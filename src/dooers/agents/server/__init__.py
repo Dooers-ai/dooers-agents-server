@@ -9,6 +9,7 @@ from dooers.agents.server.features.analytics import (
     AnalyticsEvent,
     AnalyticsEventPayload,
 )
+from dooers.agents.server.features.analytics.export import export_agent_feedback
 from dooers.agents.server.features.channels.whatsapp import (
     WhatsappOutboundCallback,
     WhatsappToolsClient,
@@ -161,6 +162,7 @@ __all__ = [
     # Analytics
     "AnalyticsEvent",
     "AnalyticsEventPayload",
+    "export_agent_feedback",
     "AnalyticsBatch",
     "AnalyticsCollector",
     "AgentAnalytics",

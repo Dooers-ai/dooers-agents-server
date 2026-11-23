@@ -220,7 +220,7 @@ class PostgresMemoryStore:
                     deleted_at TIMESTAMPTZ
                 )
             """)
-            # Tables created by earlier 0.27 development builds predate the author columns.
+            # Tables created by earlier 0.30 development builds (tagged 0.27 on the branch) predate the author columns.
             await conn.execute(f"ALTER TABLE {self._table} ADD COLUMN IF NOT EXISTS author_id TEXT NOT NULL DEFAULT ''")
             await conn.execute(f"ALTER TABLE {self._table} ADD COLUMN IF NOT EXISTS author_name TEXT NOT NULL DEFAULT ''")
             await conn.execute(f"""

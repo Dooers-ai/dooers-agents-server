@@ -29,6 +29,7 @@ from dooers.agents.server.handlers.content_policy import normalize_allowed_conte
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.pipeline import HandlerContext, HandlerPipeline
 from dooers.agents.server.handlers.router import Handler, Router, WebSocketProtocol
+from dooers.agents.server.observability.service_token import core_base_url
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.persistence.postgres import PostgresPersistence
 from dooers.agents.server.protocol.models import (
@@ -317,6 +318,7 @@ class AgentServer:
                 batch_size=batch_size,
                 flush_interval=flush_interval,
                 persistence=self._persistence,
+                core_base_url=(self._config.agent_core_base_url or "").strip() or core_base_url(),
             )
             await self._analytics_collector.start()
 
