@@ -2,16 +2,14 @@
 
 from datetime import UTC, datetime
 
-from dooers.agents.server.handlers.router import (
-    _can_access_thread,
-    resolve_scope,
-)
+from dooers.agents.server.handlers.router import _can_access_thread
 from dooers.agents.server.protocol.models import Thread, User
 from dooers.agents.server.thread_access import (
     ThreadViewGrantStore,
     actor_id_is_participant,
     end_of_utc_day,
     resolve_list_scope,
+    resolve_scope,
     resolve_thread_access,
     user_is_thread_participant,
 )

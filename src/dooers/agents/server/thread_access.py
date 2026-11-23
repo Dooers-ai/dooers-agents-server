@@ -5,6 +5,11 @@ supervise (read + manage) without write until they add themselves as a
 participant. System admins observe read-only when not a participant.
 Workspace managers only elevate inside a real workspace (never on personal 1:1).
 
+Elevation needs the ``thread:view_others`` platform permission (an organization custom
+role; the org owner always has it). Being an org manager or workspace manager is not
+enough — core reports such users as plain members to the runtime, and sends the explicit
+``permissions`` list that this module checks first.
+
 View grants for elevated (non-participant) reads are stored **in-process**
 until end of UTC day — no core round-trip.
 
@@ -91,11 +96,30 @@ def actor_id_is_participant(actor_id: str, thread: Thread) -> bool:
     return False
 
 
+THREAD_VIEW_OTHERS = "thread:view_others"
+
+
+def _platform_grants_view_others(user: User) -> bool | None:
+    """``True``/``False`` when core sent the explicit permission list; ``None`` on older cores."""
+    if not user.permissions and user.organization_member_role is None:
+        return None
+    return THREAD_VIEW_OTHERS in (user.permissions or [])
+
+
 def _is_org_elevated(user: User) -> bool:
+    # Reading other people's threads needs the ``thread:view_others`` permission (an org
+    # custom role); core also lowers ``organization_role`` for whoever lacks it, so older
+    # cores and SDKs agree. The role check stays for cores that predate permissions.
+    granted = _platform_grants_view_others(user)
+    if granted is False:
+        return False
     return user.organization_role in ("owner", "manager")
 
 
 def _is_workspace_elevated(user: User) -> bool:
+    granted = _platform_grants_view_others(user)
+    if granted is False:
+        return False
     return user.workspace_role in ("manager", "owner")
 
 
