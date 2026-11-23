@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Creator settings follow the member's actual org role (`organization.member_role`),
   since `organization.role` may now be lowered for thread supervision.
 
+### Fixed
+
+- Building an incoming message outside a running event loop (sync code, tests) no
+  longer raises `RuntimeError: no running event loop`; the RAG execution context is
+  simply not bound there.
+
 ## [0.28.0] — 2026-11-21
 
 ### Added
