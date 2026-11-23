@@ -15,6 +15,7 @@ from dooers.agents.server.observability.service_token import (
 )
 
 from .models import AnalyticsBatch, AnalyticsEvent, AnalyticsEventPayload
+from .text import message_text
 
 if TYPE_CHECKING:
     from dooers.agents.server.persistence.base import Persistence
@@ -125,6 +126,26 @@ class AnalyticsCollector:
         workspace_id: str | None = None,
     ) -> None:
         event = AnalyticsEvent.FEEDBACK_LIKE if feedback_type == "like" else AnalyticsEvent.FEEDBACK_DISLIKE
+        message: str | None = None
+        if target_type == "event" and target_id and self._persistence is not None:
+            try:
+                stored = await self._persistence.get_event(target_id)
+            except Exception:
+                logger.warning(
+                    "analytics feedback: event lookup failed for target_id=%s", target_id, exc_info=True
+                )
+                stored = None
+            if stored is not None:
+                thread_id = stored.thread_id or thread_id
+                message = message_text(stored)
+        data: dict[str, Any] = {
+            "target_type": target_type,
+            "target_id": target_id,
+            "reason": reason,
+            "classification": classification,
+        }
+        if message:
+            data["message"] = message
         await self.track(
             event=event.value,
             agent_id=agent_id,
@@ -132,12 +153,7 @@ class AnalyticsCollector:
             user_id=user_id,
             organization_id=organization_id,
             workspace_id=workspace_id,
-            data={
-                "target_type": target_type,
-                "target_id": target_id,
-                "reason": reason,
-                "classification": classification,
-            },
+            data=data,
         )
 
     async def _broadcast(self, agent_id: str, payload: AnalyticsEventPayload) -> None:

@@ -1,8 +1,9 @@
 """Feedback export for a system that talks to the agent, not to Core.
 
 The caller authenticates with ``ANALYTICS_EXPORT_SECRET``. The agent then
-reads feedback from Core with its runtime key and attaches the message text
-and thread id from its own event store.
+reads feedback from Core with its runtime key. A vote recorded by this SDK
+already carries the thread id and the message text. Older rows do not, so
+those are filled from the local event store.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from dooers.agents.server.observability.service_token import (
     resolve_runtime_api_key,
 )
 from dooers.agents.server.persistence.base import Persistence
-from dooers.agents.server.protocol.models import ThreadEvent
+
+from .text import message_text
 
 logger = logging.getLogger(__name__)
 
@@ -39,17 +41,6 @@ def _secret_matches(provided: str, expected: str) -> bool:
     if not provided or not expected:
         return False
     return hmac.compare_digest(provided.encode(), expected.encode())
-
-
-def message_text(event: ThreadEvent | None) -> str | None:
-    if event is None or not event.content:
-        return None
-    parts = [
-        part.text
-        for part in event.content
-        if getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str) and part.text
-    ]
-    return "\n".join(parts) if parts else None
 
 
 async def export_agent_feedback(
@@ -118,18 +109,20 @@ async def export_agent_feedback(
 
         enriched = []
         for item in items:
-            target_id = item.get("target_id") if isinstance(item, dict) else None
+            row = dict(item) if isinstance(item, dict) else {}
+            target_id = row.get("target_id")
+            snapshot_thread = row.get("thread_id") if isinstance(row.get("thread_id"), str) and row["thread_id"].strip() else None
+            snapshot_message = row.get("message") if isinstance(row.get("message"), str) and row["message"].strip() else None
             event = None
-            if isinstance(target_id, str) and target_id:
+            if (snapshot_thread is None or snapshot_message is None) and isinstance(target_id, str) and target_id:
                 try:
                     event = await persistence.get_event(target_id)
                 except Exception:
                     logger.warning(
                         "feedback export: event lookup failed for target_id=%s", target_id, exc_info=True
                     )
-            row = dict(item) if isinstance(item, dict) else {}
-            row["thread_id"] = event.thread_id if event is not None else None
-            row["message"] = message_text(event)
+            row["thread_id"] = snapshot_thread or (event.thread_id if event is not None else None)
+            row["message"] = snapshot_message or message_text(event)
             enriched.append(row)
         return 200, {"items": enriched, "next_cursor": next_cursor}
     finally:

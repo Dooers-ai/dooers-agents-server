@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] — 2026-11-21
+
+### Added
+
+- A like or dislike on a message stores the thread id and the message text
+  with the vote. The text is copied from the event the agent already saved.
+  `export_agent_feedback` uses that copy, and still looks up the local event
+  when an older row does not have it.
+
 ## [0.27.0] — 2026-11-20
 
 ### Added

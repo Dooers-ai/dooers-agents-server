@@ -110,6 +110,74 @@ async def test_export_joins_the_message_and_refuses_the_wrong_secret():
     await tokens.aclose()
 
 
+@pytest.mark.asyncio
+async def test_feedback_snapshots_the_thread_and_the_message():
+    collector = AnalyticsCollector(
+        webhook_url=WEBHOOK,
+        registry=SimpleNamespace(),  # type: ignore[arg-type]
+        subscriptions={},
+        persistence=Memory(_event()),  # type: ignore[arg-type]
+    )
+    await collector.feedback(
+        feedback_type="dislike",
+        target_type="event",
+        target_id="evt-1",
+        agent_id="agent-1",
+        reason="total was off",
+        classification="wrong answer",
+    )
+    payload = collector._buffer[0]
+    assert payload.thread_id == "thread-1"
+    assert payload.data is not None
+    assert payload.data["message"] == "The invoice total is 10."
+    assert payload.data["target_id"] == "evt-1"
+
+
+@pytest.mark.asyncio
+async def test_export_keeps_a_snapshot_already_stored_in_core():
+    memory = Memory(_event())
+    tokens = ServiceTokenClient(core_base_url=CORE)
+    async with httpx.AsyncClient() as http:
+        with respx.mock(assert_all_called=False) as mock:
+            mock.post(TOKEN_URL).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"success": True, "data": {"accessToken": "jwt-read", "expiresIn": 300}},
+                )
+            )
+            mock.get(FEEDBACK_URL).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "target_id": "evt-1",
+                                    "thread_id": "thread-from-core",
+                                    "message": "snapshot from the vote",
+                                }
+                            ],
+                            "next_cursor": None,
+                        },
+                    },
+                )
+            )
+            status, body = await export_agent_feedback(
+                persistence=memory,  # type: ignore[arg-type]
+                agent_id="agent-1",
+                authorization="Bearer export-secret",
+                export_secret="export-secret",
+                core_base_url=CORE,
+                http_client=http,
+                token_client=tokens,
+            )
+    assert status == 200
+    assert body["items"][0]["thread_id"] == "thread-from-core"
+    assert body["items"][0]["message"] == "snapshot from the vote"
+    await tokens.aclose()
+
+
 def test_message_text_joins_text_parts_only():
     event = _event()
     event.content = [WireS2C_TextPart(text="a"), WireS2C_TextPart(text="b")]
