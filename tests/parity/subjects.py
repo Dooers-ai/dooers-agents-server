@@ -261,8 +261,11 @@ def _server_ingest(result: ParityResult) -> None:
     calls = result.outputs["ingest"]
     assert [call["call"] for call in calls] == ["actor_user_new_thread", "default_actor", "actor_user_existing_thread"]
     assert calls[0]["thread_id"] == calls[2]["thread_id"]
-    assert calls[1] == {"call": "default_actor", "raised": "ValidationError"}
-    assert len(result.events) == 2
+    # Production 0.31.0: the default actor ("assistant") is accepted, so the attendant's reply is recorded.
+    assert calls[1] == {"call": "default_actor", "thread_id": calls[0]["thread_id"]}
+    assert len(result.events) == 3
+    assert [e["actor"] for e in result.events] == ["user", "assistant", "user"]
+    assert result.events[1]["author"] == "Maria"
 
 
 _REPOSITORY_KEYS = {
