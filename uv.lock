@@ -690,7 +690,7 @@ dev = [
 dooers = [
     { name = "google-cloud-alloydb-connector", extra = ["asyncpg"] },
 ]
-dooers_threads = [
+dooers-threads = [
     { name = "ada-url" },
     { name = "cryptography" },
     { name = "jsonschema" },
@@ -729,18 +729,18 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ada-url", marker = "extra == 'dooers_threads'", specifier = "==4.0.0" },
+    { name = "ada-url", marker = "extra == 'dooers-threads'", specifier = "==4.0.0" },
     { name = "ada-url", marker = "extra == 'dooers-threads-contracts'", specifier = "==4.0.0" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "azure-cosmos", marker = "extra == 'cosmos'", specifier = ">=4.7.0" },
     { name = "azure-storage-blob", marker = "extra == 'storage'", specifier = ">=12.23.0" },
     { name = "bcrypt", specifier = ">=4.2.0" },
-    { name = "cryptography", marker = "extra == 'dooers_threads'", specifier = "==48.0.0" },
+    { name = "cryptography", marker = "extra == 'dooers-threads'", specifier = "==48.0.0" },
     { name = "google-cloud-alloydb-connector", extras = ["asyncpg"], marker = "extra == 'dooers'", specifier = ">=1.7.0" },
     { name = "google-cloud-storage", marker = "extra == 'storage'", specifier = ">=2.18.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "jsonschema", marker = "extra == 'dooers_threads'", specifier = "==4.26.0" },
+    { name = "jsonschema", marker = "extra == 'dooers-threads'", specifier = "==4.26.0" },
     { name = "jsonschema", marker = "extra == 'dooers-threads-contracts'", specifier = "==4.26.0" },
     { name = "openinference-instrumentation-anthropic", marker = "extra == 'observability'", specifier = ">=0.1" },
     { name = "openinference-instrumentation-google-genai", marker = "extra == 'observability'", specifier = ">=1.4" },
@@ -757,7 +757,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.47" },
     { name = "uvicorn", marker = "extra == 'dev'", specifier = "==0.41.0" },
 ]
-provides-extras = ["dooers_threads", "dooers-threads-contracts", "observability", "cosmos", "dooers", "storage", "dev"]
+provides-extras = ["dooers-threads", "dooers-threads-contracts", "observability", "cosmos", "dooers", "storage", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
