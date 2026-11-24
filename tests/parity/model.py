@@ -1,7 +1,7 @@
 """Types shared by the parity scenarios and runners, plus the handler capture.
 
 A scenario is a creator handler plus the input a consumer sends. A runner (legacy
-here, Maestro in task 8) executes it and returns a ``ParityResult``. Handlers record
+here, Dooers Threads in task 8) executes it and returns a ``ParityResult``. Handlers record
 what they observe (``AgentIncoming``, ``memory.get_history``) through ``capture_*``;
 the runner opens the capture with ``open_capture`` before it starts the scenario.
 """
@@ -30,13 +30,13 @@ Flow = Literal["dispatch", "websocket", "script"]
 
 # -- Shared scenario values --
 
-# Maestro requires UUIDs for the organization, the workspace and each agent, so both modes
+# Dooers Threads requires UUIDs for the organization, the workspace and each agent, so both modes
 # use the same UUIDs (the platform ids are UUIDs too). User ids and caller thread keys are
-# free strings in Maestro and stay readable.
+# free strings in Dooers Threads and stay readable.
 AGENT_ID = "33333333-3333-4333-8333-333333333333"
 OTHER_AGENT_ID = "44444444-4444-4444-8444-444444444444"
 #: The example agent passes its own readable id (``send.run_start(agent_id="dooers-assistant")``): production's
-#: ``Run.agent_id`` is free text, so Maestro keeps the text as the handler wrote it.
+#: ``Run.agent_id`` is free text, so Dooers Threads keeps the text as the handler wrote it.
 AGENT_LABEL = "dooers-assistant"
 ORG_ID = "11111111-1111-4111-8111-111111111111"
 WORKSPACE_ID = "22222222-2222-4222-8222-222222222222"
@@ -54,7 +54,7 @@ WHATSAPP_OUTBOUND_ID = "wamid.out.1"
 PUBLIC_CHAT_LINK_ID = "55555555-5555-4555-8555-555555555555"
 
 # Non-default organization and workspace roles, so a mode that loses Core's roles shows the difference.
-# ``system_role`` is ``"user"``: Core's handshake always gives it (Maestro's connection context too).
+# ``system_role`` is ``"user"``: Core's handshake always gives it (Dooers Threads' connection context too).
 USER = User(
     user_id="user-1",
     user_name="Ana Souza",
@@ -134,7 +134,7 @@ class ScenarioInput:
     channel: str = "dooers-platform"
     channel_meta: Mapping[str, Any] | None = None
     queues: tuple[WorkspaceQueueCatalog, ...] = ()
-    #: Maestro mode: people Core knows besides ``user`` (what its connection context says about a
+    #: Dooers Threads mode: people Core knows besides ``user`` (what its connection context says about a
     #: person the handler adds to the thread); production gets them from the handler's own ``User``.
     core_people: tuple[User, ...] = ()
     #: ``websocket`` flow: public chat handshake through the fake core.
@@ -148,7 +148,7 @@ class ScenarioInput:
     #: Extra observables in ``ParityResult.outputs``: ``"threads"``, ``"runs"``.
     observe: frozenset[str] = frozenset()
     #: Files that media URLs serve (URL -> (bytes, Content-Type)); any other URL is offline.
-    #: Production never downloads an agent's media URL; in Maestro mode the SDK downloads it and
+    #: Production never downloads an agent's media URL; in Dooers Threads mode the SDK downloads it and
     #: uploads the file (an offline URL gives a ``media_link``).
     media: Mapping[str, tuple[bytes, str]] = field(default_factory=dict)
 
@@ -167,8 +167,8 @@ class ParityResult:
     histories: dict[str, list[dict]]
     #: Return values of ``AgentServer`` calls and extra observables (threads, runs, acks).
     outputs: dict[str, Any] = field(default_factory=dict)
-    #: Maestro runs only: how each delivery ended (``status``, ``state``, ``reason_code``), in
-    #: order. Not compared, because the legacy path has no delivery; the Maestro tests check it.
+    #: Dooers Threads runs only: how each delivery ended (``status``, ``state``, ``reason_code``), in
+    #: order. Not compared, because the legacy path has no delivery; the Dooers Threads tests check it.
     deliveries: list[dict[str, Any]] = field(default_factory=list, compare=False)
 
 
@@ -202,7 +202,7 @@ def current_capture() -> Capture:
 
 
 def snapshot_incoming(on: Any) -> dict[str, Any]:
-    """Everything a handler can read from ``AgentIncoming`` (``context.maestro`` excluded)."""
+    """Everything a handler can read from ``AgentIncoming`` (``context.dooers_threads`` excluded)."""
     from dooers.tools.rag.runtime import current_execution_context
 
     ctx = on.context
@@ -248,8 +248,8 @@ async def capture_histories(memory: Any) -> None:
 
 #: Where ``capture_raw_history`` stores what the handler read: a key of ``ParityResult.histories`` that no format uses.
 RAW_HISTORY = "raw"
-#: Left out of a raw capture. ``id``: inside a delivery Maestro names the events it stored; the SDK id of a message the SDK
-#: published (``client_event_id``) is applied only on the reads outside one (``MaestroAgentPersistence._expose``).
+#: Left out of a raw capture. ``id``: inside a delivery Dooers Threads names the events it stored; the SDK id of a message the SDK
+#: published (``client_event_id``) is applied only on the reads outside one (``DooersThreadsAgentPersistence._expose``).
 #: ``thread_id`` stays: the handler sees the caller's key in both (``Public.ContextThread.external_key``); ``normalize``
 #: still masks its value, so the scenarios that care about the value compare it with ``capture_thread_ids``.
 _RAW_ID_FIELDS = ("id",)

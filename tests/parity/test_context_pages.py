@@ -1,4 +1,4 @@
-"""The context pages FakeMaestro serves: Maestro's forward and backward modes (``context_pages.py``)."""
+"""The context pages FakeDooersThreads serves: Dooers Threads' forward and backward modes (``context_pages.py``)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from tests.parity.context_pages import ContextGap, CursorInvalid, serve_context
-from tests.parity.fake_maestro import FakeMaestro, shared_contracts
+from tests.parity.fake_dooers_threads import FakeDooersThreads, shared_contracts
 from tests.parity.model import USER
 
 BASE = "ctx.delivery"
@@ -104,8 +104,8 @@ def _full(items: list[dict[str, Any]], next_cursor: str | None, has_more: bool) 
     return {"history": {"items": items, "next_cursor": next_cursor, "has_more": has_more}}
 
 
-async def _context_request(fake: FakeMaestro, delivery, **params: Any) -> httpx.Response:
-    headers = {"Authorization": f"Bearer {fake.core_token}", "Maestro-Execution-Capability": delivery.capability}
+async def _context_request(fake: FakeDooersThreads, delivery, **params: Any) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {fake.core_token}", "Dooers-Threads-Execution-Capability": delivery.capability}
     with fake.serving() as _:
         async with httpx.AsyncClient() as client:
             return await client.get(
@@ -113,8 +113,8 @@ async def _context_request(fake: FakeMaestro, delivery, **params: Any) -> httpx.
             )
 
 
-async def test_fake_maestro_serves_the_context_both_ways_over_http():
-    fake = FakeMaestro()
+async def test_fake_dooers_threads_serves_the_context_both_ways_over_http():
+    fake = FakeDooersThreads()
     thread_id = fake.create_thread(USER, title=None)
     for number in range(1, 8):
         trigger = fake.publish(thread_id, USER, [{"type": "text", "text": f"m{number}"}], client_event_id=f"c{number}")

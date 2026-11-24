@@ -1,0 +1,395 @@
+{
+  "bundle_manifest": "docs/contracts/generated/v1/bundle-manifest.json",
+  "bundle_manifest_sha256": "a30d3ba2fe7d14b08b3b672293697a0bab9044c6b0f254e460e15dd975be0dc4",
+  "compatibility": {
+    "breaking_change": "new explicit contract version and coordinated update of every affected producer/consumer; do not change a pinned artifact in place",
+    "capabilities": "presence of a schema is not availability; incomplete domains remain disabled",
+    "json_schema": "2020-12",
+    "legacy_modes": "unchanged; no automatic migration or fallback; Dooers Threads opt-in only",
+    "node_tested": "24.10.0",
+    "package_release_policy_task": "E00-09",
+    "publisher_validation": "strict",
+    "python_tested": "3.13.9",
+    "reader_additive_fields": "optional unknown response fields tolerated by consumer adapter; unknown events are generic and cannot activate capabilities or agents",
+    "status": "local_baseline_not_registry_release",
+    "zod": "4.4.3"
+  },
+  "consumption": {
+    "acquisition": "node scripts/contracts-manifest.mjs export NEW_DIRECTORY",
+    "pin": "consumer stores the externally reviewed SHA-256 of docs/contracts/manifest.json and source_revision; never derive expected hash from the newly received artifact",
+    "python": {
+      "entrypoint": "docs/contracts/generated/v1/python/validate.py",
+      "lock": "docs/contracts/generated/v1/python/requirements.lock",
+      "mode": "portable conformity validator; runtime SDK adapters remain implementation work"
+    },
+    "trust": "hashes detect drift/corruption; local approved checkout establishes provenance; future release/signature and registry work belongs to E14",
+    "typescript": {
+      "browser": "import public.ts/common.ts only; do not re-export delivery.ts, which uses node:crypto; browser identity projection comes from SDK public adapters",
+      "build": "compile the copied modules using the consumer TypeScript build, then import only its local compiled output",
+      "entrypoints": {
+        "delivery": "docs/contracts/v1/delivery.ts",
+        "identity": "docs/contracts/v1/identity.ts",
+        "public": "docs/contracts/v1/public.ts"
+      },
+      "format": "verbatim vendored TypeScript source; no npm package or compiled artifact supplied",
+      "runtime_dependency": {
+        "zod": "4.4.3"
+      },
+      "shared_source": "docs/contracts/v1/common.ts"
+    },
+    "verification": "node TRUSTED_CHECKOUT/scripts/contracts-manifest.mjs verify DIRECTORY EXPECTED_MANIFEST_SHA256; never execute an unverified candidate verifier"
+  },
+  "distribution": "local-source-and-bundle",
+  "documentation": [
+    "docs/contracts/README.md",
+    "docs/contracts/identity.md",
+    "docs/contracts/delivery.md",
+    "docs/contratos-handoff.md"
+  ],
+  "families": [
+    {
+      "catalog": "docs/contracts/catalog-public.json",
+      "consumers": [
+        "dooers-agents-client",
+        "dooers-agents-server",
+        "dooers-app-web",
+        "dooers-service-agent"
+      ],
+      "contract_task": "E00-02",
+      "fixtures": [
+        "docs/contracts/fixtures/v1/public.json",
+        "docs/contracts/fixtures/v1/public-publication.json"
+      ],
+      "id": "public",
+      "namespace": "Public",
+      "producers": ["dooers-service-threads"],
+      "sources": ["docs/contracts/v1/common.ts", "docs/contracts/v1/public.ts"],
+      "validation": {
+        "fixtures": {
+          "invalid": 275,
+          "total": 578,
+          "valid": 303
+        },
+        "schemas": 154
+      }
+    },
+    {
+      "catalog": "docs/contracts/catalog-identity.json",
+      "consumers": [
+        "dooers-service-threads",
+        "dooers-agents-client",
+        "dooers-agents-server",
+        "dooers-app-web",
+        "dooers-service-agent"
+      ],
+      "contract_task": "E00-03",
+      "fixtures": ["docs/contracts/fixtures/v1/identity.json"],
+      "id": "identity",
+      "namespace": "Identity",
+      "producers": ["dooers-service-core"],
+      "sources": ["docs/contracts/v1/common.ts", "docs/contracts/v1/identity.ts"],
+      "validation": {
+        "fixtures": {
+          "invalid": 214,
+          "total": 303,
+          "valid": 89
+        },
+        "schemas": 22
+      }
+    },
+    {
+      "catalog": "docs/contracts/catalog-delivery.json",
+      "consumers": ["dooers-service-threads", "dooers-agents-server", "dooers-service-agent"],
+      "contract_task": "E00-04",
+      "fixtures": ["docs/contracts/fixtures/v1/delivery.json"],
+      "id": "delivery",
+      "namespace": "Delivery",
+      "producers": ["dooers-service-threads", "dooers-agents-server"],
+      "sources": [
+        "docs/contracts/v1/common.ts",
+        "docs/contracts/v1/public.ts",
+        "docs/contracts/v1/identity.ts",
+        "docs/contracts/v1/delivery.ts"
+      ],
+      "validation": {
+        "fixtures": {
+          "invalid": 127,
+          "total": 207,
+          "valid": 80
+        },
+        "schemas": 18
+      }
+    }
+  ],
+  "files": {
+    "docs/contracts/README.md": "345a01ec5533fa0180ec9b801087f88880eaaea72ad3dfe1ca179adab8d04ab6",
+    "docs/contracts/catalog-delivery.json": "3e70b26b46f5fa9c6dbf9c89e07a5331a681e556d870b6d52164d0b59290ccfc",
+    "docs/contracts/catalog-identity.json": "0e74d977c6b7686400a10c13e126c4a739cc834e27c98474779172891b772026",
+    "docs/contracts/catalog-public.json": "3966193567640dec3daa5fa1e49751ca0db479cccf2f1de047a55fb020b6e62d",
+    "docs/contracts/delivery.md": "f67e6408835d72c88c90c2b269eded96a922f6950a17590406ebecbba2e3a836",
+    "docs/contracts/fixtures/v1/delivery.json": "84a00f9f25cfa220c8d9ee8b41011936dd719526362377d2c6386dc9df6685e6",
+    "docs/contracts/fixtures/v1/identity.json": "8cb7a6ad93686bebc45a1151527b9663df60ad472f68f88982b26c771f6709bf",
+    "docs/contracts/fixtures/v1/public-publication.json": "9d5655db25647342fdd2d15051df7c201778784a30a92ff7bc691809d644d9c1",
+    "docs/contracts/fixtures/v1/public.json": "5b39fb69389a380d5a52d62e92975549f768ed33dd3ca86879e530e0d91c7fb2",
+    "docs/contracts/generated/v1/authorization-rules.json": "50fa784198dae865afc444514e00229f4d7c470d9b1bf4c2606be21aaa2ae5ab",
+    "docs/contracts/generated/v1/bundle-manifest.json": "a30d3ba2fe7d14b08b3b672293697a0bab9044c6b0f254e460e15dd975be0dc4",
+    "docs/contracts/generated/v1/catalog-delivery.json": "cf689ecd6fb0c476d98f190d61ee91080d33613d4e07dc9c43099ab76ca0f54a",
+    "docs/contracts/generated/v1/catalog-identity.json": "e2b01fd69939c25f577b0603c07a34158306a2d053eade42bb3fa94921294ac7",
+    "docs/contracts/generated/v1/catalog-public.json": "ab5731d07220d4600c98fa5d5a25a37aedfae070e3c40f40918818db98186827",
+    "docs/contracts/generated/v1/delivery-rules.json": "f451f76a6492b98a0b68c83f25b143dbccf019557f01f6039c4e602864ed4d69",
+    "docs/contracts/generated/v1/fixtures.json": "78ccb7b756cc0f2e8699c7519db7521288a7c39ec00d0f7084790d789335452d",
+    "docs/contracts/generated/v1/openapi/core.json": "6ea9ba7da447493e3c8594001e5d2b7bdbb96364ad3a66df2737a1fd81591259",
+    "docs/contracts/generated/v1/openapi/internal.json": "53e6aa190bf8fce2c596c70a84a30c09b67f0a171c920cf2860bbbbb0884db8a",
+    "docs/contracts/generated/v1/openapi/public.json": "1e5a3e38b3b4839ee3308173521872834a142e55639a58746b692b03e4b2a65a",
+    "docs/contracts/generated/v1/openapi/runtime.json": "420d56f1cc4331bd5d0b533f12aa162c4533b8df86aba09a385a70c000342f4e",
+    "docs/contracts/generated/v1/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
+    "docs/contracts/generated/v1/python/requirements.lock": "004045153477d0ad4a6e8b1346535278f17e76446d00598ce79a9a659e828f23",
+    "docs/contracts/generated/v1/python/semantics.py": "97c91d7cb834a0207f45c92ce8794e1cceb0297ab39fcbcfa602bb9dee10f29b",
+    "docs/contracts/generated/v1/python/validate.py": "252247ea55fd4d17c46176ebae3620d352832c016f918f8e3b489f34265a3e59",
+    "docs/contracts/generated/v1/schemas.json": "ac77d920976e8eec9e36948068dbe97fd5ef05566a3b55f348a13734200366c9",
+    "docs/contracts/harness/README.md": "62a31491b53e23ed93ce54daa55137edbe985a615567dc2ae7b6886d25cb4c5d",
+    "docs/contracts/harness/boundary-fixtures.json": "0fa1e07bfe7b29248954f4e2c587e5109002f51403169d85eb5c0a9043d2ff82",
+    "docs/contracts/harness/cli.ts": "f72e4659989011d7f9b06464d56d341f575895d38334e56685a8e32051f57d0e",
+    "docs/contracts/harness/generate.ts": "6ab9a7a93db47a1709ce538f152bf8926c0fdc0698c20459c0417c81d8a0c737",
+    "docs/contracts/harness/openapi.ts": "dc58703319f46d83e1636daf08c17b1a45f26bf8592d80aac982af82716febbc",
+    "docs/contracts/harness/python/requirements.in": "d72cfe90574d1a1ac97b91263b9b6c9ed97cbcfc9b0f10fa56a09ffbd46218f7",
+    "docs/contracts/harness/python/requirements.lock": "004045153477d0ad4a6e8b1346535278f17e76446d00598ce79a9a659e828f23",
+    "docs/contracts/harness/python/semantics.py": "97c91d7cb834a0207f45c92ce8794e1cceb0297ab39fcbcfa602bb9dee10f29b",
+    "docs/contracts/harness/python/test_validate.py": "7d8b0dc1e80f4473db0cac3f5e40e7fa1f50a11b3e311a1697fc5972e6875b1b",
+    "docs/contracts/harness/python/validate.py": "252247ea55fd4d17c46176ebae3620d352832c016f918f8e3b489f34265a3e59",
+    "docs/contracts/harness/registry.ts": "8427c0a70bdd53bffacd5648650ea2ab014de7261249ab8ab27cd54b1418ec18",
+    "docs/contracts/identity.md": "5e9a533e219cdb691a82c02dc1e7dea4903733110e80960052a39240417591bf",
+    "docs/contracts/v1/common.ts": "a527f148c8493aeee6127ee0fae4227f0abdd7e041a4c8a5e511b5d080f23dca",
+    "docs/contracts/v1/delivery.ts": "73cf50803c09a5d9f13ced10e1aac51e02544652556f4d569829f1ea4483a129",
+    "docs/contracts/v1/identity.ts": "43660517d9e9649067a089938e2a02529bc12e399b63c549d02c1e0e4e4ba954",
+    "docs/contracts/v1/public.ts": "e5722c289247bee827fc90357a8c3119ae3abe8eebac5cc9af2d7d767af2bed4",
+    "docs/contratos-handoff.md": "0d0ae077ac9e5f6069c4760591e2672fe34b9e445a7d23e950df2c1d7310f089",
+    "scripts/contracts-manifest.mjs": "8ff0bf489c61cd7e4d25b822513305adb2d451ed365268cac4d23ac81df382e0"
+  },
+  "gates": [
+    {
+      "acceptance_test": "ACK perdido não duplica eventos/deliveries; restart recupera backlog; todo gateway recupera por watermark; DLQ replay auditável",
+      "affected_tasks": ["E04-04", "E04-05", "E04-08"],
+      "blocks_entire_foundation": false,
+      "can_continue": [
+        "outbox, ports e consumidor idempotente locais",
+        "NATS local selecionado no ADR 0002"
+      ],
+      "decision_tasks": ["E00-05"],
+      "evidence_tasks": ["E13-06", "E13-10"],
+      "id": "G01",
+      "missing": [
+        "adaptador JetStream real",
+        "publicação/ACK perdido, reinício, DLQ e fan-out em múltiplos gateways",
+        "região/identidade/custo de produção ainda indefinidos"
+      ],
+      "status": "open"
+    },
+    {
+      "acceptance_test": "runtime acionado sem browser, restart recuperado e prazos medidos no ambiente efetivamente escolhido",
+      "affected_tasks": ["E05-03", "E05-06", "E05-10"],
+      "blocks_entire_foundation": false,
+      "can_continue": [
+        "contrato HTTP RS256 local proposto",
+        "agente de exemplo e worker locais sem navegador"
+      ],
+      "decision_tasks": ["E00-06"],
+      "evidence_tasks": ["E13-08"],
+      "id": "G02",
+      "missing": [
+        "orçamento e endereços do runtime local",
+        "provedor externo, IAM, duração HTTP, cold start e escala a zero",
+        "assinatura real e rotação de dispatch/capability"
+      ],
+      "status": "open"
+    },
+    {
+      "acceptance_test": "aprovação versionada da política e testes reais de tenant, lineage, supervisão auditada e revogação",
+      "affected_tasks": ["E02-02", "E02-07", "E02-08"],
+      "blocks_entire_foundation": false,
+      "can_continue": ["contratos, matriz e negativos", "implementação deny-by-default sob flag"],
+      "decision_tasks": ["E00-07"],
+      "evidence_tasks": ["E13-04", "E13-07"],
+      "id": "G03",
+      "missing": [
+        "confirmação funcional das políticas pessoais/workspace, histórico integral e supervisão",
+        "matriz de elegibilidade e revogação aprovada"
+      ],
+      "status": "open"
+    },
+    {
+      "acceptance_test": "cenários UC1–UC7 e estados UI aceitos com jornada integrada",
+      "affected_tasks": ["E07-01", "E07-09", "E05-05"],
+      "blocks_entire_foundation": false,
+      "can_continue": ["fluxos isolados sob flag", "nenhuma capability incompleta anunciada"],
+      "decision_tasks": ["E00-07"],
+      "evidence_tasks": ["E13-11"],
+      "id": "G04",
+      "missing": [
+        "aceite de colaboração, menções, lifecycle e capabilities iniciais",
+        "capabilities opcionais forms/tool approval/conteúdo ainda não implementadas"
+      ],
+      "status": "open"
+    },
+    {
+      "acceptance_test": "carga e justiça por tenant medidas; backup/restore e exclusão completos; perfil registrado no release",
+      "affected_tasks": ["E13-02", "E13-09", "E13-10", "E14-06"],
+      "blocks_entire_foundation": false,
+      "can_continue": [
+        "instrumentação e parâmetros locais",
+        "ensaios locais sem compromisso de SLO de produção"
+      ],
+      "decision_tasks": ["E00-08"],
+      "evidence_tasks": ["E13-09", "E13-10"],
+      "id": "G05",
+      "missing": [
+        "storage privado e região",
+        "volume, payload, rate, pool, quotas, retenção, RPO/RTO e orçamento",
+        "medições reais de carga/restore/exclusão"
+      ],
+      "status": "open"
+    },
+    {
+      "acceptance_test": "uso real não duplica em retransmissão; falha financeira termina estruturada; pacotes construídos/instalados e publicados verificados em suas tarefas",
+      "affected_tasks": ["E10-07", "E10-08", "E10-09", "E14-01", "E14-03", "E14-04", "E14-07"],
+      "blocks_entire_foundation": false,
+      "can_continue": [
+        "correlação de uso e ensaios locais",
+        "matriz de fonte/lock sem afirmar publicação"
+      ],
+      "decision_tasks": ["E00-09"],
+      "evidence_tasks": ["E10-10", "E13-11", "E14-03", "E14-04"],
+      "id": "G06",
+      "missing": [
+        "política de créditos, custos e autoridade de ledger",
+        "versões candidatas dos SDKs ainda não fixadas/publicadas",
+        "matriz de artefatos realmente instalados"
+      ],
+      "status": "open"
+    }
+  ],
+  "git_commit": null,
+  "manifest_version": 1,
+  "milestones": [
+    {
+      "condition": "contract acquisition and fixtures only; task dependencies and real authorization remain mandatory",
+      "contract_tasks": ["E00-03", "E01-06", "E00-10"],
+      "id": "identity_contract_ready",
+      "unblocks_tasks": ["E02-01", "E02-04", "E02-05", "E02-08", "E02-09"]
+    },
+    {
+      "condition": "parallel transport/models work behind flags; does not activate unavailable domains",
+      "contract_tasks": ["E00-02", "E01-06", "E00-10"],
+      "id": "public_contract_ready",
+      "unblocks_tasks": ["E04-01", "E04-09", "E07-01"]
+    },
+    {
+      "condition": "same dispatch/callback definitions; real crypto, durable journal, lease and runtime proofs remain required",
+      "contract_tasks": ["E00-04", "E01-06", "E00-10"],
+      "id": "delivery_contract_ready",
+      "unblocks_tasks": ["E00-06", "E05-01", "E05-06"]
+    }
+  ],
+  "observed_dependencies_at_baseline": [
+    {
+      "consumer": "dooers-app-web",
+      "dooers_threads_compatible": false,
+      "evidence_kind": "lock_and_installed_metadata",
+      "package": "dooers-agents-client",
+      "version": "0.17.1"
+    },
+    {
+      "consumer": "dooers-service-agent",
+      "dooers_threads_compatible": false,
+      "evidence_kind": "lock_and_original_virtualenv_metadata",
+      "package": "dooers-agents-server",
+      "version": "0.15.0"
+    }
+  ],
+  "origin": {
+    "baseline_task": "E00-01",
+    "execution_target": "local",
+    "external_provider": "undefined",
+    "git_state_at_handoff": "initialized_without_commit",
+    "publication": "none",
+    "repository": "dooers-service-threads"
+  },
+  "protocol_version": 1,
+  "repositories": [
+    {
+      "baseline_head": "17893b8d0cab247eaf55df23500fb017564b6a90",
+      "dooers_threads_candidate_package_version": null,
+      "families": ["identity"],
+      "integration_status": "not_yet_integrated",
+      "integration_tasks": ["E02-01", "E02-04", "E02-05", "E02-08", "E02-10"],
+      "name": "dooers-service-core",
+      "pull_requests": [],
+      "source_package_version_at_baseline": null
+    },
+    {
+      "baseline_head": "29437858d8f5cf7f9c7844663ce40bbb033f769b",
+      "dooers_threads_candidate_package_version": null,
+      "families": ["public", "identity"],
+      "integration_status": "not_yet_integrated",
+      "integration_tasks": ["E07-01", "E07-02", "E07-09"],
+      "name": "dooers-app-web",
+      "pull_requests": [],
+      "source_package_version_at_baseline": "0.1.0"
+    },
+    {
+      "baseline_head": "d6ee115200253583d6b9ae37e0134e31b42941db",
+      "dooers_threads_candidate_package_version": null,
+      "families": ["public", "identity"],
+      "integration_status": "not_yet_integrated",
+      "integration_tasks": ["E04-01", "E04-09", "E04-10", "E04-11"],
+      "name": "dooers-agents-client",
+      "pull_requests": [],
+      "source_package_version_at_baseline": "0.17.1"
+    },
+    {
+      "baseline_head": "2dd57651cad39011ba1aacb78a36e2954cb210a4",
+      "dooers_threads_candidate_package_version": null,
+      "families": ["public", "identity", "delivery"],
+      "integration_status": "not_yet_integrated",
+      "integration_tasks": ["E05-01", "E05-06", "E05-08", "E05-12"],
+      "name": "dooers-agents-server",
+      "pull_requests": [],
+      "source_package_version_at_baseline": "0.23.4"
+    },
+    {
+      "baseline_head": "d1e9b98e05046cf52c1b3685508ad239e1e0e14d",
+      "dooers_threads_candidate_package_version": null,
+      "families": ["public", "identity", "delivery"],
+      "integration_status": "not_yet_integrated",
+      "integration_tasks": ["E05-10", "E05-11", "E13-11"],
+      "name": "dooers-service-agent",
+      "pull_requests": [],
+      "source_package_version_at_baseline": "0.1.0"
+    },
+    {
+      "baseline_head": null,
+      "dooers_threads_candidate_package_version": null,
+      "families": ["public", "identity", "delivery"],
+      "integration_status": "canonical_source_and_contract_harness_only",
+      "integration_tasks": ["E02-09", "E04-01", "E05-01"],
+      "name": "dooers-service-threads",
+      "pull_requests": [],
+      "source_package_version_at_baseline": null
+    }
+  ],
+  "required_extensions": [
+    "x-dooers-threads-semantic",
+    "x-dooers-threads-string-length",
+    "x-dooers-threads-url"
+  ],
+  "schema_version": 1,
+  "source_revision": "sha256:b5a56f52148f047f94d1e8f10b2b144ed47e7e6430bea22d7bec9d85257c9b63",
+  "validation": {
+    "fixtures": {
+      "invalid": 630,
+      "total": 1114,
+      "valid": 484
+    },
+    "schemas": 194
+  }
+}

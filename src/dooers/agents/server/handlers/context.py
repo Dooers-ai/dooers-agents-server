@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dooers.agents.server.maestro.context import MaestroExecutionContext
+    from dooers.agents.server.dooers_threads.context import DooersThreadsExecutionContext
 
 import copy
 from dataclasses import dataclass, field, fields
@@ -62,17 +62,17 @@ class AgentContext:
         return self.chat_context.timezone if self.chat_context else None
 
     # Not a dataclass field: in legacy mode AgentContext keeps production's fields, __init__,
-    # repr, asdict, equality, copy and pickle. Maestro mode moves the instance to a subclass
-    # with the same fields that carries the metadata (``_maestro_context_class``).
+    # repr, asdict, equality, copy and pickle. Dooers Threads mode moves the instance to a subclass
+    # with the same fields that carries the metadata (``_dooers_threads_context_class``).
     @property
-    def maestro(self) -> "MaestroExecutionContext | None":
-        """Maestro execution metadata; ``None`` in legacy mode."""
-        return getattr(type(self), "_maestro_metadata", None)
+    def dooers_threads(self) -> "DooersThreadsExecutionContext | None":
+        """Dooers Threads execution metadata; ``None`` in legacy mode."""
+        return getattr(type(self), "_dooers_threads_metadata", None)
 
-    @maestro.setter
-    def maestro(self, value: "MaestroExecutionContext | None") -> None:
+    @dooers_threads.setter
+    def dooers_threads(self, value: "DooersThreadsExecutionContext | None") -> None:
         base = _production_class(type(self))
-        self.__class__ = base if value is None else _maestro_context_class(base, value)
+        self.__class__ = base if value is None else _dooers_threads_context_class(base, value)
 
     def members_for_queue(self, slug: str | None = None) -> list[WorkspaceQueueMember]:
         """Members of ``slug``, or of the current thread queue when omitted."""
@@ -86,20 +86,20 @@ class AgentContext:
 
 
 def _production_class(cls: type) -> type:
-    """The class before Maestro metadata was attached (``AgentContext`` or a subclass of it)."""
-    while "_maestro_metadata" in vars(cls):
+    """The class before Dooers Threads metadata was attached (``AgentContext`` or a subclass of it)."""
+    while "_dooers_threads_metadata" in vars(cls):
         cls = cls.__base__
     return cls
 
 
 def _production_instance(cls: type, state: dict) -> "AgentContext":
-    """Unpickle a Maestro context as the production class, with the same field values."""
+    """Unpickle a Dooers Threads context as the production class, with the same field values."""
     instance = cls.__new__(cls)
     instance.__dict__.update(state)
     return instance
 
 
-def _maestro_context_class(base: type, metadata: "MaestroExecutionContext") -> type:
+def _dooers_threads_context_class(base: type, metadata: "DooersThreadsExecutionContext") -> type:
     """A subclass of ``base`` for one execution, with the metadata on the class, not on the instance.
 
     The instance keeps only the production fields (``vars``, ``asdict``, ``repr`` and the
@@ -136,7 +136,7 @@ def _maestro_context_class(base: type, metadata: "MaestroExecutionContext") -> t
             "__module__": base.__module__,
             "__qualname__": base.__qualname__,
             "__doc__": base.__doc__,
-            "_maestro_metadata": metadata,
+            "_dooers_threads_metadata": metadata,
             "__copy__": __copy__,
             "__deepcopy__": __deepcopy__,
             "__reduce_ex__": __reduce_ex__,

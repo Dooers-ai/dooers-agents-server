@@ -34,7 +34,7 @@ class HandlerError(Exception):
 
 
 class ThreadManagementModeError(DispatchError):
-    """Entrada/histórico legado indisponível neste servidor configurado Maestro."""
+    """Entrada/histórico legado indisponível neste servidor configurado Dooers Threads."""
 
 
 class TaskRunRejected(Exception):

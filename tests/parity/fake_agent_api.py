@@ -1,13 +1,13 @@
-"""A loopback Maestro agent API (``/api/v1/agent/*``) for the SDK's ``MaestroAgentApi`` tests.
+"""A loopback Dooers Threads agent API (``/api/v1/agent/*``) for the SDK's ``DooersThreadsAgentApi`` tests.
 
 A real HTTP server (aiohttp, ``127.0.0.1``, ephemeral port) that plays the routes of
-``dooers-service-maestro/src/modules/agent-api/routes.ts``: same paths, methods, headers, query
+``dooers-service-threads/src/modules/agent-api/routes.ts``: same paths, methods, headers, query
 filters, status codes and ``Public.Error`` bodies. It keeps one organization/scope and one agent
-in memory, and checks like Maestro does:
+in memory, and checks like Dooers Threads does:
 
 - every request (query, JSON body, multipart metadata, ``Idempotency-Key``) against the vendored
   contract, before it changes anything; a request the contract refuses gets ``INVALID_REQUEST``;
-- every response against the vendored contract (``MaestroContracts.validate``), so a bug of the fake
+- every response against the vendored contract (``DooersThreadsContracts.validate``), so a bug of the fake
   fails loudly (a ``500`` that ``failures`` records);
 - the bearer: a Core agent token with the ``threads:manage`` scope (``agent-api/auth.ts``).
 
@@ -16,7 +16,7 @@ sequence and ``client_event_id``, participants, runs, uploaded files and channel
 ``idempotent`` commands keep a receipt per ``Idempotency-Key``: the same key with the same request
 replays the stored answer (200); another request with the key is ``IDEMPOTENCY_CONFLICT``.
 
-Like Maestro, ``GET /agent/events/:id`` finds any event type by ``event_id`` (or an agent publication by its
+Like Dooers Threads, ``GET /agent/events/:id`` finds any event type by ``event_id`` (or an agent publication by its
 ``client_event_id``) and ``DELETE .../events/:eventId`` removes only content events (``removableTypes`` of
 ``events.ts``); a query key a route does not know is ``INVALID_REQUEST``; an error with a wait carries
 ``Retry-After``; the thread list defaults to ``order=desc`` (last activity, then id).
@@ -48,8 +48,8 @@ from aiohttp import web
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from dooers.agents.server.maestro import MaestroConfig, MaestroInstanceCredential
-from dooers.agents.server.protocol.maestro import default_contracts, verify_contract_bundle
+from dooers.agents.server.dooers_threads import DooersThreadsConfig, DooersThreadsInstanceCredential
+from dooers.agents.server.protocol.dooers_threads import default_contracts, verify_contract_bundle
 
 PREFIX = "/api/v1"
 ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001"
@@ -73,7 +73,7 @@ _ERRORS = {
 
 
 def _is_core_principal(value: str) -> bool:
-    """``opaquePrincipalSchema`` of the Maestro contract (``common.ts``): 1 to 256 characters, no control character."""
+    """``opaquePrincipalSchema`` of the Dooers Threads contract (``common.ts``): 1 to 256 characters, no control character."""
     return 1 <= len(value) <= 256 and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
 
 
@@ -131,10 +131,10 @@ class _Thread:
 
 
 class FakeAgentApi:
-    """One agent of one scope against an in-memory Maestro."""
+    """One agent of one scope against an in-memory Dooers Threads."""
 
     def __init__(self, *, workspace_id: str | None = None) -> None:
-        #: Types this fake refuses with VALIDATION_FAILED (a test sets it; the Maestro itself takes any type).
+        #: Types this fake refuses with VALIDATION_FAILED (a test sets it; the Dooers Threads itself takes any type).
         self.refused_mime_types: set[str] = set()
         self.contracts = default_contracts()
         self.workspace_id = workspace_id
@@ -157,7 +157,7 @@ class FakeAgentApi:
         #: Test hook: ``(thread_id, trigger_event, delivery_id)`` called when a publication with ``trigger`` creates its delivery.
         self.on_trigger: Callable[[str, dict[str, Any], str], None] | None = None
         #: Test hook: called with ``(thread_id, event)`` for each ``channel_delivery.updated`` this API stores, so the harness
-        #: can mirror it into ``FakeMaestro``, which serves the delivery context (real Maestro keeps one thread).
+        #: can mirror it into ``FakeDooersThreads``, which serves the delivery context (real Dooers Threads keeps one thread).
         self.on_channel_delivery: Callable[[str, dict[str, Any]], None] | None = None
         #: The deliveries the publications with ``trigger`` created: delivery id -> ``{thread_id, trigger_event_id}``.
         self.agent_deliveries: dict[str, dict[str, str]] = {}
@@ -189,11 +189,11 @@ class FakeAgentApi:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}{PREFIX}"
 
-    def config(self, **overrides: Any) -> MaestroConfig:
+    def config(self, **overrides: Any) -> DooersThreadsConfig:
         """The SDK configuration bound to this server (the callback base URL is the API prefix)."""
         public = self._key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         values: dict[str, Any] = {
-            "runtime_endpoint": "http://127.0.0.1:9000/api/dev/agent/maestro/deliveries",
+            "runtime_endpoint": "http://127.0.0.1:9000/api/dev/agent/dooers-threads/deliveries",
             "callback_base_url": self.base_url,
             "core_base_url": "http://127.0.0.1:8788/api/v1",
             "organization_id": self.organization_id,
@@ -205,9 +205,9 @@ class FakeAgentApi:
             "allow_local_http": True,
         }
         values.update(overrides)
-        return MaestroConfig(**values)
+        return DooersThreadsConfig(**values)
 
-    async def credential(self, request: Any) -> MaestroInstanceCredential:
+    async def credential(self, request: Any) -> DooersThreadsInstanceCredential:
         """The Core agent token exchange: a JWT with the claims of ``Identity.AgentTokenClaims``."""
         now = int(time.time())
         claims = deepcopy(_FIXTURES["identity.claims.agent-instance"])
@@ -222,9 +222,9 @@ class FakeAgentApi:
             jti=str(uuid4()),
             scopes=list(self.token_scopes),
         )
-        header = _b64(json.dumps({"typ": "maestro-access+jwt", "alg": "RS256", "kid": "fixture"}).encode())
+        header = _b64(json.dumps({"typ": "dooers-threads-access+jwt", "alg": "RS256", "kid": "fixture"}).encode())
         token = f"{header}.{_b64(json.dumps(claims).encode())}.{_b64(b'signature')}"
-        return MaestroInstanceCredential(token, claims["exp"])
+        return DooersThreadsInstanceCredential(token, claims["exp"])
 
     # -- helpers --
 
@@ -289,7 +289,7 @@ class FakeAgentApi:
         }
 
     def _core_person(self, principal_id: str) -> dict[str, Any]:
-        """The core's view of a human; one the core does not know has the placeholder name Maestro shows (and no e-mail)."""
+        """The core's view of a human; one the core does not know has the placeholder name Dooers Threads shows (and no e-mail)."""
         known = self.core_people.get(principal_id)
         if known is None:
             return {"display_name": "Humano", "email": None, "identity_ids": []}
@@ -528,7 +528,7 @@ class FakeAgentApi:
             t.external_key == body["external_key"] and not t.deleting for t in self.threads.values()
         )
         if "owner" in body and not key_taken and not _is_core_principal(body["owner"]["principal_id"]):
-            # Maestro (agent-api/threads.ts): an owner that cannot be a core principal is a person the core does not know.
+            # Dooers Threads (agent-api/threads.ts): an owner that cannot be a core principal is a person the core does not know.
             raise _Failure("FORBIDDEN", reason_code="scope_mismatch")
 
         def build() -> tuple[Any, int]:
@@ -575,7 +575,7 @@ class FakeAgentApi:
         if "external_key" in query:
             items = [t for t in items if t.external_key == query["external_key"]]
         if "external_key_sha256" in query:
-            # Maestro's external_key_sha256(external_key): the SHA-256 of the UTF-8 bytes.
+            # Dooers Threads' external_key_sha256(external_key): the SHA-256 of the UTF-8 bytes.
             items = [
                 t
                 for t in items
@@ -739,7 +739,7 @@ class FakeAgentApi:
             metadata["size_bytes"] != len(data)
             or metadata["sha256"] != hashlib.sha256(data).hexdigest()
             or metadata["filename"] != second.filename
-            # The Maestro accepts any type, as production's POST /uploads (attachments sweep, R1).
+            # The Dooers Threads accepts any type, as production's POST /uploads (attachments sweep, R1).
             or metadata["mime_type"] in self.refused_mime_types
         ):
             raise _Failure("VALIDATION_FAILED")

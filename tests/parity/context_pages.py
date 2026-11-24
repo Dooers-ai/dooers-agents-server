@@ -1,6 +1,6 @@
-"""The pages of ``GET /deliveries/:id/context`` as Maestro serves them, forward and backward.
+"""The pages of ``GET /deliveries/:id/context`` as Dooers Threads serves them, forward and backward.
 
-Port of ``context()`` in ``src/modules/executions/callbacks.ts`` (Maestro 5466bde) and of its cursor
+Port of ``context()`` in ``src/modules/executions/callbacks.ts`` (Dooers Threads 5466bde) and of its cursor
 (``context-cursor.ts``), over a list of stored events:
 
 - Forward (default): events after ``after``, ascending, up to the cutoff.
@@ -109,8 +109,8 @@ class ThreadPages:
     ``events`` are the stored events in sequence order, ``participants`` the context participants;
     the context stops at the ``cutoff`` (a sequence; default the last event, which is the trigger).
     ``workspace`` and ``thread`` are the core's workspace data and the thread view at the cutoff that every page
-    carries; without them the pages are those of a Maestro that does not send them yet.
-    ``window()`` is the real ``MaestroContextWindow`` over these pages.
+    carries; without them the pages are those of a Dooers Threads that does not send them yet.
+    ``window()`` is the real ``DooersThreadsContextWindow`` over these pages.
     """
 
     def __init__(
@@ -155,6 +155,6 @@ class ThreadPages:
         self.checks += 1
 
     def window(self, *, page_size: int = 100, max_pages: int = 20):
-        from dooers.agents.server.maestro.window import MaestroContextWindow
+        from dooers.agents.server.dooers_threads.window import DooersThreadsContextWindow
 
-        return MaestroContextWindow(self.fetch, cursor=self.base, check_current=self._check, page_size=page_size, max_pages=max_pages)
+        return DooersThreadsContextWindow(self.fetch, cursor=self.base, check_current=self._check, page_size=page_size, max_pages=max_pages)

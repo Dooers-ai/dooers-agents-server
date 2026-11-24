@@ -357,7 +357,7 @@ _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 
 
 async def _public_chat_thread_ids(on, send, memory, analytics, settings):
-    """The handler of a public chat thread sees a plain id (a UUID), never the Maestro's own ``public:...`` key."""
+    """The handler of a public chat thread sees a plain id (a UUID), never the Dooers Threads' own ``public:...`` key."""
     yield send.run_start()
     await capture_thread_ids(on, memory)
     seen = current_capture().histories[THREAD_IDS]

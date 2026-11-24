@@ -344,7 +344,7 @@ class Router:
         self._ws = ws
         if (
             self._agent_config is not None
-            and self._agent_config.thread_management == "maestro"
+            and self._agent_config.thread_management == "dooers_threads"
             and isinstance(
                 frame,
                 (C2S_ThreadList, C2S_ThreadSearch, C2S_ThreadSubscribe, C2S_ThreadUnsubscribe, C2S_ThreadDelete,
@@ -353,7 +353,7 @@ class Router:
         ):
             await self._send_ack(
                 ws, frame.id, ok=False,
-                error={"code": "THREAD_MANAGEMENT_MISMATCH", "message": "Use the Maestro API for this thread."},
+                error={"code": "THREAD_MANAGEMENT_MISMATCH", "message": "Use the Dooers Threads API for this thread."},
             )
             return
         match frame:

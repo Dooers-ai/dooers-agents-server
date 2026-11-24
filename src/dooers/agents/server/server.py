@@ -57,8 +57,8 @@ from dooers.agents.server.thread_access import ThreadViewGrantStore
 from dooers.agents.server.upload_store import UploadStore
 
 if TYPE_CHECKING:
-    from dooers.agents.server.maestro.agent_api import MaestroAgentApi
-    from dooers.agents.server.maestro.ingress import MaestroIngress
+    from dooers.agents.server.dooers_threads.agent_api import DooersThreadsAgentApi
+    from dooers.agents.server.dooers_threads.ingress import DooersThreadsIngress
 
 logger = logging.getLogger(__name__)
 # Same namespace the Router uses, so handle-loop diagnostics show up in apps that tune `agents`.
@@ -216,19 +216,19 @@ class AgentServer:
         Durable write runs only when creator ``persist_chat_attachments``, ops
         ``store_chat_uploads``, and configured GCS/Azure are all satisfied.
         """
-        maestro = self._config.thread_management == "maestro"
-        if not maestro:
+        dooers_threads = self._config.thread_management == "dooers_threads"
+        if not dooers_threads:
             self._config.require_agent_thread_management()
         aid = (agent_id or "").strip()
         if not aid:
             raise ValueError("agent_id is required")
         if not data:
             raise ValueError("empty file")
-        if maestro:
-            # Maestro mode (plan 5, F11): the file stays in the local store and Maestro is not called here; ``ingest`` and
+        if dooers_threads:
+            # Dooers Threads mode (plan 5, F11): the file stays in the local store and Dooers Threads is not called here; ``ingest`` and
             # ``dispatch`` upload it to the thread. The agent is the one of the token: its id is the instance id.
-            self._maestro_api().check_scope(agent_id=aid)
-            aid = self._config.maestro.instance_agent_id  # type: ignore[union-attr]
+            self._dooers_threads_api().check_scope(agent_id=aid)
+            aid = self._config.dooers_threads.instance_agent_id  # type: ignore[union-attr]
 
         cfg = self._config
         creator_persist = False
@@ -246,7 +246,7 @@ class AgentServer:
                 allowed_raw=getattr(cfg, "allowed_content_types", None),
             )
 
-        if maestro:
+        if dooers_threads:
             ref_id = (await self._ensure_upload_store()).store(data, filename, mime_type)
         else:
             ref_id = await self.upload(data=data, filename=filename, mime_type=mime_type)
@@ -299,7 +299,7 @@ class AgentServer:
         return self._upload_store.store(data, filename, mime_type)
 
     async def _ensure_upload_store(self) -> UploadStore:
-        """The local store of staged files. Maestro mode needs it without the database (``chat_upload``, ``ingest``)."""
+        """The local store of staged files. Dooers Threads mode needs it without the database (``chat_upload``, ``ingest``)."""
         if self._upload_store is None:
             self._upload_store = UploadStore(
                 max_size=self._config.upload_max_size_bytes,
@@ -529,11 +529,11 @@ class AgentServer:
         ``actor="system"`` with a ``trigger`` records the inbound event as platform-originated
         (e.g. a reminder firing) instead of as something the user typed.
         """
-        if self._config.thread_management == "maestro":
-            from dooers.agents.server.maestro.dispatch import dispatch_in_maestro
+        if self._config.thread_management == "dooers_threads":
+            from dooers.agents.server.dooers_threads.dispatch import dispatch_in_dooers_threads
 
-            return await dispatch_in_maestro(
-                self._maestro_ingress(),
+            return await dispatch_in_dooers_threads(
+                self._dooers_threads_ingress(),
                 handler,
                 agent_id,
                 message,
@@ -621,8 +621,8 @@ class AgentServer:
         Returns ``thread_id``.
         """
 
-        if self._config.thread_management == "maestro":
-            published = await self._maestro_ingress().publish(
+        if self._config.thread_management == "dooers_threads":
+            published = await self._dooers_threads_ingress().publish(
                 agent_id=agent_id,
                 message=message,
                 user=user,
@@ -686,55 +686,55 @@ class AgentServer:
             )
         return SqlDatabase(persistence)
 
-    def _maestro_agent_persistence(self) -> Persistence:
-        """``MaestroAgentPersistence`` over the agent API of ``AgentConfig.maestro`` (Maestro mode only).
+    def _dooers_threads_agent_persistence(self) -> Persistence:
+        """``DooersThreadsAgentPersistence`` over the agent API of ``AgentConfig.dooers_threads`` (Dooers Threads mode only).
 
         The database is the local persistence for settings, secrets, analytics and the worker seed: it is
         initialized when one of those is used, never for thread data.
         """
-        from dooers.agents.server.maestro.agent_api import MaestroAgentApi
-        from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
+        from dooers.agents.server.dooers_threads.agent_api import DooersThreadsAgentApi
+        from dooers.agents.server.dooers_threads.agent_persistence import DooersThreadsAgentPersistence
 
-        if self._config.maestro is None:
-            from dooers.agents.server.maestro.config import MaestroConfigurationError
+        if self._config.dooers_threads is None:
+            from dooers.agents.server.dooers_threads.config import DooersThreadsConfigurationError
 
-            raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
-        return MaestroAgentPersistence(
-            MaestroAgentApi(self._config.maestro),
+            raise DooersThreadsConfigurationError("DOOERS_THREADS_CONFIG_REQUIRED")
+        return DooersThreadsAgentPersistence(
+            DooersThreadsAgentApi(self._config.dooers_threads),
             assistant_name=self._config.assistant_name,
             local=self._ensure_initialized,
         )
 
-    def _maestro_api(self) -> MaestroAgentApi:
-        from dooers.agents.server.maestro.agent_api import MaestroAgentApi
+    def _dooers_threads_api(self) -> DooersThreadsAgentApi:
+        from dooers.agents.server.dooers_threads.agent_api import DooersThreadsAgentApi
 
-        if self._config.maestro is None:
-            from dooers.agents.server.maestro.config import MaestroConfigurationError
+        if self._config.dooers_threads is None:
+            from dooers.agents.server.dooers_threads.config import DooersThreadsConfigurationError
 
-            raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
-        return MaestroAgentApi(self._config.maestro)
+            raise DooersThreadsConfigurationError("DOOERS_THREADS_CONFIG_REQUIRED")
+        return DooersThreadsAgentApi(self._config.dooers_threads)
 
-    def _maestro_ingress(self) -> MaestroIngress:
-        """The publication path of ``ingest`` (and ``dispatch``) over the agent API (Maestro mode only)."""
-        from dooers.agents.server.maestro.ingress import MaestroIngress
+    def _dooers_threads_ingress(self) -> DooersThreadsIngress:
+        """The publication path of ``ingest`` (and ``dispatch``) over the agent API (Dooers Threads mode only)."""
+        from dooers.agents.server.dooers_threads.ingress import DooersThreadsIngress
 
-        return MaestroIngress(
+        return DooersThreadsIngress(
             self._config,
-            self._maestro_api(),
-            persistence=self._maestro_agent_persistence(),
+            self._dooers_threads_api(),
+            persistence=self._dooers_threads_agent_persistence(),
             upload_store=self._ensure_upload_store,
         )
 
     async def repository(self) -> Repository:
-        if self._config.thread_management == "maestro":
-            return Repository(self._maestro_agent_persistence())
+        if self._config.thread_management == "dooers_threads":
+            return Repository(self._dooers_threads_agent_persistence())
         self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
         return Repository(persistence)
 
     async def memory(self, thread_id: str) -> AgentMemory:
-        if self._config.thread_management == "maestro":
-            return AgentMemory(thread_id=thread_id, persistence=self._maestro_agent_persistence())
+        if self._config.thread_management == "dooers_threads":
+            return AgentMemory(thread_id=thread_id, persistence=self._dooers_threads_agent_persistence())
         self._config.require_agent_thread_management()
         persistence = await self._ensure_initialized()
         return AgentMemory(thread_id=thread_id, persistence=persistence)

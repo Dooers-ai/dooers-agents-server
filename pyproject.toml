@@ -29,13 +29,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-maestro = [
+dooers-threads = [
     "jsonschema==4.26.0",
     "ada-url==4.0.0",
     "cryptography==48.0.0",
 ]
-# Canonical Maestro v1 validator; legacy imports do not require this extra.
-maestro-contracts = [
+# Canonical Dooers Threads v1 validator; legacy imports do not require this extra.
+dooers-threads-contracts = [
     "jsonschema==4.26.0",
     "ada-url==4.0.0",
 ]

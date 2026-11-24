@@ -1,0 +1,27 @@
+{
+  "consumer_manifest_version": 1,
+  "task": "E05-01",
+  "source_manifest_sha256": "b764561c5385b9e84ed6c955704dff7de31b0f30f1a38a6555f289b4e6b423cf",
+  "source_revision": "sha256:b5a56f52148f047f94d1e8f10b2b144ed47e7e6430bea22d7bec9d85257c9b63",
+  "bundle_manifest_sha256": "a30d3ba2fe7d14b08b3b672293697a0bab9044c6b0f254e460e15dd975be0dc4",
+  "bundle_zip_sha256": "5d67cddf2094dd78c431f4bf42fccf3997c347c8013d1d3366be10d51a36545c",
+  "consumer_fixture_sha256": "ab5559a698e7c43187c17130ec0e1721f756423b21343e28f01728dabee67f19",
+  "classification": {
+    "canonical": 1114,
+    "consumer": 34,
+    "total": 1148,
+    "valid": 493,
+    "invalid": 655,
+    "sha256": "090a0a61a1057bdaabe3169683e401c6fde84b3254eeecca2f2055b4a8080d81"
+  },
+  "status": "local_contract_conformance_only",
+  "published": false,
+  "consumer": "dooers.agents.server.protocol.dooers_threads",
+  "authority_decision": "docs/decisoes/0005-journal-efeitos.md",
+  "sdk_base_commit": "2dd57651cad39011ba1aacb78a36e2954cb210a4",
+  "sdk_version": "0.23.4",
+  "runtime_dependencies": {
+    "jsonschema": "4.26.0",
+    "ada-url": "4.0.0"
+  }
+}

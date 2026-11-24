@@ -1,6 +1,7 @@
-from dooers.agents.server.config import AgentConfig, MaestroConfig, OnSettingsUpdated
+from dooers.agents.server.config import AgentConfig, DooersThreadsConfig, OnSettingsUpdated
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
+from dooers.agents.server.dooers_threads import DooersThreadsDeliveryAdapter
 from dooers.agents.server.exceptions import (
     DispatchError,
     HandlerError,
@@ -61,7 +62,6 @@ from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.pipeline import Handler, UploadReferenceError
 from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.llm import format_user_input
-from dooers.agents.server.maestro import MaestroDeliveryAdapter
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.models import (
     Actor,
@@ -101,8 +101,8 @@ from dooers.agents.server.server import AgentServer
 __all__ = [
     # Core
     "AgentConfig",
-    "MaestroConfig",
-    "MaestroDeliveryAdapter",
+    "DooersThreadsConfig",
+    "DooersThreadsDeliveryAdapter",
     "OnSettingsUpdated",
     "AgentServer",
     "SqlDatabase",

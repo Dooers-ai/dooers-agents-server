@@ -31,15 +31,15 @@ class AgentIncoming:
     def __post_init__(self) -> None:
         # Legacy mode binds here and drops the token, as production does: the instance keeps
         # only its fields, so asdict/deepcopy/pickle/repr/eq stay the production ones.
-        # Maestro mode binds in ``maestro_handler_context``, which keeps the token and resets it.
-        # getattr: production read only the fields, so a duck-typed context without ``maestro`` binds too.
-        if getattr(self.context, "maestro", None) is None:
+        # Dooers Threads mode binds in ``dooers_threads_handler_context``, which keeps the token and resets it.
+        # getattr: production read only the fields, so a duck-typed context without ``dooers_threads`` binds too.
+        if getattr(self.context, "dooers_threads", None) is None:
             self.bind_runtime_context()
 
     def bind_runtime_context(self, *, inherit_children: bool = True) -> "RAGContextToken | None":
         """Bind the platform RAG context to the current task and return the reset token.
 
-        ``inherit_children=False`` (Maestro private scopes) keeps child tasks out of the context.
+        ``inherit_children=False`` (Dooers Threads private scopes) keeps child tasks out of the context.
 
         The token is never stored on the instance; the caller that binds also resets.
         """

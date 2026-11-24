@@ -63,7 +63,7 @@ def bind_execution_context(
     """Bind the execution context to the current task and return the token that resets it.
 
     ``inherit_children=True`` (legacy turns) also exposes the context to child tasks, so parallel
-    tool calls keep the scope. Private Maestro scopes pass ``False``: a child task must never see
+    tool calls keep the scope. Private Dooers Threads scopes pass ``False``: a child task must never see
     (or outlive) the private context, so the ContextVar is cleared for the duration of the scope.
     """
     task = _current_task()

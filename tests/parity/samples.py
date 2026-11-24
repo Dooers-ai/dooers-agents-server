@@ -1,4 +1,4 @@
-"""Minimal valid files: they pass Maestro's content inspection (``maestro_file_policy.inspect_content``)."""
+"""Minimal valid files: they pass Dooers Threads' content inspection (``dooers_threads_file_policy.inspect_content``)."""
 
 from __future__ import annotations
 

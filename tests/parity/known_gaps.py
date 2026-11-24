@@ -1,6 +1,6 @@
-"""Scenarios whose Maestro result still differs from the legacy result.
+"""Scenarios whose Dooers Threads result still differs from the legacy result.
 
-``test_parity_maestro`` runs these as ``xfail(strict=True, raises=Gap.raises)``: only the
+``test_parity_dooers_threads`` runs these as ``xfail(strict=True, raises=Gap.raises)``: only the
 failure the gap states counts as the gap, and any other error fails the test. It also
 checks that each gap still fails as stated (``Gap.raises`` and ``Gap.deliveries``) and, for
 a gap with ``Gap.masked``, that the results are equal once those declared differences are
@@ -13,22 +13,23 @@ scenarios (``chart_<type>``, ``form_text_<input_type>``, ``form_<builder>``,
 ``whatsapp_<send type>``) were added on 2026-11-11 (final review of plan 1); plan 3 tasks 3
 to 6 restated the gaps without closing one.
 
-Measured again on 2026-11-12 (plan 3, task 7). The harness reads the Maestro thread back
-through the SDK's own conversion (``MaestroExecutionPersistence``, the persistence of
-``MaestroAgentMemory``), and FakeMaestro applies thread changes, issues links and delivers
+Measured again on 2026-11-12 (plan 3, task 7). The harness reads the Dooers Threads thread back
+through the SDK's own conversion (``DooersThreadsExecutionPersistence``, the persistence of
+``DooersThreadsAgentMemory``), and FakeDooersThreads applies thread changes, issues links and delivers
 ``form.responded``. A ``dispatch`` turn is the agent's own publication of the person's
 message (the declared name, e-mail and identity IDs; URL parts as ``media_link``). Every
 execution scenario matches, except the ones below that need Core's connection context
 (plan 5). The other gaps are the ``AgentServer`` ingress (plan 5: WhatsApp, ``Repository``,
 ``dispatch`` outside a delivery) and the public chat (plan 6).
 
-Task 6a (2026-11-13): ``AgentServer.ingest`` and ``chat_upload`` no longer raise in Maestro mode (``server_ingest`` ends at
+Task 6a (2026-11-13): ``AgentServer.ingest`` and ``chat_upload`` no longer raise in Dooers Threads mode (``server_ingest`` ends at
 the first agent API call; ``chat_upload`` ends at its ``dispatch``).
 
-Task 6b (2026-11-13): ``AgentServer.dispatch`` no longer raises in Maestro mode: it publishes over the agent API and follows the thread
-(``tests/test_maestro_dispatch.py``, ``tests/test_maestro_dispatch_run.py``). The scripts that call it end at the first agent API call.
+Task 6b (2026-11-13): ``AgentServer.dispatch`` no longer raises in Dooers Threads mode: it publishes over the agent API and follows
+the thread (``tests/test_dooers_threads_dispatch.py``, ``tests/test_dooers_threads_dispatch_run.py``). The scripts that call it end at
+the first agent API call.
 
-Task 5c (2026-11-13): ``AgentServer.repository()`` and ``memory(thread_id)`` no longer raise in Maestro mode; ``repository_crud``
+Task 5c (2026-11-13): ``AgentServer.repository()`` and ``memory(thread_id)`` no longer raise in Dooers Threads mode; ``repository_crud``
 ends at the first agent API call (see its entry).
 
 Measured again on 2026-11-13 (plan 5, task 5a). The delivery context carries Core's person data (name,
@@ -38,41 +39,41 @@ reads them. The three ``send.*`` scenarios that waited for them match (``update_
 ``incoming_fields`` still differ, only by a permanent declared difference (the legacy WebSocket acks; the
 size of a URL document).
 
-Measured again on 2026-11-13 (plan 5, task 8). ``tests/parity/harness.py``'s ``_run_maestro_server`` now wires
-``tests/parity/fake_agent_api.py`` into the same ``FakeMaestro`` instance the scenario uses (one combined
-respx route: ``/agent/*`` to ``FakeAgentApi``, everything else to ``FakeMaestro``'s existing delivery
-callback handling), so every ``AgentServer`` ingress scenario's ``MaestroAgentApi`` calls now succeed. A
+Measured again on 2026-11-13 (plan 5, task 8). ``tests/parity/harness.py``'s ``_run_dooers_threads_server`` now wires
+``tests/parity/fake_agent_api.py`` into the same ``FakeDooersThreads`` instance the scenario uses (one combined
+respx route: ``/agent/*`` to ``FakeAgentApi``, everything else to ``FakeDooersThreads``'s existing delivery
+callback handling), so every ``AgentServer`` ingress scenario's ``DooersThreadsAgentApi`` calls now succeed. A
 ``trigger: true`` publication (``AgentServer.dispatch``, the WhatsApp inbound webhook) is delivered for real
 through ``create_text_delivery_adapter``: the harness mirrors the thread and the trigger forward into
-``FakeMaestro`` so the delivery protocol can run, and mirrors the handler's own outputs (plus the delivery's
-own lifecycle, which ``FakeMaestro`` has no notion of) back into ``FakeAgentApi`` as they happen, so a later
+``FakeDooersThreads`` so the delivery protocol can run, and mirrors the handler's own outputs (plus the delivery's
+own lifecycle, which ``FakeDooersThreads`` has no notion of) back into ``FakeAgentApi`` as they happen, so a later
 agent-api read (``AgentServer.memory()``/``.repository()``, the dispatch stream's own polling) sees them too.
 ``server_dispatch``, ``server_ingest`` and ``memory_by_thread_id`` now match exactly. Three scenarios differ
 only by a permanent declared difference the investigation surfaced (not one the brief anticipated, each
 backed by production's own code or test suite, never by a change to it): ``repository_crud`` (a fresh
 agent-api thread always has the agent as a participant), ``chat_upload`` (an attachment's ``url`` resolves to
 a real temporary link outside a delivery), and every ``whatsapp_<send type>``/``whatsapp_receipt`` (no
-``data.delivery`` outside a delivery — ``MaestroExecutionPersistence._channel_state``'s own docstring states
+``data.delivery`` outside a delivery — ``DooersThreadsExecutionPersistence._channel_state``'s own docstring states
 it has no thread view over the agent API).
 
 Final review of plan 5 (fix 1, 2026-11-14): that last gap was never the extra read the docstring blamed —
-``MaestroAgentPersistence._reads`` already pays for ``get_thread`` once per call and was discarding its
+``DooersThreadsAgentPersistence._reads`` already pays for ``get_thread`` once per call and was discarding its
 result. ``_reads`` now passes that ``view`` into ``_AgentWindow``'s head (the ``thread`` key
 ``_channel_state`` looks for), so ``data.delivery`` is populated outside a delivery too. The 7
 ``whatsapp_<send type>``/``whatsapp_receipt`` scenarios match exactly now and are gone from ``GAPS``.
 
 Measured again on 2026-11-16 (plan 6, task 6a, Passo 0/1). ``public_chat_guest``/``public_chat_authenticated``
-no longer go through the Maestro-mode Router (``THREAD_MANAGEMENT_MISMATCH`` is gone): the harness now plays
-the visitor's own path (design section 7.3) — ``FakeMaestro.ensure_external_thread``/``.publish_external``
+no longer go through the Dooers Threads-mode Router (``THREAD_MANAGEMENT_MISMATCH`` is gone): the harness now plays
+the visitor's own path (design section 7.3) — ``FakeDooersThreads.ensure_external_thread``/``.publish_external``
 (a new ``kind: "external"`` actor/participant, idempotent by ``external_key``, routed to a delivery the same
-way a web chat person's message is) through a new ``harness._run_maestro_public_chat``, a sibling of
-``_run_maestro_deliveries``/``_run_maestro_server`` picked by ``_is_public_chat_scenario`` (``ScenarioInput.connect``
-present with ``connection_type`` ``guest``/``public_authenticated``) rather than by ``_delivered_by_maestro``
+way a web chat person's message is) through a new ``harness._run_dooers_threads_public_chat``, a sibling of
+``_run_dooers_threads_deliveries``/``_run_dooers_threads_server`` picked by ``_is_public_chat_scenario`` (``ScenarioInput.connect``
+present with ``connection_type`` ``guest``/``public_authenticated``) rather than by ``_delivered_by_dooers_threads``
 (unchanged). What was left of both scenarios then was two declared differences, not the old gap: the
 legacy WebSocket acks and Core validation count (``agent_websocket``, already used by ``form_response_submit``/
 ``form_response_cancel``), and the visitor's own declared profile — name, e-mail, identity IDs, roles,
 ``connection_type`` — plus ``data.source``, which reach the live handler context (plan 6 task 5's own
-``test_maestro_public_chat.py``) but not a Maestro-mode read-back outside it, because ``legacy_model.py``'s
+``test_dooers_threads_public_chat.py``) but not a Dooers Threads-mode read-back outside it, because ``legacy_model.py``'s
 ``to_thread``/``_message`` call ``production_user`` with no participant for an external actor
 (``public_chat_visitor_profile``, new; closed by the final review of plan 6, below).
 
@@ -92,17 +93,17 @@ What is left of both public chat scenarios is the legacy WebSocket acks and the 
 
 Follow-up of the final review (2026-11-16): ``whatsapp_history_raw`` (a handler reads ``get_history_raw`` inside the second
 delivery: the contact's messages keep the ``payload.data`` the ingress stamped, and the first reply keeps its delivery status,
-which ``FakeAgentApi`` now mirrors into ``FakeMaestro``) matches exactly, and ``public_chat_form_response`` (a visitor's form
+which ``FakeAgentApi`` now mirrors into ``FakeDooersThreads``) matches exactly, and ``public_chat_form_response`` (a visitor's form
 answer read the same way: profile and ``data.source``) differs only by ``agent_websocket``. The raw capture leaves two fields
-out. ``id``: inside a delivery Maestro names the events it stored, and the SDK id of a message the SDK published
-(``client_event_id``) is applied only on a read outside one (``MaestroAgentPersistence._expose``). ``thread_id`` is back in
+out. ``id``: inside a delivery Dooers Threads names the events it stored, and the SDK id of a message the SDK published
+(``client_event_id``) is applied only on a read outside one (``DooersThreadsAgentPersistence._expose``). ``thread_id`` is back in
 the raw capture (see the next entry).
 
-Thread key (2026-11-16, review follow-up): the gap the raw capture used to leave out is closed. The handler saw Maestro's thread
+Thread key (2026-11-16, review follow-up): the gap the raw capture used to leave out is closed. The handler saw Dooers Threads' thread
 UUID in ``on.context.thread_id``, ``memory.get_thread().id`` and the raw history, while production gives the key the caller chose
 (``wa:inst:...``). ``Public.ContextThread.external_key`` (a contract addition) carries that key; the SDK shows it in every place
-the handler reads, and still calls Maestro with the UUID. A public chat visitor thread has a key of Maestro's own
-(``public:<link>:...``): production shows the handler a plain id there, so Maestro sends ``null`` and the handler keeps the UUID.
+the handler reads, and still calls Dooers Threads with the UUID. A public chat visitor thread has a key of Dooers Threads' own
+(``public:<link>:...``): production shows the handler a plain id there, so Dooers Threads sends ``null`` and the handler keeps the UUID.
 ``thread_key_dispatch`` (``server.dispatch(thread_id="wa:inst:...")``, a handler that reads the id in the three places) compares
 the real value, which ``normalize`` would mask in a ``thread_id`` field, by capturing it as the text ``thread_id=<value>``;
 ``public_chat_thread_ids`` checks that the public chat handler never sees ``public:...``. Both match the legacy result
@@ -160,9 +161,9 @@ def _agent_api_attachment_url(result: ParityResult) -> None:
             ):
                 part["url"] = MASK
                 if "ref_id" in part:
-                    # Once dispatched, the stored event's ``ref_id`` is Maestro's own artifact id, no longer the
+                    # Once dispatched, the stored event's ``ref_id`` is Dooers Threads' own artifact id, no longer the
                     # staged upload's; legacy keeps the one ``chat_upload`` returned (``normalize``'s id markers
-                    # see that as one shared id in legacy and two unrelated ones in Maestro).
+                    # see that as one shared id in legacy and two unrelated ones in Dooers Threads).
                     part["ref_id"] = MASK
     upload = result.outputs.get("chat_upload")
     if isinstance(upload, dict) and "ref_id" in upload:
@@ -172,24 +173,24 @@ def _agent_api_attachment_url(result: ParityResult) -> None:
 #: Declared differences a gap may mask (name -> what differs, and the mask applied to both sides).
 DECLARED_DIFFERENCES: dict[str, tuple[str, Callable[[ParityResult], None]]] = {
     "media_link_size": (
-        "declared, permanent: a URL document reaches Maestro as a media_link, which has no size "
+        "declared, permanent: a URL document reaches Dooers Threads as a media_link, which has no size "
         "(stored size_bytes None, handler size_bytes 0)",
         _media_link_size,
     ),
     "agent_websocket": (
-        "declared, permanent: the legacy WebSocket acks and Core validation count; in Maestro mode the browser talks to "
-        "Maestro (plan 4), not to the agent",
+        "declared, permanent: the legacy WebSocket acks and Core validation count; in Dooers Threads mode the browser talks to "
+        "Dooers Threads (plan 4), not to the agent",
         _agent_websocket,
     ),
     "agent_api_thread_has_agent": (
         "declared, permanent: an agent-api-created thread always has the agent as an active participant "
-        "(Public.AgentThreadCreateRequest/FakeAgentApi, test_maestro_agent_persistence.py's own "
+        "(Public.AgentThreadCreateRequest/FakeAgentApi, test_dooers_threads_agent_persistence.py's own "
         "'the same users except the agent'); Repository.create_thread only ever adds the explicit owner/users",
         _agent_api_thread_has_agent,
     ),
     "agent_api_attachment_url": (
         "declared, permanent: an attachment read back through the agent API outside a delivery resolves to a "
-        "real temporary link (MaestroAgentApi.link_resolver), and its stored ref_id is Maestro's own artifact id, "
+        "real temporary link (DooersThreadsAgentApi.link_resolver), and its stored ref_id is Dooers Threads' own artifact id, "
         "not the staged upload's; legacy's local ref_id keeps url=None and stays the same id throughout",
         _agent_api_attachment_url,
     ),
@@ -214,12 +215,12 @@ def masked(result: ParityResult, names: tuple[str, ...]) -> ParityResult:
 class Gap:
     #: What differs today (one line, for the plan that fixes it).
     reason: str
-    #: How ``run_maestro`` fails today: ``AssertionError`` when it returns a result that differs
-    #: from legacy, or the exception it raises (an SDK Maestro-mode guard or a contract refusal).
+    #: How ``run_dooers_threads`` fails today: ``AssertionError`` when it returns a result that differs
+    #: from legacy, or the exception it raises (an SDK Dooers Threads-mode guard or a contract refusal).
     raises: type[Exception] = AssertionError
     #: Text the raised exception contains (``raises`` other than ``AssertionError``).
     match: str | None = None
-    #: (HTTP status, state, reason code) of each Maestro delivery, in order (``AssertionError`` gaps).
+    #: (HTTP status, state, reason code) of each Dooers Threads delivery, in order (``AssertionError`` gaps).
     deliveries: tuple[Outcome, ...] = ()
     #: ``DECLARED_DIFFERENCES`` that are the whole difference (``AssertionError`` gaps).
     masked: tuple[str, ...] = ()
@@ -238,23 +239,23 @@ GAPS: dict[str, Gap] = {
     "form_response_submit": _declared("agent_websocket", deliveries=_RESPONDED * 2),
     "form_response_cancel": _declared("agent_websocket", deliveries=_RESPONDED * 2),
     "incoming_fields": _declared("media_link_size", deliveries=_RESPONDED * 2),
-    # Plan 5, task 8: the harness wires ``tests/parity/fake_agent_api.py`` into ``_run_maestro_server`` (an
-    # AgentServer ingress scenario's ``MaestroAgentApi`` calls now reach it, and a ``trigger: true`` publication
+    # Plan 5, task 8: the harness wires ``tests/parity/fake_agent_api.py`` into ``_run_dooers_threads_server`` (an
+    # AgentServer ingress scenario's ``DooersThreadsAgentApi`` calls now reach it, and a ``trigger: true`` publication
     # is delivered for real through ``create_text_delivery_adapter``). ``server_dispatch``, ``server_ingest`` and
     # ``memory_by_thread_id`` now match exactly. ``repository_crud`` differs only by a permanent declared
-    # difference: a fresh agent-api thread always has the agent as a participant (real Maestro behavior,
-    # already accepted as a divergence in ``test_maestro_agent_persistence.py``'s own
+    # difference: a fresh agent-api thread always has the agent as a participant (real Dooers Threads behavior,
+    # already accepted as a divergence in ``test_dooers_threads_agent_persistence.py``'s own
     # ``test_create_thread_owner_is_the_user``), which ``Repository.create_thread`` never adds without a run.
     "repository_crud": _declared("agent_api_thread_has_agent", deliveries=()),
     # ``chat_upload`` matches except for a permanent declared difference: the staged file's ``url`` resolves to a
-    # real temporary link once read back through the agent API outside a delivery (``MaestroAgentApi.link_resolver``);
+    # real temporary link once read back through the agent API outside a delivery (``DooersThreadsAgentApi.link_resolver``);
     # the local ``ref_id`` legacy stores keeps ``url=None``.
     "chat_upload": _declared("agent_api_attachment_url", deliveries=_RESPONDED),
     # Final review fix 1: ``_reads()`` now passes the thread ``view`` it already read into ``_AgentWindow``'s head,
     # so ``_channel_state`` has a thread view outside a delivery too; every ``send.whatsapp.*`` and the receipt
     # scenario now match exactly (``agent_api_no_delivery_data`` is gone — see git history for the closed gap).
-    # Task 6a (2026-11-16): the visitor talks to Maestro directly (``FakeMaestro.ensure_external_thread``/
-    # ``.publish_external``, ``_run_maestro_public_chat``), never through the Maestro-mode Router — the old
+    # Task 6a (2026-11-16): the visitor talks to Dooers Threads directly (``FakeDooersThreads.ensure_external_thread``/
+    # ``.publish_external``, ``_run_dooers_threads_public_chat``), never through the Dooers Threads-mode Router — the old
     # THREAD_MANAGEMENT_MISMATCH gap is gone.
     # Final review of plan 6 (2026-11-16): both scenarios match the legacy result, the live handler context included,
     # except for the legacy WebSocket acks and the Core validation count (a permanent declared difference).
@@ -263,7 +264,7 @@ GAPS: dict[str, Gap] = {
     # Follow-up of the final review: a visitor's form answer, read by the handler inside the delivery
     # (``memory.get_history_raw``), has the visitor's profile and ``data.source`` too. Same single declared difference.
     "public_chat_form_response": _declared("agent_websocket", deliveries=_RESPONDED * 2),
-    # The handler of a public chat thread sees a plain id, never Maestro's own ``public:...`` key (thread key follow-up).
+    # The handler of a public chat thread sees a plain id, never Dooers Threads' own ``public:...`` key (thread key follow-up).
     "public_chat_thread_ids": _declared("agent_websocket", deliveries=_RESPONDED),
 }
 

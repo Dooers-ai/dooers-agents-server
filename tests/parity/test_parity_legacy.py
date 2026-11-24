@@ -1,6 +1,6 @@
 """Parity suite, legacy side: what thread_management="agent" produces for each SDK function.
 
-The normalized results are the ground truth the Maestro side (task 8) is compared with.
+The normalized results are the ground truth the Dooers Threads side (task 8) is compared with.
 """
 
 from __future__ import annotations

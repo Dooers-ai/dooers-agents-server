@@ -1,0 +1,545 @@
+"""A Dooers Threads delivery gives the handler the production ``AgentIncoming`` (plan 3, task 4).
+
+Production reference: ``HandlerPipeline.execute`` and ``_resolve_content_parts_async`` on
+origin/main. The parity tests run the legacy scenario (``run_legacy``) and the same input
+through a Dooers Threads delivery (``FakeDooersThreads`` and the SDK adapter), then compare what the
+handler read. The other tests use the loopback fixture of ``test_dooers_threads_context``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import dataclasses
+import logging
+import pickle
+from collections.abc import Callable
+from contextlib import contextmanager
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from unittest.mock import patch
+from uuid import uuid4
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from dooers.agents.server.dooers_threads import create_text_delivery_adapter
+from dooers.agents.server.dooers_threads.artifacts import (
+    DooersThreadsArtifactLinkUnavailable,
+    DooersThreadsArtifactsClient,
+    DooersThreadsHydratedArtifact,
+)
+from dooers.agents.server.dooers_threads.client import DooersThreadsContextError
+from dooers.agents.server.dooers_threads.context import (
+    DooersThreadsPrivateResources,
+    _production_message,
+    current_dooers_threads_context,
+    dooers_threads_handler_context,
+)
+from dooers.agents.server.dooers_threads.links import LinkResolver
+from dooers.agents.server.handlers.context import AgentContext
+from dooers.agents.server.handlers.pipeline import HandlerPipeline
+from dooers.agents.server.protocol.dooers_threads import default_contracts
+from dooers.agents.server.protocol.models import AudioPart, ContactPart, DocumentPart, ImagePart, TextPart, User
+from dooers.tools.rag.runtime import current_execution_context
+from tests.parity import fake_dooers_threads as fake_module
+from tests.parity import samples
+from tests.parity.fake_dooers_threads import CALLBACK_BASE_URL, FakeDooersThreads
+from tests.parity.harness import _agent_content, _dooers_threads_content, run_legacy
+from tests.parity.memory_persistence import MemoryPersistence
+from tests.parity.model import ASSISTANT_NAME, USER, ParityResult, close_capture, open_capture
+from tests.parity.normalize import normalize
+from tests.parity.scenarios import SCENARIOS
+from tests.test_dooers_threads_context import fixture_server, prepare, private
+
+SETTINGS = ("ARTIFACT_LINKS_ENABLED", "DOOERS_THREADS_ARTIFACT_LINK_KEY")
+LINK = {"url": "https://dooers-threads.example/v1/artifact-links/token.signature", "expires_at": "2099-01-01T00:00:00Z"}
+
+
+@pytest.fixture(scope="module")
+def key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture(scope="module")
+def bundle():
+    return default_contracts()
+
+
+def with_links(data: dict[str, Any]) -> None:
+    """Dooers Threads with ``ARTIFACT_LINKS_ENABLED`` signs ``artifact.link.issue`` into the capability."""
+    data["capability_claims"]["operations"].append("artifact.link.issue")
+
+
+# -- FakeDooersThreads deliveries (the person, the thread and the agent of the parity scenarios) --
+
+
+async def _deliver(dooers_threads: FakeDooersThreads, adapter, event: dict[str, Any]) -> None:
+    for delivery in dooers_threads.deliveries_for(event):
+        response = await dooers_threads.deliver(adapter, delivery)
+        assert (response.status_code, delivery.state) == (200, "responded"), response.text
+
+
+def _resources(queues=()) -> Callable:
+    async def resolve(scope):
+        return DooersThreadsPrivateResources(scope, MemoryPersistence(), {}, {}, queues=queues)
+
+    return resolve
+
+
+async def test_incoming_fields_match_production():
+    """Same handler, same input as the parity scenario ``incoming_fields``: the handler reads the same values.
+
+    The turns are the agent's own publication of the person's message (Dooers Threads' side of production
+    ``AgentServer.dispatch``): the declared e-mail and identity IDs reach the agent's context, and
+    the URL parts are ``media_link`` parts.
+    """
+    scenario = SCENARIOS["incoming_fields"]
+    spec = scenario.incoming
+    legacy = (await run_legacy("incoming_fields")).incoming
+    dooers_threads = FakeDooersThreads(assistant_name=ASSISTANT_NAME, queues=spec.queues)
+    adapter = create_text_delivery_adapter(dooers_threads.config, scenario.handler, _resources())
+    capture, token = open_capture()
+    try:
+        with dooers_threads.serving():
+            thread_id = dooers_threads.create_thread(USER, title=spec.thread_title)
+            for number, turn in enumerate(spec.turns, start=1):
+                await _deliver(
+                    dooers_threads,
+                    adapter,
+                    dooers_threads.agent_publish(thread_id, USER, _agent_content(turn), client_event_id=f"client-{number}"),
+                )
+    finally:
+        close_capture(token)
+    expected = deepcopy(legacy)
+    # Declared difference: a media_link has no size_bytes, and production gives a URL
+    # document without size_bytes the size 0.
+    assert expected["content"][2]["type"] == "document" and expected["content"][2]["size_bytes"] == 2048
+    expected["content"][2]["size_bytes"] = 0
+    # The roles (and the queue catalog) are Core's: they come in the delivery context and equal production's.
+    assert [capture.incoming["context"]["user"][role] for role in ("system_role", "organization_role", "workspace_role")] == [
+        "user",
+        "owner",
+        "manager",
+    ]
+    assert normalize(ParityResult([], capture.incoming, {})).incoming == normalize(ParityResult([], expected, {})).incoming
+    assert capture.incoming["context"]["queue"] == "suporte" and capture.incoming["rag_context"]["on_behalf"] is True
+
+
+@pytest.mark.parametrize("name", ["form_response_submit", "form_response_cancel"])
+async def test_form_cancel_invokes_handler(name):
+    """``form.responded`` is a new delivery to the form's author; submit and cancel both run the handler."""
+    scenario = SCENARIOS[name]
+    legacy = (await run_legacy(name)).incoming
+    dooers_threads = FakeDooersThreads(assistant_name=ASSISTANT_NAME)
+    adapter = create_text_delivery_adapter(dooers_threads.config, scenario.handler, _resources())
+    capture, token = open_capture()
+    try:
+        with dooers_threads.serving():
+            thread_id = dooers_threads.create_thread(USER, title=None)
+            first = dooers_threads.publish(thread_id, USER, _dooers_threads_content(scenario.incoming.turns[0]), client_event_id="client-1")
+            await _deliver(dooers_threads, adapter, first)
+            (form,) = [event for event in dooers_threads.events[thread_id] if event["type"] == "form.created"]
+            data = dict(scenario.incoming.turns[1].data)
+            response = dooers_threads.respond_form(thread_id, USER, form["event_id"], values=data["values"], cancelled=data["cancelled"])
+            await _deliver(dooers_threads, adapter, response)
+    finally:
+        close_capture(token)
+    received = capture.incoming
+    assert received["form_event_id"] == form["event_id"]
+    assert {key: value for key, value in received.items() if key != "form_event_id"} == {
+        key: value for key, value in legacy.items() if key != "form_event_id"
+    }
+    assert received["form_cancelled"] is data["cancelled"]
+    replies = [event["payload"]["content"] for event in dooers_threads.events[thread_id] if event["type"] == "message.created"][-1:]
+    assert replies == [[{"type": "text", "text": "Tudo bem, cancelado." if data["cancelled"] else "Cadastro concluído."}]]
+
+
+async def test_media_part_has_bytes_and_link(monkeypatch, caplog):
+    """An uploaded file reaches the handler with its bytes and a temporary link, one link per file."""
+    issued: list[str] = []
+    issue = FakeDooersThreads._artifact_link
+
+    def counting(self, request, execution_id, artifact_id):
+        issued.append(artifact_id)
+        return issue(self, request, execution_id, artifact_id)
+
+    monkeypatch.setattr(FakeDooersThreads, "_artifact_link", counting)
+    seen: dict[str, Any] = {}
+
+    async def handler(on, send, memory, analytics, settings):
+        seen["message"], seen["content"] = on.message, list(on.content)
+        yield send.text("Recebi.")
+
+    dooers_threads = FakeDooersThreads()
+    adapter = create_text_delivery_adapter(dooers_threads.config, handler, _resources())
+    caplog.set_level(logging.DEBUG)
+    with dooers_threads.serving():
+        thread_id = dooers_threads.create_thread(USER, title=None)
+        image = dooers_threads.upload(USER, samples.png_bytes(), filename="foto.png", mime_type="image/png")
+        audio = {**dooers_threads.upload(USER, samples.wav_bytes(), filename="recado.wav", mime_type="audio/wav"), "duration": 4.0}
+        document = dooers_threads.upload(USER, samples.pdf_bytes(), filename="nota.pdf", mime_type="application/pdf")
+        content = [image, audio, document, deepcopy(image)]
+        await _deliver(dooers_threads, adapter, dooers_threads.publish(thread_id, USER, content, client_event_id="client-1"))
+
+    image_part, audio_part, document_part, again = seen["content"]
+    links = f"{CALLBACK_BASE_URL}/artifact-links/"
+    assert isinstance(image_part, ImagePart) and image_part.data == samples.png_bytes() and image_part.url.startswith(links)
+    assert (image_part.mime_type, image_part.filename, image_part.width, image_part.height) == ("image/png", "foto.png", None, None)
+    assert isinstance(audio_part, AudioPart) and audio_part.data == samples.wav_bytes() and audio_part.url.startswith(links)
+    assert (audio_part.mime_type, audio_part.filename, audio_part.duration) == ("audio/wav", "recado.wav", 4.0)
+    assert isinstance(document_part, DocumentPart) and document_part.data == samples.pdf_bytes() and document_part.url.startswith(links)
+    assert (document_part.filename, document_part.size_bytes) == ("nota.pdf", len(samples.pdf_bytes()))
+    assert again == image_part
+    # Production message of media without text: one marker per part.
+    assert seen["message"] == "[image] [audio] [document: nota.pdf] [image]"
+    # One link per file for the execution; the bearer links are never logged.
+    assert issued == [image["artifact_id"], audio["artifact_id"], document["artifact_id"]]
+    for part in (image_part, audio_part, document_part):
+        assert part.url not in caplog.text and part.url.rsplit("/", 1)[1] not in caplog.text
+
+
+async def test_link_route_off_fails_the_delivery_loudly(monkeypatch, caplog):
+    """No link route: the delivery fails and the log names the Dooers Threads settings; the handler never runs."""
+
+    def off(self, request, execution_id, artifact_id):
+        raise fake_module._CallbackError(422, "UNSUPPORTED_CAPABILITY")
+
+    monkeypatch.setattr(FakeDooersThreads, "_artifact_link", off)
+    ran = []
+
+    async def handler(on, send, memory, analytics, settings):
+        ran.append(on)
+        yield send.text("never")
+
+    dooers_threads = FakeDooersThreads()
+    adapter = create_text_delivery_adapter(dooers_threads.config, handler, _resources())
+    with dooers_threads.serving():
+        thread_id = dooers_threads.create_thread(USER, title=None)
+        note = dooers_threads.upload(USER, b"nota fiscal", filename="nota.txt", mime_type="text/plain")
+        (delivery,) = dooers_threads.deliveries_for(dooers_threads.publish(thread_id, USER, [note], client_event_id="client-1"))
+        response = await dooers_threads.deliver(adapter, delivery)
+    assert ran == []
+    assert (response.status_code, response.json()["error"]["code"]) == (422, "UNSUPPORTED_CAPABILITY")
+    errors = [record.getMessage() for record in caplog.records if record.levelno == logging.ERROR]
+    assert any(all(setting in message for setting in SETTINGS) for message in errors)
+
+
+# -- Loopback fixture (``prepare``) --
+
+
+@contextmanager
+def _hydrated(data: bytes = b"hello", mime_type: str = "text/plain"):
+    async def hydrate(self, reference, **kwargs):
+        return DooersThreadsHydratedArtifact(reference.artifact_id, reference.filename or "attachment", mime_type, data)
+
+    with patch.object(DooersThreadsArtifactsClient, "hydrate", hydrate):
+        yield
+
+
+def _attachment_page(page: dict[str, Any]) -> dict[str, Any]:
+    part = {"type": "attachment", "artifact_id": str(uuid4()), "filename": "nota.txt", "mime_type": "text/plain", "size_bytes": 5}
+    page["trigger_event"]["payload"]["content"] = [part]
+    page["history"]["items"][0]["payload"]["content"] = [deepcopy(part)]
+    return part
+
+
+@pytest.mark.parametrize("route", ["operation_missing", "unsupported_capability"])
+async def test_link_issue_unavailable_raises_configuration_error(key, bundle, route, caplog):
+    """The route is off: no ``artifact.link.issue`` in the capability, or Dooers Threads answers UNSUPPORTED_CAPABILITY."""
+    change = None if route == "operation_missing" else with_links
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server, change=change)
+        _attachment_page(page)
+        error = {"error": {"code": "UNSUPPORTED_CAPABILITY", "message": "off", "retryable": False, "request_id": str(uuid4())}}
+        server.response = lambda first: error if "/links " in first else page
+        server.status = lambda first: 422 if "/links " in first else 200
+        with _hydrated(), pytest.raises(DooersThreadsArtifactLinkUnavailable) as raised:
+            async with dooers_threads_handler_context(memory, private):
+                pytest.fail("a media part without its link must never reach the handler")
+    assert raised.value.code == "UNSUPPORTED_CAPABILITY"
+    assert all(setting in str(raised.value) for setting in SETTINGS)
+    assert any(all(setting in record.getMessage() for setting in SETTINGS) for record in caplog.records)
+    assert any("/links " in first for first, _ in server.requests) is (route != "operation_missing")
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_link_missing_for_one_file_leaves_that_part_without_url(key, bundle, status, caplog):
+    """403/404 for one file (the route works): the part keeps its bytes, has no URL, and the client stays open."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server, change=with_links)
+        part = _attachment_page(page)
+        error = {"error": {"code": "NOT_FOUND", "message": "no", "retryable": False, "request_id": str(uuid4())}}
+        server.response = lambda first: error if "/links " in first else page
+        server.status = lambda first: status if "/links " in first else 200
+        with _hydrated():
+            async with dooers_threads_handler_context(memory, private) as prepared:
+                (received,) = prepared.on.content
+                assert (received.data, received.url) == (b"hello", None)
+                assert not memory._client._closed
+    assert part["artifact_id"] in caplog.text
+    assert not any(all(setting in record.getMessage() for setting in SETTINGS) for record in caplog.records)
+
+
+async def test_link_issue_posts_empty_body_with_execution_capability(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, token = prepare(key, bundle, server, change=with_links)
+        part = _attachment_page(page)
+        server.response = lambda first: LINK if "/links " in first else page
+        with _hydrated():
+            async with dooers_threads_handler_context(memory, private) as prepared:
+                assert prepared.on.content[0].url == LINK["url"] and prepared.on.content[0].data == b"hello"
+    (first, headers), *_ = [(first, headers) for first, headers in server.requests if "/links " in first]
+    execution_id = memory._envelope["execution_id"]
+    assert first == f"POST /api/v1/executions/{execution_id}/artifacts/{part['artifact_id']}/links HTTP/1.1"
+    assert headers["Authorization"] == f"Bearer {token}"
+    assert headers["Dooers-Threads-Execution-Capability"] == memory._client._capability
+
+
+async def test_link_resolver_refreshes_before_expiry(caplog):
+    start = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+    clock = [start]
+    issued: list[str] = []
+    first_file, second_file = str(uuid4()), str(uuid4())
+
+    async def issue(artifact_id):
+        issued.append(artifact_id)
+        await asyncio.sleep(0)  # yield, so a second concurrent call would ask again without the lock
+        expires_at = (clock[0] + timedelta(seconds=3600)).isoformat().replace("+00:00", "Z")
+        return {"url": f"https://dooers-threads.example/v1/artifact-links/{len(issued)}.secret", "expires_at": expires_at}
+
+    caplog.set_level(logging.DEBUG)
+    links = LinkResolver(issue, now=lambda: clock[0])
+    link = await links.url_for(first_file)
+    clock[0] = start + timedelta(seconds=3540)
+    assert await links.url_for(first_file) == link  # 60 s left: still handed out
+    clock[0] = start + timedelta(seconds=3541)
+    renewed = await links.url_for(first_file)  # 59 s left: a new link
+    assert renewed != link and issued == [first_file, first_file]
+    assert await links.url_for(second_file) not in {link, renewed}
+    third = str(uuid4())
+    together = await asyncio.gather(links.url_for(third), links.url_for(third))
+    assert together[0] == together[1] and issued.count(third) == 1
+    assert "secret" not in repr(links) and "secret" not in caplog.text
+
+
+async def test_agent_author_gets_empty_user(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        actor = {
+            "kind": "agent",
+            "principal_id": str(uuid4()),
+            "instance_agent_id": str(uuid4()),
+            "participant_id": str(uuid4()),
+            "display_name": "Outro agente",
+        }
+        page["trigger_event"]["actor"] = page["history"]["items"][0]["actor"] = actor
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            assert prepared.on.context.user == User(user_id="")
+            assert current_dooers_threads_context().actor == actor
+            assert current_execution_context().on_behalf is False
+
+
+async def test_personal_workspace_is_empty_string(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        assert memory._envelope["workspace_id"] is None
+        del page["thread"]  # a Dooers Threads that sends no thread view
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            context = prepared.on.context
+            assert context.workspace_id == "" and current_execution_context().workspace_id == ""
+            # No thread view and no thread.created in this context: the production defaults of a web chat thread.
+            thread = (context.channel, context.thread_title, context.thread_created_at, context.queue)
+            assert thread == ("dooers-platform", None, None, None)
+            assert context.queues == [] and context.channel_meta is None
+
+
+async def test_external_contact_is_the_user_and_never_on_behalf(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        actor = {"kind": "external", "external_id": "+5511999990000", "channel": "whatsapp", "display_name": "Cliente WhatsApp"}
+        page["trigger_event"]["actor"] = page["history"]["items"][0]["actor"] = actor
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            assert prepared.on.context.user == User(user_id="+5511999990000", user_name="Cliente WhatsApp")
+            assert prepared.on.context.channel == "whatsapp"
+            assert current_execution_context().on_behalf is False and current_execution_context().user_id == ""
+
+
+async def test_person_email_comes_from_the_participant_when_the_actor_has_none(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        page["participants"][0].update(email="pessoa@example.com", identity_ids=["idp-pessoa"])
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            user = prepared.on.context.user
+            assert (user.user_id, user.user_name) == (page["trigger_event"]["actor"]["principal_id"], "Pessoa")
+            assert (user.user_email, user.identity_ids) == ("pessoa@example.com", ["idp-pessoa"])
+
+
+async def test_person_without_email_has_none_like_production(key, bundle):
+    """Production: ``user_email=ctx.user.email or None``; an empty e-mail is ``None``."""
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        page["trigger_event"]["actor"]["email"] = ""
+        page["participants"][0]["email"] = "outro@example.com"
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            assert prepared.on.context.user.user_email is None
+
+
+def _form_response_page(server: Any, page: dict[str, Any], envelope: dict[str, Any], *, author: str) -> str:
+    form_id = str(uuid4())
+    form = deepcopy(page["trigger_event"])
+    form.update(event_id=form_id, sequence="9", root_event_id=form_id, type="form.created")
+    form["actor"] = {
+        "kind": "agent",
+        "principal_id": author,
+        "instance_agent_id": author,
+        "participant_id": envelope["recipient_participant_id"],
+        "display_name": "Assistente",
+    }
+    form["payload"] = {"message": "Cadastro", "elements": [], "submit_label": "Enviar", "cancel_label": "Cancelar", "size": "small"}
+    trigger = page["trigger_event"]
+    trigger.update(type="form.responded", payload={"form_event_id": form_id, "values": {}, "cancelled": True})
+    page["history"]["items"] = [form, deepcopy(trigger)]
+    # The window reads newest first (backward); every other read is oldest first (forward).
+    descending = deepcopy(page)
+    descending["history"]["items"].reverse()
+    server.response = lambda first: descending if "direction=backward" in first else page
+    return form_id
+
+
+async def test_form_response_reads_the_form_of_this_agent(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        form_id = _form_response_page(server, page, memory._envelope, author=memory._envelope["instance_agent_id"])
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            on = prepared.on
+            assert (on.form_data, on.form_cancelled, on.form_event_id) == ({}, True, form_id)
+            assert (on.message, on.content) == ("", [TextPart(text="")])
+
+
+async def test_form_response_to_another_agents_form_is_rejected(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        _form_response_page(server, page, memory._envelope, author=str(uuid4()))
+        with pytest.raises(DooersThreadsContextError, match="CONTEXT_INVALID"):
+            async with dooers_threads_handler_context(memory, private):
+                pytest.fail("not this agent's form")
+
+
+async def test_form_response_whose_form_is_beyond_the_window_cap_is_rejected_not_a_history_limit(key, bundle):
+    """The form event is older than what the window may hold: the delivery fails as an invalid context, before the handler."""
+    from dooers.agents.server.dooers_threads.memory import DooersThreadsMemory
+
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        _form_response_page(server, page, memory._envelope, author=memory._envelope["instance_agent_id"])
+        ascending, descending = deepcopy(page), deepcopy(page)
+        descending["history"].update(items=[deepcopy(page["trigger_event"])], has_more=True, next_cursor="mcx1.older")
+        server.response = lambda first: descending if "direction=backward" in first else ascending
+        capped = DooersThreadsMemory(memory._client, max_history_pages=1)
+        with pytest.raises(DooersThreadsContextError, match="CONTEXT_INVALID"):
+            async with dooers_threads_handler_context(capped, private):
+                pytest.fail("the form is not in the window")
+
+
+async def test_form_response_invocation_must_be_the_trigger(key, bundle):
+    async with fixture_server() as server:
+        memory, page, _, _ = prepare(key, bundle, server)
+        _form_response_page(server, page, memory._envelope, author=memory._envelope["instance_agent_id"])
+        page["invocation_event"] = deepcopy(page["trigger_event"])
+        memory._validate_page(page)
+        page["invocation_event"]["payload"]["cancelled"] = False
+        with pytest.raises(DooersThreadsContextError, match="CONTEXT_INVALID"):
+            memory._validate_page(page)
+
+
+async def test_operator_queue_catalog_reaches_the_handler(key, bundle):
+    from tests.parity.model import QUEUES
+
+    async with fixture_server() as server:
+        memory, _, _, _ = prepare(key, bundle, server)
+
+        async def resources(scope):
+            return DooersThreadsPrivateResources(scope, {}, {}, {}, queues=QUEUES)
+
+        async with dooers_threads_handler_context(memory, resources) as prepared:
+            assert prepared.on.context.queues == list(QUEUES)
+            assert prepared.on.context.queues[0] is not QUEUES[0]
+
+    async with fixture_server() as server:
+        memory, _, _, _ = prepare(key, bundle, server)
+
+        async def invalid(scope):
+            return DooersThreadsPrivateResources(scope, {}, {}, {}, queues=({"slug": "suporte"},))
+
+        with pytest.raises(DooersThreadsContextError, match="CONTEXT_INVALID"):
+            async with dooers_threads_handler_context(memory, invalid):
+                pytest.fail("invalid catalog")
+
+
+async def test_replace_deepcopy_and_pickle_keep_working(key, bundle):
+    """The creator's dataclass operations behave as in production; replace and copies keep context.dooers_threads."""
+    async with fixture_server() as server:
+        memory, _, _, _ = prepare(key, bundle, server)
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            on = prepared.on
+            metadata = on.context.dooers_threads
+            assert metadata is current_dooers_threads_context()
+            names = [f.name for f in dataclasses.fields(AgentContext)]
+            assert sorted(vars(on.context)) == sorted(names) and isinstance(on.context, AgentContext)
+            assert repr(on.context).startswith("AgentContext(thread_id=") and "dooers_threads" not in repr(on)
+            assert list(dataclasses.asdict(on)["context"]) == names
+
+            moved = dataclasses.replace(on.context, queue="vendas")
+            assert moved.dooers_threads is metadata and moved.queue == "vendas" and moved != on.context
+            rag = current_execution_context()
+            other = dataclasses.replace(on, message="outra")
+            # Still a Dooers Threads context: no second RAG binding (the token stays in dooers_threads_handler_context).
+            assert other.context.dooers_threads is metadata and current_execution_context() is rag
+
+            assert copy.copy(on.context).dooers_threads is metadata and copy.copy(on.context) == on.context
+            deep = copy.deepcopy(on)
+            assert deep == on and deep.context is not on.context and deep.context.dooers_threads is metadata
+            assert deep.context.user is not on.context.user
+
+            restored = pickle.loads(pickle.dumps(on))
+            # Pickle stores the production object: the metadata only exists during the execution.
+            assert restored == on and on == restored
+            assert type(restored.context) is AgentContext and restored.context.dooers_threads is None
+            assert dataclasses.asdict(restored) == dataclasses.asdict(on)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        [TextPart(text="Olá"), TextPart(text="  "), TextPart(text="mundo")],
+        [TextPart(text=""), ContactPart(display_name=" Bia ")],
+        [ContactPart(display_name="")],
+        [
+            ImagePart(mime_type="image/png"),
+            AudioPart(data=b"", mime_type="audio/ogg"),
+            DocumentPart(data=b"", mime_type="text/plain", filename="", size_bytes=0),
+        ],
+        [TextPart(text=""), ImagePart(mime_type="image/png")],
+        [],
+    ],
+)
+def test_message_is_the_production_extraction(content):
+    assert _production_message(content) == HandlerPipeline._extract_message(None, content)
+
+
+async def test_message_uses_the_production_function(key, bundle, monkeypatch):
+    """No copy of the rule: ``on.message`` is what production's ``_extract_message`` returns."""
+    seen = []
+
+    def production(self, content):
+        seen.append(list(content))
+        return "production rule"
+
+    monkeypatch.setattr(HandlerPipeline, "_extract_message", production)
+    async with fixture_server() as server:
+        memory, _, _, _ = prepare(key, bundle, server)
+        async with dooers_threads_handler_context(memory, private) as prepared:
+            assert prepared.on.message == "production rule"
+            assert seen == [prepared.on.content]

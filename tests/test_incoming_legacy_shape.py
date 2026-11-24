@@ -2,7 +2,7 @@
 
 On production, ``AgentIncoming.__post_init__`` binds the RAG context and drops the token,
 so ``fields``/``asdict``/``deepcopy``/``pickle``/``repr``/``==`` see only the six fields.
-The Maestro path keeps its token in ``maestro_handler_context``; it must never leak into
+The Dooers Threads path keeps its token in ``dooers_threads_handler_context``; it must never leak into
 the legacy object (final review of plan 1, item I1).
 
 The expected values below were produced by running the same code against
@@ -220,8 +220,8 @@ async def test_incoming_built_by_the_legacy_pipeline_has_the_production_shape():
     assert shape["rag_agent_id"] == "agent-legacy"
 
 
-async def test_duck_typed_context_without_maestro_still_binds_like_production():
-    """Production read only the context fields: a stub without ``maestro`` must keep working."""
+async def test_duck_typed_context_without_dooers_threads_still_binds_like_production():
+    """Production read only the context fields: a stub without ``dooers_threads`` must keep working."""
     from types import SimpleNamespace
 
     context = SimpleNamespace(

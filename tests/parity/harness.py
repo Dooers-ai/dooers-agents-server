@@ -11,30 +11,30 @@ Flows: ``dispatch`` calls ``AgentServer.dispatch`` per turn; ``websocket`` sends
 through ``AgentServer.handle`` (Router); ``script`` runs the scenario's own calls on the
 public ``AgentServer`` API.
 
-``run_maestro`` runs the same scenario with ``thread_management="maestro"``, against
-``FakeMaestro``. Each scenario keeps the ingress its flow stands for in production:
+``run_dooers_threads`` runs the same scenario with ``thread_management="dooers_threads"``, against
+``FakeDooersThreads``. Each scenario keeps the ingress its flow stands for in production:
 
 - ``dispatch`` flow, channel ``dooers-platform``: production ``AgentServer.dispatch``. Its
-  Maestro side is the agent's own publication of the person's message
-  (``FakeMaestro.agent_publish``: the declared name, e-mail and identity IDs, URL parts as
+  Dooers Threads side is the agent's own publication of the person's message
+  (``FakeDooersThreads.agent_publish``: the declared name, e-mail and identity IDs, URL parts as
   ``media_link``, a delivery for the agent). The SDK call that publishes it is plan 5, so
   the harness plays it;
 - ``websocket`` flow without the public chat handshake: production web chat. The person
-  publishes in Maestro's web chat (``FakeMaestro.publish``) and answers the form there
+  publishes in Dooers Threads' web chat (``FakeDooersThreads.publish``) and answers the form there
   (``respond_form``);
-- in both, the fake creates the thread, and each turn reaches the handler through a Maestro
+- in both, the fake creates the thread, and each turn reaches the handler through a Dooers Threads
   delivery to the SDK adapter (``create_text_delivery_adapter``);
 - channels (``channel`` other than ``dooers-platform``), public chat (``connect``) and
   ``script`` scenarios: their ingress is the agent's own ``AgentServer``, so they call
-  the same ``AgentServer`` method on a Maestro-mode server. Today it raises
+  the same ``AgentServer`` method on a Dooers Threads-mode server. Today it raises
   ``THREAD_MANAGEMENT_MISMATCH`` (or the router refuses the frame), and that is the gap.
 
-Maestro is the thread authority in this mode, so events, threads and runs are read back from
-the fake through the SDK's own conversion: ``MaestroExecutionPersistence`` (the persistence of
-the handler's ``MaestroAgentMemory``) over the whole thread as the agent's context has it, and
+Dooers Threads is the thread authority in this mode, so events, threads and runs are read back from
+the fake through the SDK's own conversion: ``DooersThreadsExecutionPersistence`` (the persistence of
+the handler's ``DooersThreadsAgentMemory``) over the whole thread as the agent's context has it, and
 ``legacy_model.to_runs``. ``ParityResult.deliveries`` records how each delivery ended (HTTP
-status, state, reason code). If FakeMaestro refused an SDK request that
-``EXPECTED_REJECTIONS`` does not list, ``run_maestro`` raises ``ContractViolation``, also
+status, state, reason code). If FakeDooersThreads refused an SDK request that
+``EXPECTED_REJECTIONS`` does not list, ``run_dooers_threads`` raises ``ContractViolation``, also
 when the scenario itself fails.
 """
 
@@ -58,7 +58,7 @@ from aiohttp.base_protocol import BaseProtocol as _AioBaseProtocol
 from aiohttp.streams import StreamReader as _AioStreamReader
 from aiohttp.test_utils import make_mocked_request
 
-import dooers.agents.server.maestro.media_fetch as media_fetch_module
+import dooers.agents.server.dooers_threads.media_fetch as media_fetch_module
 import dooers.agents.server.observability.otel as otel
 import dooers.agents.server.server as server_module
 from dooers.agents.server.auth_validation import (
@@ -67,20 +67,20 @@ from dooers.agents.server.auth_validation import (
     PUBLIC_CHAT_VALIDATION_PATH,
 )
 from dooers.agents.server.config import AgentConfig
-from dooers.agents.server.maestro import create_text_delivery_adapter
-from dooers.agents.server.maestro.agent_api import MaestroAgentApi
-from dooers.agents.server.maestro.agent_persistence import MaestroAgentPersistence
-from dooers.agents.server.maestro.context import MaestroPrivateResources
-from dooers.agents.server.maestro.legacy_model import to_runs
-from dooers.agents.server.maestro.links import ArtifactLinkMissing, LinkResolver
-from dooers.agents.server.maestro.persistence import MaestroExecutionPersistence
-from dooers.agents.server.maestro.window import MaestroContextWindow
+from dooers.agents.server.dooers_threads import create_text_delivery_adapter
+from dooers.agents.server.dooers_threads.agent_api import DooersThreadsAgentApi
+from dooers.agents.server.dooers_threads.agent_persistence import DooersThreadsAgentPersistence
+from dooers.agents.server.dooers_threads.context import DooersThreadsPrivateResources
+from dooers.agents.server.dooers_threads.legacy_model import to_runs
+from dooers.agents.server.dooers_threads.links import ArtifactLinkMissing, LinkResolver
+from dooers.agents.server.dooers_threads.persistence import DooersThreadsExecutionPersistence
+from dooers.agents.server.dooers_threads.window import DooersThreadsContextWindow
 from dooers.agents.server.server import AgentServer
 from dooers.tools.whatsapp.transport import build_x_message_sig
 from tests.parity.context_pages import ThreadPages
 from tests.parity.fake_agent_api import PREFIX as AGENT_API_PREFIX
 from tests.parity.fake_agent_api import FakeAgentApi
-from tests.parity.fake_maestro import CALLBACK_BASE_URL, FakeMaestro
+from tests.parity.fake_dooers_threads import CALLBACK_BASE_URL, FakeDooersThreads
 from tests.parity.memory_persistence import MemoryPersistence
 from tests.parity.model import (
     AGENT_ID,
@@ -103,9 +103,9 @@ from tests.parity.model import (
     open_capture,
 )
 from tests.parity.scenarios import SCENARIOS
-from tests.test_maestro_agent_persistence import core_person
+from tests.test_dooers_threads_agent_persistence import core_person
 
-__all__ = ["EXPECTED_REJECTIONS", "ContractViolation", "ParityResult", "run_legacy", "run_maestro"]
+__all__ = ["EXPECTED_REJECTIONS", "ContractViolation", "ParityResult", "run_legacy", "run_dooers_threads"]
 
 
 class WebSocketDisconnect(Exception):
@@ -178,7 +178,7 @@ def _media_resolver(media: Mapping[str, tuple[bytes, str]]) -> Callable[[str, in
 
 
 async def _agent_api_response(fake: FakeAgentApi, request: httpx.Request) -> httpx.Response:
-    """One ``MaestroAgentApi`` call (``/agent/*``) answered by ``FakeAgentApi``, without a real socket.
+    """One ``DooersThreadsAgentApi`` call (``/agent/*``) answered by ``FakeAgentApi``, without a real socket.
 
     ``FakeAgentApi._handle`` is written against ``aiohttp.web.Request``; ``make_mocked_request`` builds one from the
     same method/path/query/headers/body the SDK's ``httpx.Request`` carries (no translation of the body: ``FakeAgentApi``
@@ -198,18 +198,20 @@ async def _agent_api_response(fake: FakeAgentApi, request: httpx.Request) -> htt
     return httpx.Response(response.status, content=response.body, headers=headers)
 
 
-def _maestro_or_agent_api(maestro: FakeMaestro, agent_api: FakeAgentApi) -> Callable[[httpx.Request], Awaitable[httpx.Response]]:
-    """Routes one ``callback_base_url`` request to ``FakeAgentApi`` (``/agent/*``) or to ``FakeMaestro`` (everything else).
+def _dooers_threads_or_agent_api(
+    dooers_threads: FakeDooersThreads, agent_api: FakeAgentApi
+) -> Callable[[httpx.Request], Awaitable[httpx.Response]]:
+    """Routes one ``callback_base_url`` request to ``FakeAgentApi`` (``/agent/*``) or to ``FakeDooersThreads`` (everything else).
 
-    Both share the same ``callback_base_url`` path prefix (``/api/v1``, index 4.3 / Maestro's own agent-api mount), so
-    ``MaestroAgentApi`` (outside a delivery) and the delivery callback protocol (``MaestroDeliveryAdapter``, during a
+    Both share the same ``callback_base_url`` path prefix (``/api/v1``, index 4.3 / Dooers Threads' own agent-api mount), so
+    ``DooersThreadsAgentApi`` (outside a delivery) and the delivery callback protocol (``DooersThreadsDeliveryAdapter``, during a
     delivery) reach the right fake with no extra configuration.
     """
 
     async def route(request: httpx.Request) -> httpx.Response:
         if request.url.path.startswith(AGENT_API_PREFIX + "/agent/"):
             return await _agent_api_response(agent_api, request)
-        return maestro.handle(request)
+        return dooers_threads.handle(request)
 
     return route
 
@@ -218,7 +220,7 @@ def _maestro_or_agent_api(maestro: FakeMaestro, agent_api: FakeAgentApi) -> Call
 def _offline_environment(
     persistence: MemoryPersistence,
     connect: Connect,
-    maestro: FakeMaestro | None = None,
+    dooers_threads: FakeDooersThreads | None = None,
     media: Mapping[str, tuple[bytes, str]] | None = None,
     agent_api: FakeAgentApi | None = None,
 ) -> Iterator[_FakeServices]:
@@ -231,7 +233,7 @@ def _offline_environment(
         stack.enter_context(patch.object(otel, "init_otel", lambda **_kwargs: None))
         stack.enter_context(patch.object(otel, "_otel_enabled", False))
         # Offline: no DNS for the agents' media URLs, except the scenario's served files.
-        # send.image/audio/document in Maestro mode publish a media_link with the agent's URL for
+        # send.image/audio/document in Dooers Threads mode publish a media_link with the agent's URL for
         # an offline URL (index 4.3), as for an unreachable URL, and upload a served file.
         stack.enter_context(patch.object(media_fetch_module, "_system_resolver", _media_resolver(media)))
         mock = stack.enter_context(respx.mock(assert_all_called=False))
@@ -241,11 +243,13 @@ def _offline_environment(
         mock.post(f"{TOOLS_BASE}/api/v1/messages").mock(side_effect=fakes.whatsapp_tools)
         mock.post(f"{CORE_BASE}{DASHBOARD_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
         mock.post(f"{CORE_BASE}{PUBLIC_CHAT_VALIDATION_PATH}").mock(side_effect=fakes.core_validate)
-        if maestro is not None:
+        if dooers_threads is not None:
             if agent_api is not None:
-                mock.route(url__startswith=CALLBACK_BASE_URL + "/").mock(side_effect=_maestro_or_agent_api(maestro, agent_api))
+                mock.route(url__startswith=CALLBACK_BASE_URL + "/").mock(
+                    side_effect=_dooers_threads_or_agent_api(dooers_threads, agent_api)
+                )
             else:
-                stack.enter_context(maestro.serving(mock))
+                stack.enter_context(dooers_threads.serving(mock))
         yield fakes
 
 
@@ -455,38 +459,38 @@ async def run_legacy(name: str) -> ParityResult:
     return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs)
 
 
-# -- Maestro mode --
+# -- Dooers Threads mode --
 
 
 class ContractViolation(Exception):
-    """FakeMaestro refused an SDK request (contract or Maestro rule) that the scenario does not expect.
+    """FakeDooersThreads refused an SDK request (contract or Dooers Threads rule) that the scenario does not expect.
 
     It is never a parity gap: ``KNOWN_GAPS`` never lists it as the expected failure.
     """
 
 
-#: SDK callbacks a scenario expects FakeMaestro to refuse: scenario -> ((action, error code, why), ...).
+#: SDK callbacks a scenario expects FakeDooersThreads to refuse: scenario -> ((action, error code, why), ...).
 #: Empty today: in every scenario the SDK sends only requests that the contract accepts.
 EXPECTED_REJECTIONS: dict[str, tuple[tuple[str, str, str], ...]] = {}
 
 
-def _check_rejections(name: str, maestro: FakeMaestro) -> None:
+def _check_rejections(name: str, dooers_threads: FakeDooersThreads) -> None:
     expected = [(action, code) for action, code, _why in EXPECTED_REJECTIONS.get(name, ())]
-    if maestro.rejections != expected:
-        raise ContractViolation(f"{name}: FakeMaestro refused {maestro.rejections}, expected {expected}")
+    if dooers_threads.rejections != expected:
+        raise ContractViolation(f"{name}: FakeDooersThreads refused {dooers_threads.rejections}, expected {expected}")
 
 
-def _delivered_by_maestro(spec: ScenarioInput) -> bool:
-    """Platform turns go through Maestro; channels, public chat and scripts keep the AgentServer ingress."""
+def _delivered_by_dooers_threads(spec: ScenarioInput) -> bool:
+    """Platform turns go through Dooers Threads; channels, public chat and scripts keep the AgentServer ingress."""
     return spec.flow != "script" and spec.connect is None and spec.channel == "dooers-platform"
 
 
 def _is_public_chat_scenario(spec: ScenarioInput) -> bool:
     """A public chat visitor (``tests/parity/model.py:109``'s ``Connect.connection_type``).
 
-    Section 7.3 of the design: the visitor never reaches the Maestro-mode Router. It talks to Maestro
+    Section 7.3 of the design: the visitor never reaches the Dooers Threads-mode Router. It talks to Dooers Threads
     directly (the core token exchange and ``ensurePublicChatThread``, plan 6 tasks 2-3), so this is a
-    sibling of ``_run_maestro_deliveries``/``_run_maestro_server``, not a case either one handles.
+    sibling of ``_run_dooers_threads_deliveries``/``_run_dooers_threads_server``, not a case either one handles.
     """
     return spec.connect is not None and spec.connect.connection_type in {"guest", "public_authenticated"}
 
@@ -515,24 +519,24 @@ def _public_chat_guest_profile(spec: ScenarioInput) -> dict[str, Any] | None:
     return profile or None
 
 
-async def _run_maestro_public_chat(maestro: FakeMaestro, scenario: Scenario) -> dict[str, Any]:
-    """The public chat visitor's own path (design section 7.3): never the Maestro-mode Router.
+async def _run_dooers_threads_public_chat(dooers_threads: FakeDooersThreads, scenario: Scenario) -> dict[str, Any]:
+    """The public chat visitor's own path (design section 7.3): never the Dooers Threads-mode Router.
 
-    The visitor's browser talks to Maestro directly (the core token exchange, then
+    The visitor's browser talks to Dooers Threads directly (the core token exchange, then
     ``ensurePublicChatThread``): the agent never sees a ``connect``/``event.create`` frame for it. Each
-    turn is the visitor's own publication (``FakeMaestro.publish_external``), delivered the same way a
-    web chat person's message is (``_run_maestro_deliveries``'s own loop).
+    turn is the visitor's own publication (``FakeDooersThreads.publish_external``), delivered the same way a
+    web chat person's message is (``_run_dooers_threads_deliveries``'s own loop).
     """
     spec = scenario.incoming
     connect = spec.connect
     assert connect is not None
 
-    async def resources(scope: Any) -> MaestroPrivateResources:
-        return MaestroPrivateResources(scope, MemoryPersistence(), {}, {})
+    async def resources(scope: Any) -> DooersThreadsPrivateResources:
+        return DooersThreadsPrivateResources(scope, MemoryPersistence(), {}, {})
 
-    agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+    agent_config = _config(spec, thread_management="dooers_threads", dooers_threads=dooers_threads.config)
     adapter = create_text_delivery_adapter(agent_config, scenario.handler, resources)
-    thread_id = maestro.ensure_external_thread(
+    thread_id = dooers_threads.ensure_external_thread(
         connect.core_user,
         external_key=_public_chat_external_key(connect),
         connection_type=connect.connection_type,
@@ -542,8 +546,10 @@ async def _run_maestro_public_chat(maestro: FakeMaestro, scenario: Scenario) -> 
     for number, turn in enumerate(spec.turns, start=1):
         if turn.event_type == "form.response":
             data = dict(turn.data or {})
-            form_event_id = _last_form(maestro, thread_id) if data.get("form_event_id") == FORM_EVENT_REF else data.get("form_event_id")
-            trigger = maestro.respond_form_external(
+            form_event_id = (
+                _last_form(dooers_threads, thread_id) if data.get("form_event_id") == FORM_EVENT_REF else data.get("form_event_id")
+            )
+            trigger = dooers_threads.respond_form_external(
                 thread_id,
                 connect.core_user,
                 form_event_id,
@@ -551,13 +557,15 @@ async def _run_maestro_public_chat(maestro: FakeMaestro, scenario: Scenario) -> 
                 cancelled=bool(data.get("cancelled")),
             )
         else:
-            trigger = maestro.publish_external(thread_id, connect.core_user, _maestro_content(turn), client_event_id=f"client-{number}")
-        for delivery in maestro.deliveries_for(trigger):
-            await maestro.deliver(adapter, delivery)
+            trigger = dooers_threads.publish_external(
+                thread_id, connect.core_user, _dooers_threads_content(turn), client_event_id=f"client-{number}"
+            )
+        for delivery in dooers_threads.deliveries_for(trigger):
+            await dooers_threads.deliver(adapter, delivery)
     return {}
 
 
-def _maestro_content(turn: Turn) -> list[dict[str, Any]]:
+def _dooers_threads_content(turn: Turn) -> list[dict[str, Any]]:
     """What the web chat publishes: the wire parts, or the message as one text part."""
     return _wire_content(turn) or [{"type": "text", "text": turn.message}]
 
@@ -572,7 +580,7 @@ def _agent_content(turn: Turn) -> list[dict[str, Any]]:
     (index 4.3), which has no ``size_bytes``; text and contact parts keep their fields.
     """
     parts = []
-    for part in _maestro_content(turn):
+    for part in _dooers_threads_content(turn):
         if part["type"] in {"image", "audio", "document"}:
             extra = {key: part[key] for key in _MEDIA_LINK_KEYS if part.get(key) is not None}
             parts.append({"type": "media_link", "kind": part["type"], "url": part["url"], **extra})
@@ -581,52 +589,54 @@ def _agent_content(turn: Turn) -> list[dict[str, Any]]:
     return parts
 
 
-def _last_form(maestro: FakeMaestro, thread_id: str) -> str:
+def _last_form(dooers_threads: FakeDooersThreads, thread_id: str) -> str:
     """The id of the thread's last production form, as the web chat knows it (``FORM_EVENT_REF``)."""
-    return [event["event_id"] for event in maestro.events[thread_id] if event["type"] == "form.created"][-1]
+    return [event["event_id"] for event in dooers_threads.events[thread_id] if event["type"] == "form.created"][-1]
 
 
-async def _run_maestro_deliveries(maestro: FakeMaestro, scenario: Scenario) -> dict[str, Any]:
-    """Each turn reaches the handler through a Maestro delivery.
+async def _run_dooers_threads_deliveries(dooers_threads: FakeDooersThreads, scenario: Scenario) -> dict[str, Any]:
+    """Each turn reaches the handler through a Dooers Threads delivery.
 
     ``dispatch`` flow (production ``AgentServer.dispatch``): the agent's own publication of the
-    person's message (``FakeMaestro.agent_publish``: declared name, e-mail and identity IDs, URL
+    person's message (``FakeDooersThreads.agent_publish``: declared name, e-mail and identity IDs, URL
     parts as ``media_link``). ``websocket`` flow (production web chat): the person publishes in
-    Maestro's web chat (``publish``) and answers the form there (``respond_form``).
+    Dooers Threads' web chat (``publish``) and answers the form there (``respond_form``).
     """
     spec = scenario.incoming
 
-    async def resources(scope: Any) -> MaestroPrivateResources:
+    async def resources(scope: Any) -> DooersThreadsPrivateResources:
         # The queue catalog comes from the delivery context (``workspace``), not from the operator.
-        return MaestroPrivateResources(scope, MemoryPersistence(), {}, {})
+        return DooersThreadsPrivateResources(scope, MemoryPersistence(), {}, {})
 
     # Configured as the legacy side (``_config``): the same AgentConfig (assistant name, content policy).
-    agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+    agent_config = _config(spec, thread_management="dooers_threads", dooers_threads=dooers_threads.config)
     adapter = create_text_delivery_adapter(agent_config, scenario.handler, resources)
-    thread_id = maestro.create_thread(spec.user, title=spec.thread_title)
+    thread_id = dooers_threads.create_thread(spec.user, title=spec.thread_title)
     for number, turn in enumerate(spec.turns, start=1):
         if turn.event_type == "form.response":
             data = dict(turn.data or {})
-            form_event_id = _last_form(maestro, thread_id) if data.get("form_event_id") == FORM_EVENT_REF else data.get("form_event_id")
-            trigger = maestro.respond_form(
+            form_event_id = (
+                _last_form(dooers_threads, thread_id) if data.get("form_event_id") == FORM_EVENT_REF else data.get("form_event_id")
+            )
+            trigger = dooers_threads.respond_form(
                 thread_id, spec.user, form_event_id, values=copy.deepcopy(data.get("values") or {}), cancelled=bool(data.get("cancelled"))
             )
         elif spec.flow == "dispatch":
-            trigger = maestro.agent_publish(thread_id, spec.user, _agent_content(turn), client_event_id=f"client-{number}")
+            trigger = dooers_threads.agent_publish(thread_id, spec.user, _agent_content(turn), client_event_id=f"client-{number}")
         else:
-            trigger = maestro.publish(thread_id, spec.user, _maestro_content(turn), client_event_id=f"client-{number}")
-        for delivery in maestro.deliveries_for(trigger):
-            await maestro.deliver(adapter, delivery)
+            trigger = dooers_threads.publish(thread_id, spec.user, _dooers_threads_content(turn), client_event_id=f"client-{number}")
+        for delivery in dooers_threads.deliveries_for(trigger):
+            await dooers_threads.deliver(adapter, delivery)
     return {}
 
 
 def _prepare_agent_api(spec: ScenarioInput) -> FakeAgentApi:
-    """A loopback agent API for this scenario, with the same identities and core people as ``FakeMaestro``.
+    """A loopback agent API for this scenario, with the same identities and core people as ``FakeDooersThreads``.
 
     ``FakeAgentApi`` keeps its own constants (its own ``AGENT_ID``/``ORGANIZATION_ID``) when nothing else
-    uses it (``tests/test_maestro_*.py``); the parity harness overrides them to the scenario's own ids
-    (``tests.parity.model``) so a thread it creates passes ``MaestroAgentApi._check_thread`` (same org/workspace
-    as ``AgentConfig.maestro``) and its credential's ``agent_id`` claim (``FakeMaestro``'s) matches.
+    uses it (``tests/test_dooers_threads_*.py``); the parity harness overrides them to the scenario's own ids
+    (``tests.parity.model``) so a thread it creates passes ``DooersThreadsAgentApi._check_thread`` (same org/workspace
+    as ``AgentConfig.dooers_threads``) and its credential's ``agent_id`` claim (``FakeDooersThreads``'s) matches.
     """
     fake = FakeAgentApi(workspace_id=WORKSPACE_ID)
     fake.agent_id = AGENT_ID
@@ -641,7 +651,7 @@ def _agent_participant(thread: Any) -> dict[str, Any]:
 
 
 #: Core's view of a human (``FakeAgentApi._core_person``), never part of a stored ``Public.Thread`` participant:
-#: ``FakeMaestro``'s own participants never carry it either (only ``_with_profile`` adds it, for a context/agent-view
+#: ``FakeDooersThreads``'s own participants never carry it either (only ``_with_profile`` adds it, for a context/agent-view
 #: projection, not for ``self.threads``).
 _CORE_PROFILE_KEYS = ("email", "identity_ids", "system_role", "organization_role", "workspace_role")
 
@@ -656,7 +666,7 @@ def _iso_now() -> str:
 
 
 async def _deliver_agent_trigger(
-    maestro: FakeMaestro,
+    dooers_threads: FakeDooersThreads,
     fake: FakeAgentApi,
     adapter: Any,
     thread_id: str,
@@ -665,16 +675,16 @@ async def _deliver_agent_trigger(
 ) -> None:
     """A ``trigger: true`` publication of ``FakeAgentApi`` (dispatch/ingest/WhatsApp inbound), delivered for real.
 
-    Mirrors the thread and its events so far into ``FakeMaestro`` (the only fake that plays the delivery
+    Mirrors the thread and its events so far into ``FakeDooersThreads`` (the only fake that plays the delivery
     callback protocol: context, outputs, complete), runs the delivery through ``create_text_delivery_adapter``
-    (the same adapter ``_run_maestro_deliveries`` uses), then plays back into ``FakeAgentApi`` what a real
-    Maestro would also write to the thread: the delivery's own lifecycle (``execution.started``,
-    ``execution.completed``/``failed``, ``delivery.updated`` — ``FakeMaestro`` has no notion of these; only
-    ``MaestroDispatchStream``'s agent-api polling needs them) and the handler's own output events (so a later
+    (the same adapter ``_run_dooers_threads_deliveries`` uses), then plays back into ``FakeAgentApi`` what a real
+    Dooers Threads would also write to the thread: the delivery's own lifecycle (``execution.started``,
+    ``execution.completed``/``failed``, ``delivery.updated`` — ``FakeDooersThreads`` has no notion of these; only
+    ``DooersThreadsDispatchStream``'s agent-api polling needs them) and the handler's own output events (so a later
     agent-api read, e.g. ``AgentServer.memory()``, sees the reply too).
     """
     agent_thread = fake.threads[thread_id]
-    maestro.admit_agent_thread(
+    dooers_threads.admit_agent_thread(
         thread_id,
         title=agent_thread.title,
         queue=agent_thread.queue,
@@ -687,21 +697,23 @@ async def _deliver_agent_trigger(
         updated_at=agent_thread.updated_at or agent_thread.created_at,
         version=agent_thread.version,
     )
-    # A file the trigger references (a staged ``chat_upload``) must be in FakeMaestro's own store too: the
+    # A file the trigger references (a staged ``chat_upload``) must be in FakeDooersThreads's own store too: the
     # delivery's download/link-issue routes are served there, never by FakeAgentApi.
     for part in trigger_event["payload"].get("content") or []:
         if part.get("type") == "attachment":
             artifact = fake.artifacts[part["artifact_id"]]
-            maestro.admit_agent_artifact(
+            dooers_threads.admit_agent_artifact(
                 part["artifact_id"], artifact["data"], filename=artifact["filename"], mime_type=artifact["mime_type"], thread_id=thread_id
             )
     # Only the trigger itself: any earlier event of this thread (a prior dispatch call and its outputs) was
     # already mirrored in an earlier call of this function. Same as a thread participant (index 4.3): the
     # core's profile is never part of a stored actor either.
     trigger_actor = _as_thread_participant(trigger_event["actor"])
-    mirrored_trigger = maestro.admit_agent_event(thread_id, trigger_event["type"], trigger_actor, copy.deepcopy(trigger_event["payload"]))
+    mirrored_trigger = dooers_threads.admit_agent_event(
+        thread_id, trigger_event["type"], trigger_actor, copy.deepcopy(trigger_event["payload"])
+    )
 
-    delivery = maestro.admit_agent_delivery(thread_id, delivery_id)
+    delivery = dooers_threads.admit_agent_delivery(thread_id, delivery_id)
     execution_id = delivery.execution_id
     agent_participant_id = _agent_participant(agent_thread)["participant_id"]
     agent_actor = {
@@ -733,20 +745,20 @@ async def _deliver_agent_trigger(
     )
 
     def mirror_output(appended_thread_id: str, event: dict[str, Any]) -> None:
-        """A handler output ``FakeMaestro`` just stored, mirrored into ``FakeAgentApi`` as it happens.
+        """A handler output ``FakeDooersThreads`` just stored, mirrored into ``FakeAgentApi`` as it happens.
 
         Some of the executor's OWN later calls of this same delivery (``record_channel_delivery`` after a
         WhatsApp send, an artifact link) already need the event through the agent API, so this cannot wait
-        for the delivery to end: ``FakeMaestro.on_append`` fires it the moment ``_append`` stores the event.
+        for the delivery to end: ``FakeDooersThreads.on_append`` fires it the moment ``_append`` stores the event.
         """
         if appended_thread_id != thread_id or event["type"] == "channel_delivery.updated":
             # A ``channel_delivery.updated`` comes from ``FakeAgentApi`` (``mirror_channel_delivery`` below): it has it already.
             return
         payload = copy.deepcopy(event["payload"])
         if payload.get("trigger_event_id") == mirrored_trigger["event_id"]:
-            # ``run.updated`` names the trigger by FakeMaestro's own (mirrored) event id; FakeAgentApi's
+            # ``run.updated`` names the trigger by FakeDooersThreads's own (mirrored) event id; FakeAgentApi's
             # conversion backfills the triggering message's ``run_id`` by matching this id in its own
-            # thread, so it must be the trigger's id there, not FakeMaestro's copy of it.
+            # thread, so it must be the trigger's id there, not FakeDooersThreads's copy of it.
             payload["trigger_event_id"] = trigger_event["event_id"]
         fake.inject_event(
             thread_id,
@@ -755,17 +767,17 @@ async def _deliver_agent_trigger(
             actor=copy.deepcopy(event["actor"]),
             delivery_id=delivery_id,
             execution_id=execution_id,
-            # Same event id as FakeMaestro's own copy: a later SDK call (``record_channel_delivery``, an
+            # Same event id as FakeDooersThreads's own copy: a later SDK call (``record_channel_delivery``, an
             # artifact link) names this output by the id the sink already learned when it was first written.
             event_id=event["event_id"],
             root_event_id=event["event_id"],
         )
 
-    maestro.on_append = mirror_output
+    dooers_threads.on_append = mirror_output
     try:
-        await maestro.deliver(adapter, delivery)
+        await dooers_threads.deliver(adapter, delivery)
     finally:
-        maestro.on_append = None
+        dooers_threads.on_append = None
     state, reason = delivery.state, delivery.reason_code
 
     completed_at = _iso_now()
@@ -812,38 +824,40 @@ async def _deliver_agent_trigger(
     )
 
 
-async def _run_maestro_server(maestro: FakeMaestro, fake: FakeAgentApi, scenario: Scenario, fakes: _FakeServices) -> dict[str, Any]:
+async def _run_dooers_threads_server(
+    dooers_threads: FakeDooersThreads, fake: FakeAgentApi, scenario: Scenario, fakes: _FakeServices
+) -> dict[str, Any]:
     """``AgentServer`` ingress outside a delivery (dispatch/ingest/repository/chat_upload/WhatsApp, plan 5, task 8).
 
-    The server's ``MaestroAgentApi`` calls reach ``FakeAgentApi`` (``_offline_environment``'s combined route).
+    The server's ``DooersThreadsAgentApi`` calls reach ``FakeAgentApi`` (``_offline_environment``'s combined route).
     Any publication with ``trigger: true`` it makes (``AgentServer.dispatch``, the WhatsApp inbound webhook) is
     delivered for real through ``create_text_delivery_adapter``, as the trigger would be in production.
     """
     spec = scenario.incoming
-    agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
+    agent_config = _config(spec, thread_management="dooers_threads", dooers_threads=dooers_threads.config)
     server = AgentServer(agent_config)
 
-    async def resources(scope: Any) -> MaestroPrivateResources:
+    async def resources(scope: Any) -> DooersThreadsPrivateResources:
         # ``AgentServer``'s own persistence (F21): a handler output's ``send.whatsapp.*`` reads the service
         # secrets merged onto it below (``create_dooers_whatsapp_outbound``), the same as the WhatsApp
         # credentials a mounted agent's own executor reads.
-        return MaestroPrivateResources(scope, server.persistence, {}, {})
+        return DooersThreadsPrivateResources(scope, server.persistence, {}, {})
 
     adapter = create_text_delivery_adapter(agent_config, scenario.handler, resources)
 
     pending: list[asyncio.Task[None]] = []
 
     def on_trigger(thread_id: str, trigger_event: dict[str, Any], delivery_id: str) -> None:
-        pending.append(asyncio.ensure_future(_deliver_agent_trigger(maestro, fake, adapter, thread_id, trigger_event, delivery_id)))
+        pending.append(asyncio.ensure_future(_deliver_agent_trigger(dooers_threads, fake, adapter, thread_id, trigger_event, delivery_id)))
 
     def mirror_channel_delivery(thread_id: str, event: dict[str, Any]) -> None:
-        """The other direction: the status of a WhatsApp send that ``FakeAgentApi`` stored is in ``FakeMaestro``'s thread too.
+        """The other direction: the status of a WhatsApp send that ``FakeAgentApi`` stored is in ``FakeDooersThreads``'s thread too.
 
-        Real Maestro keeps one thread, so the next delivery's context has the ``channel_delivery.updated``. The id of its
-        target is the same in both fakes (``mirror_output`` gives a handler output the id ``FakeMaestro`` chose).
+        Real Dooers Threads keeps one thread, so the next delivery's context has the ``channel_delivery.updated``. The id of its
+        target is the same in both fakes (``mirror_output`` gives a handler output the id ``FakeDooersThreads`` chose).
         """
-        if thread_id in maestro.threads:
-            maestro.admit_agent_event(thread_id, event["type"], event["actor"], event["payload"])
+        if thread_id in dooers_threads.threads:
+            dooers_threads.admit_agent_event(thread_id, event["type"], event["actor"], event["payload"])
 
     fake.on_trigger = on_trigger
     fake.on_channel_delivery = mirror_channel_delivery
@@ -860,19 +874,19 @@ async def _run_maestro_server(maestro: FakeMaestro, fake: FakeAgentApi, scenario
 
 
 async def _agent_api_read_back(
-    fake: FakeAgentApi, maestro_config: Any, observe: frozenset[str]
+    fake: FakeAgentApi, dooers_threads_config: Any, observe: frozenset[str]
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Events, threads and runs read back the same way ``AgentServer.repository()``/``.memory()`` would.
 
     ``AgentServer`` ingress scenarios (plan 5, task 8) have no reason to trust a separate, test-only
-    conversion of the thread: ``MaestroAgentPersistence`` is the production ``Persistence`` of a Maestro-mode
+    conversion of the thread: ``DooersThreadsAgentPersistence`` is the production ``Persistence`` of a Dooers Threads-mode
     agent outside a delivery, so the comparison goes through the same code the scenario itself exercised.
     """
-    api = MaestroAgentApi(maestro_config)
-    read = MaestroAgentPersistence(api, assistant_name=ASSISTANT_NAME, local=MemoryPersistence())
+    api = DooersThreadsAgentApi(dooers_threads_config)
+    read = DooersThreadsAgentPersistence(api, assistant_name=ASSISTANT_NAME, local=MemoryPersistence())
     events: list[dict[str, Any]] = []
     out: dict[str, Any] = {}
-    # The SDK shows a Maestro thread under its external key when it has one (``MaestroAgentPersistence._caller_key``),
+    # The SDK shows a Dooers Threads thread under its external key when it has one (``DooersThreadsAgentPersistence._caller_key``),
     # never under FakeAgentApi's own internal id: the same ref ``AgentServer.ingest``/``.dispatch`` already returned.
     for thread in list(fake.threads.values()):
         ref = thread.external_key or thread.id
@@ -888,14 +902,14 @@ async def _agent_api_read_back(
 
 
 class _AgentReader:
-    """The whole Maestro thread as the agent's delivery context has it, for ``MaestroExecutionPersistence``.
+    """The whole Dooers Threads thread as the agent's delivery context has it, for ``DooersThreadsExecutionPersistence``.
 
-    The same reads a handler's ``MaestroAgentMemory`` makes, without a cutoff: the snapshot is
-    ``FakeMaestro.agent_view`` and each file gets a temporary link from the fake.
+    The same reads a handler's ``DooersThreadsAgentMemory`` makes, without a cutoff: the snapshot is
+    ``FakeDooersThreads.agent_view`` and each file gets a temporary link from the fake.
     """
 
-    def __init__(self, maestro: FakeMaestro, thread_id: str) -> None:
-        self._maestro, self._thread_id = maestro, thread_id
+    def __init__(self, dooers_threads: FakeDooersThreads, thread_id: str) -> None:
+        self._dooers_threads, self._thread_id = dooers_threads, thread_id
         self.envelope = {
             "thread_id": thread_id,
             "organization_id": ORG_ID,
@@ -905,78 +919,82 @@ class _AgentReader:
 
         async def issue(artifact_id: str) -> dict[str, Any]:
             try:
-                return maestro.artifact_link(thread_id, artifact_id)
+                return dooers_threads.artifact_link(thread_id, artifact_id)
             except LookupError:
                 raise ArtifactLinkMissing("NOT_FOUND") from None
 
         self.links = LinkResolver(issue)
-        view = maestro.agent_view(thread_id)
+        view = dooers_threads.agent_view(thread_id)
         self._window = ThreadPages(
             view["events"], view["participants"], workspace=view.get("workspace"), thread=view.get("thread")
         ).window()
 
-    def window(self) -> MaestroContextWindow:
+    def window(self) -> DooersThreadsContextWindow:
         return self._window
 
 
-async def _maestro_read_back(maestro: FakeMaestro, observe: frozenset[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _dooers_threads_read_back(
+    dooers_threads: FakeDooersThreads, observe: frozenset[str]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Events, threads and runs read back through the SDK's conversion, as production ``get_events`` reads them."""
     events: list[dict[str, Any]] = []
     out: dict[str, Any] = {}
-    for thread_id in maestro.threads:
-        reader = _AgentReader(maestro, thread_id)
-        persistence = MaestroExecutionPersistence(reader, assistant_name=ASSISTANT_NAME)
+    for thread_id in dooers_threads.threads:
+        reader = _AgentReader(dooers_threads, thread_id)
+        persistence = DooersThreadsExecutionPersistence(reader, assistant_name=ASSISTANT_NAME)
         events.extend(event.model_dump() for event in await persistence.get_events(thread_id, limit=10_000))
         if "threads" in observe:
             thread = await persistence.get_thread(thread_id)
             out.setdefault("threads", []).append(thread.model_dump())
         if "runs" in observe:
             # Production ``list_runs``: the run that started last comes first.
-            runs = reversed(to_runs(maestro.agent_view(thread_id)["events"]))
+            runs = reversed(to_runs(dooers_threads.agent_view(thread_id)["events"]))
             out.setdefault("runs", []).extend(run.model_dump() for run in runs)
     for name in observe:
         out.setdefault(name, [])
     return events, out
 
 
-async def run_maestro(name: str) -> ParityResult:
+async def run_dooers_threads(name: str) -> ParityResult:
     scenario = SCENARIOS[name]
     spec = scenario.incoming
     public_chat = _is_public_chat_scenario(spec)
     #: The public chat visitor is what Core's connection context knows (``spec.user`` is irrelevant to it:
     #: that path never reaches ``AgentServer.handle``/``.dispatch``, so it never sees that identity).
     core_people = [spec.connect.core_user] if public_chat and spec.connect is not None else [spec.user]
-    maestro = FakeMaestro(assistant_name=ASSISTANT_NAME, core_people=[*core_people, *spec.core_people], queues=spec.queues)
+    dooers_threads = FakeDooersThreads(assistant_name=ASSISTANT_NAME, core_people=[*core_people, *spec.core_people], queues=spec.queues)
     persistence = MemoryPersistence()
-    server_mode = not public_chat and not _delivered_by_maestro(spec)
+    server_mode = not public_chat and not _delivered_by_dooers_threads(spec)
     fake_agent_api = _prepare_agent_api(spec) if server_mode else None
-    with _offline_environment(persistence, spec.connect or DASHBOARD_CONNECT, maestro, spec.media, agent_api=fake_agent_api) as fakes:
+    with _offline_environment(
+        persistence, spec.connect or DASHBOARD_CONNECT, dooers_threads, spec.media, agent_api=fake_agent_api
+    ) as fakes:
         capture, token = open_capture(scenario.history_formats)
         try:
             if public_chat:
-                outputs = await _run_maestro_public_chat(maestro, scenario)
+                outputs = await _run_dooers_threads_public_chat(dooers_threads, scenario)
             elif server_mode:
                 assert fake_agent_api is not None
-                outputs = await _run_maestro_server(maestro, fake_agent_api, scenario, fakes)
+                outputs = await _run_dooers_threads_server(dooers_threads, fake_agent_api, scenario, fakes)
             else:
-                outputs = await _run_maestro_deliveries(maestro, scenario)
+                outputs = await _run_dooers_threads_deliveries(dooers_threads, scenario)
         except Exception:
             # A refused SDK request outranks the scenario's own failure (a gap never hides it).
-            _check_rejections(name, maestro)
+            _check_rejections(name, dooers_threads)
             raise
         finally:
             close_capture(token)
-        _check_rejections(name, maestro)
+        _check_rejections(name, dooers_threads)
         if fake_agent_api is not None:
-            agent_config = _config(spec, thread_management="maestro", maestro=maestro.config)
-            events, observed = await _agent_api_read_back(fake_agent_api, agent_config.maestro, spec.observe)
+            agent_config = _config(spec, thread_management="dooers_threads", dooers_threads=dooers_threads.config)
+            events, observed = await _agent_api_read_back(fake_agent_api, agent_config.dooers_threads, spec.observe)
         else:
-            events, observed = await _maestro_read_back(maestro, spec.observe)
+            events, observed = await _dooers_threads_read_back(dooers_threads, spec.observe)
     outputs.update(observed)
     if fakes.whatsapp_requests:
         outputs["whatsapp_requests"] = fakes.whatsapp_requests
     if persistence.thread_ids():
-        # Maestro owns the threads in this mode; a local thread is a difference, never hidden.
+        # Dooers Threads owns the threads in this mode; a local thread is a difference, never hidden.
         outputs["agent_local_events"] = await _persisted_events(persistence)
-    deliveries = [{"status": d.status_code, "state": d.state, "reason_code": d.reason_code} for d in maestro.deliveries.values()]
+    deliveries = [{"status": d.status_code, "state": d.state, "reason_code": d.reason_code} for d in dooers_threads.deliveries.values()]
     return ParityResult(events=events, incoming=capture.incoming, histories=capture.histories, outputs=outputs, deliveries=deliveries)

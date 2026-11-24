@@ -157,8 +157,8 @@ def _chart(chart_type: str) -> Handler:
     )
 
 
-#: Media URLs that answer (``ScenarioInput.media``): in Maestro mode the SDK uploads these files.
-#: The PNG and the PDF are valid, as Maestro's content inspection requires (OGG has no structure check).
+#: Media URLs that answer (``ScenarioInput.media``): in Dooers Threads mode the SDK uploads these files.
+#: The PNG and the PDF are valid, as Dooers Threads' content inspection requires (OGG has no structure check).
 ONLINE_MEDIA: dict[str, tuple[bytes, str]] = {
     "https://cdn.example.com/online/grafico.png": (png_bytes(), "image/png"),
     "https://cdn.example.com/online/resposta.ogg": (b"OggS\x00parity-audio", "audio/ogg"),
@@ -255,7 +255,7 @@ SEND_SCENARIOS: dict[str, Scenario] = {
         handler=_reply(lambda on, send: [send.tool_call("buscar_pedido", {"pedido": "42"}, display_name="Buscar pedido", id="call-42")]),
         incoming=ScenarioInput(),
     ),
-    # Production int has no bound: 2^63 - 1, -2^63 and 2^70 come back exact (the Maestro stores the JSON numeric).
+    # Production int has no bound: 2^63 - 1, -2^63 and 2^70 come back exact (the Dooers Threads stores the JSON numeric).
     "big_integers": Scenario(
         handler=_reply(
             lambda on, send: [
@@ -354,7 +354,7 @@ SEND_SCENARIOS: dict[str, Scenario] = {
         incoming=ScenarioInput(),
     ),
     # AgentConfig.allowed_content_types: production answers a disallowed message with a denial run; the handler never runs.
-    # The run is not observed: a run of the agent's own id reads back from Maestro as agent_id None (legacy_model.py).
+    # The run is not observed: a run of the agent's own id reads back from Dooers Threads as agent_id None (legacy_model.py).
     "content_policy_denied": Scenario(
         handler=_reply(lambda on, send: [send.text("O handler não deveria rodar.")]),
         incoming=ScenarioInput(config={"allowed_content_types": ("image",)}),

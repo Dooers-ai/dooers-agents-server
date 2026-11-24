@@ -5,7 +5,7 @@ Only these fields are ignored, everywhere in the result:
 - ``ID_FIELDS``: the value becomes ``<id:N>``. The same value gets the same marker, and
   any other string equal to a known id (e.g. ``form_event_id``) gets that marker too,
   so references between events are still compared. ``ref_id`` is an id: the upload
-  reference is random in production, and Maestro returns artifact ids it generates.
+  reference is random in production, and Dooers Threads returns artifact ids it generates.
 - ``DATE_FIELDS``, and any ``datetime`` value: ``<ts>``. ``None`` stays ``None``.
 - ``URL_FIELD`` when the URL has a host: ``<url:N>``, one marker per artifact. The
   artifact is the URL without query or fragment, so two signed links to the same file

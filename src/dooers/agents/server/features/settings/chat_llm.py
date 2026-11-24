@@ -69,16 +69,16 @@ def apply_chat_llm_override(
     return out
 
 
-# Maestro options are explicit public declarations. Legacy SettingsSchema values,
+# Dooers Threads options are explicit public declarations. Legacy SettingsSchema values,
 # defaults, provider keys and legacy reasoning aliases never enter this schema.
 
-MaestroEffort = Literal["minimal", "low", "medium", "high", "max"]
+DooersThreadsEffort = Literal["minimal", "low", "medium", "high", "max"]
 
 
 class PublicModelOption(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     model: str = Field(min_length=1, max_length=128, pattern=r"^[!-~]+$")
-    efforts: tuple[MaestroEffort, ...] = Field(default=(), max_length=5)
+    efforts: tuple[DooersThreadsEffort, ...] = Field(default=(), max_length=5)
 
     @model_validator(mode="after")
     def distinct_efforts(self):

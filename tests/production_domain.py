@@ -1,8 +1,8 @@
 """The values production accepts for each ``send.*`` parameter and each production model field.
 
-This module is the *ruler* of ``tests/test_maestro_contract_conformance.py``. It knows production only: it reads the
+This module is the *ruler* of ``tests/test_dooers_threads_contract_conformance.py``. It knows production only: it reads the
 signature and the type annotations of ``AgentSend`` / ``send.whatsapp`` and the fields of the production Pydantic models,
-and it builds the values that production accepts for each of them. It knows nothing about Maestro.
+and it builds the values that production accepts for each of them. It knows nothing about Dooers Threads.
 
 What production accepts comes from its code:
 

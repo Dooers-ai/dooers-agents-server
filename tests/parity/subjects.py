@@ -363,7 +363,7 @@ def _thread_key_dispatch(result: ParityResult) -> None:
 
 
 def _public_chat_thread_ids(result: ParityResult) -> None:
-    """The handler of a public chat thread sees one plain id everywhere, never the key of the Maestro."""
+    """The handler of a public chat thread sees one plain id everywhere, never the key of the Dooers Threads."""
     assert result.histories["thread_ids"] == {"one_id_everywhere": True, "plain_uuid": True, "public_key_leaked": False}
 
 

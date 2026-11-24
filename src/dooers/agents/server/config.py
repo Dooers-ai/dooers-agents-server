@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from dooers.agents.server.maestro.config import MaestroConfig, MaestroConfigurationError
+from dooers.agents.server.dooers_threads.config import DooersThreadsConfig, DooersThreadsConfigurationError
 from dooers.agents.server.settings import (
     GUEST_THREAD_CLEANUP_INTERVAL_SECONDS,
     GUEST_THREAD_TTL_SECONDS,
@@ -102,7 +102,7 @@ class AgentConfig:
     # If set, settings.seed WebSocket frames are accepted (e.g. core copies template on hire).
     agent_seed_secret: str = field(default_factory=lambda: os.environ.get("AGENT_SEED_SECRET", "").strip())
 
-    upload_max_size_bytes: int = DEFAULT_UPLOAD_MAX_SIZE  # 25MB (UploadStore; Maestro mode uses the same limit)
+    upload_max_size_bytes: int = DEFAULT_UPLOAD_MAX_SIZE  # 25MB (UploadStore; Dooers Threads mode uses the same limit)
     upload_ttl_seconds: int = 300  # 5 minutes
 
     #: When True (env ``STORE_CHAT_UPLOADS``), durable blob writes may run after ``AgentServer.upload`` when the
@@ -150,18 +150,18 @@ class AgentConfig:
     otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())
 
     # Opt-in explícito: o banco acima continua privado para settings/analytics.
-    thread_management: Literal["agent", "maestro"] = "agent"
-    maestro: MaestroConfig | None = None
+    thread_management: Literal["agent", "dooers_threads"] = "agent"
+    dooers_threads: DooersThreadsConfig | None = None
 
     def validate_thread_management(self) -> None:
-        if not isinstance(self.thread_management, str) or self.thread_management not in {"agent", "maestro"}:
-            raise MaestroConfigurationError("THREAD_MANAGEMENT_INVALID")
-        if self.maestro is not None and not isinstance(self.maestro, MaestroConfig):
-            raise MaestroConfigurationError("MAESTRO_CONFIG_INVALID")
-        if self.thread_management == "maestro":
-            if self.maestro is None:
-                raise MaestroConfigurationError("MAESTRO_CONFIG_REQUIRED")
-            self.maestro.validate_startup()
+        if not isinstance(self.thread_management, str) or self.thread_management not in {"agent", "dooers_threads"}:
+            raise DooersThreadsConfigurationError("THREAD_MANAGEMENT_INVALID")
+        if self.dooers_threads is not None and not isinstance(self.dooers_threads, DooersThreadsConfig):
+            raise DooersThreadsConfigurationError("DOOERS_THREADS_CONFIG_INVALID")
+        if self.thread_management == "dooers_threads":
+            if self.dooers_threads is None:
+                raise DooersThreadsConfigurationError("DOOERS_THREADS_CONFIG_REQUIRED")
+            self.dooers_threads.validate_startup()
 
     def __post_init__(self) -> None:
         self.validate_thread_management()
