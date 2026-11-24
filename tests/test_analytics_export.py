@@ -134,6 +134,27 @@ async def test_feedback_snapshots_the_thread_and_the_message():
 
 
 @pytest.mark.asyncio
+async def test_clear_records_a_clear_event_for_the_same_message():
+    collector = AnalyticsCollector(
+        webhook_url=WEBHOOK,
+        registry=SimpleNamespace(),  # type: ignore[arg-type]
+        subscriptions={},
+        persistence=Memory(_event()),  # type: ignore[arg-type]
+    )
+    await collector.feedback(
+        feedback_type="clear",
+        target_type="event",
+        target_id="evt-1",
+        agent_id="agent-1",
+    )
+    payload = collector._buffer[0]
+    assert payload.event == "feedback.clear"
+    assert payload.thread_id == "thread-1"
+    assert payload.data is not None
+    assert payload.data["target_id"] == "evt-1"
+
+
+@pytest.mark.asyncio
 async def test_export_keeps_a_snapshot_already_stored_in_core():
     memory = Memory(_event())
     tokens = ServiceTokenClient(core_base_url=CORE)
