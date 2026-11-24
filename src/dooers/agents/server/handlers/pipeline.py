@@ -77,6 +77,9 @@ if TYPE_CHECKING:
 
 from dooers.agents.server.upload_store import UploadEntry
 
+#: What a password field of a form response looks like once stored or broadcast.
+SECRET_MASK = "********"
+
 logger = logging.getLogger("agents")
 
 #: Streaming deltas are coalesced: one ``event.delta`` frame at most every this many seconds…
@@ -373,6 +376,10 @@ class HandlerPipeline:
             author = _user_author_display(context.user)
         elif author is None and context.persist_actor == "assistant":
             author = self._assistant_name
+        stored_data = context.data
+        if context.event_type == "form.response" and context.data:
+            # Password fields reach the handler (context.data) but are never stored or broadcast.
+            stored_data = await self._mask_secret_form_values(context.data)
         user_event = ThreadEvent(
             id=user_event_id,
             thread_id=thread_id,
@@ -382,7 +389,7 @@ class HandlerPipeline:
             author=author,
             user=context.user if context.persist_actor == "user" else User(user_id=""),
             content=storage_parts if context.event_type != "form.response" else None,
-            data=self._with_inbound_source_data(context.data, context),
+            data=self._with_inbound_source_data(stored_data, context),
             created_at=now,
             client_event_id=context.client_event_id,
         )
@@ -1710,6 +1717,27 @@ class HandlerPipeline:
             if public_chat_label:
                 source["public_chat_label"] = public_chat_label
         return {"source": source}
+
+    async def _mask_secret_form_values(self, data: dict) -> dict:
+        """``data`` with the values of the answered form's ``password`` fields replaced by a mask.
+
+        The field types come from the stored form event (``form_event_id``), never from the client.
+        """
+        values = data.get("values")
+        form_event_id = data.get("form_event_id")
+        if not isinstance(values, dict) or not form_event_id:
+            return data
+        try:
+            form_event = await self._persistence.get_event(str(form_event_id))
+        except Exception:  # noqa: BLE001 — unknown form: mask nothing rather than fail the turn
+            logger.warning("form.response: could not load form %s to mask secrets", form_event_id, exc_info=True)
+            return data
+        elements = ((form_event.data or {}).get("elements") or []) if form_event else []
+        secret = {e.get("name") for e in elements if isinstance(e, dict) and e.get("input_type") == "password"}
+        if not secret & set(values):
+            return data
+        masked = {k: (SECRET_MASK if k in secret and v not in (None, "") else v) for k, v in values.items()}
+        return {**data, "values": masked}
 
     @classmethod
     def _with_inbound_source_data(
