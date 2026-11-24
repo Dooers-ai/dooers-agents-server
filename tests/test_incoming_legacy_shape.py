@@ -1,4 +1,4 @@
-"""Legacy ``AgentIncoming`` keeps production's dataclass shape (origin/main, v0.25.2).
+"""Legacy ``AgentIncoming`` keeps production's dataclass shape (origin/main, v0.31.0).
 
 On production, ``AgentIncoming.__post_init__`` binds the RAG context and drops the token,
 so ``fields``/``asdict``/``deepcopy``/``pickle``/``repr``/``==`` see only the six fields.
@@ -6,7 +6,7 @@ The Maestro path keeps its token in ``maestro_handler_context``; it must never l
 the legacy object (final review of plan 1, item I1).
 
 The expected values below were produced by running the same code against
-``git archive origin/main src`` (v0.25.2), with this repository's virtualenv.
+``git archive origin/main src`` (v0.31.0), with this repository's virtualenv.
 """
 
 from __future__ import annotations
@@ -42,7 +42,12 @@ PRODUCTION_CONTEXT_FIELDS = (
     "queue",
     "queues",
     "chat_context",
+    "trigger",
+    "participants",
+    "_active_run",
 )
+# ``_active_run`` is declared ``repr=False`` on production.
+PRODUCTION_REPR_EXCLUDED = ("_active_run",)
 
 USER = User(user_id="user-1", user_name="Ana", user_email="ana@example.com", identity_ids=["idp-ana"])
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -53,9 +58,11 @@ PRODUCTION_REPR = (
     "thread_id='thread-1', agent_id='agent-1', event_id='event-1', organization_id='org-1', workspace_id='ws-1', "
     "channel='dooers-platform', channel_meta=None, user=User(user_id='user-1', user_name='Ana', "
     "user_email='ana@example.com', user_mobile_number=None, user_whatsapp_number=None, identity_ids=['idp-ana'], "
-    "system_role='user', organization_role='member', workspace_role='member', connection_type='dashboard'), "
+    "system_role='user', organization_role='member', workspace_role='member', "
+    "organization_member_role=None, permissions=[], connection_type='dashboard'), "
     "thread_title='Pedido', thread_created_at=datetime.datetime(2026, 1, 1, 0, 0, tzinfo=datetime.timezone.utc), "
-    "queue=None, queues=[], chat_context=None), form_data={'nome': 'Ana'}, form_cancelled=False, form_event_id=None)"
+    "queue=None, queues=[], chat_context=None, trigger=None, participants=[]), "
+    "form_data={'nome': 'Ana'}, form_cancelled=False, form_event_id=None)"
 )
 # dataclasses.asdict() of the object built by ``_fixed_incoming`` on origin/main.
 PRODUCTION_ASDICT = {
@@ -75,6 +82,9 @@ PRODUCTION_ASDICT = {
         "queue": None,
         "queues": [],
         "chat_context": None,
+        "trigger": None,
+        "participants": [],
+        "_active_run": None,
     },
     "form_data": {"nome": "Ana"},
     "form_cancelled": False,
@@ -112,7 +122,8 @@ def _production_asdict(on: AgentIncoming) -> dict:
 
 
 def _production_repr(on: AgentIncoming) -> str:
-    context = ", ".join(f"{name}={getattr(on.context, name)!r}" for name in PRODUCTION_CONTEXT_FIELDS)
+    shown = [name for name in PRODUCTION_CONTEXT_FIELDS if name not in PRODUCTION_REPR_EXCLUDED]
+    context = ", ".join(f"{name}={getattr(on.context, name)!r}" for name in shown)
     fields = [f"{name}={getattr(on, name)!r}" for name in PRODUCTION_INCOMING_FIELDS if name != "context"]
     fields.insert(2, f"context=AgentContext({context})")
     return f"AgentIncoming({', '.join(fields)})"

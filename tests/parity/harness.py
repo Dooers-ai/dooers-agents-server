@@ -387,8 +387,20 @@ class _ScriptedWebSocket:
 
 
 async def _run_websocket(server: AgentServer, scenario: Scenario, fakes: _FakeServices) -> dict[str, Any]:
+    from dooers.agents.server.handlers.router import Router
+
     socket = _ScriptedWebSocket(scenario.incoming, fakes.connect)
-    await server.handle(socket, scenario.handler)
+    route = Router.route
+
+    async def route_and_wait(self: Router, ws: Any, frame: Any) -> None:
+        # Since 0.31 ``event.create`` turns run on a background worker; the scripted socket
+        # disconnects when its frames end, which drops queued turns. Wait for each turn so the
+        # scenario keeps the one-frame-at-a-time order it was recorded with.
+        await route(self, ws, frame)
+        await self.wait_idle()
+
+    with patch.object(Router, "route", route_and_wait):
+        await server.handle(socket, scenario.handler)
     return {"acks": socket.acks, "core_validations": fakes.core_validations}
 
 

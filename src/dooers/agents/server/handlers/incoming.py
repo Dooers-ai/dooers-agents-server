@@ -36,8 +36,10 @@ class AgentIncoming:
         if getattr(self.context, "maestro", None) is None:
             self.bind_runtime_context()
 
-    def bind_runtime_context(self) -> "RAGContextToken | None":
+    def bind_runtime_context(self, *, inherit_children: bool = True) -> "RAGContextToken | None":
         """Bind the platform RAG context to the current task and return the reset token.
+
+        ``inherit_children=False`` (Maestro private scopes) keeps child tasks out of the context.
 
         The token is never stored on the instance; the caller that binds also resets.
         """
@@ -51,7 +53,8 @@ class AgentIncoming:
             workspace_id=self.context.workspace_id,
             user_id=self.context.user.user_id,
             channel=self.context.channel,
-            thread_id=self.context.thread_id,
+            thread_id=getattr(self.context, "thread_id", ""),
+            inherit_children=inherit_children,
         )
 
     @staticmethod

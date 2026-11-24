@@ -30,6 +30,7 @@ class RAGContextToken:
     previous: RAGExecutionContext | None
     bound: RAGExecutionContext | None = None
     used: bool = False
+    previous_var: RAGExecutionContext | None = None
 
 
 _contexts: WeakKeyDictionary[asyncio.Task, RAGExecutionContext] = WeakKeyDictionary()
@@ -57,11 +58,18 @@ def bind_execution_context(
     user_id: str = "",
     channel: str = "",
     thread_id: str = "",
+    inherit_children: bool = True,
 ) -> RAGContextToken | None:
+    """Bind the execution context to the current task and return the token that resets it.
+
+    ``inherit_children=True`` (legacy turns) also exposes the context to child tasks, so parallel
+    tool calls keep the scope. Private Maestro scopes pass ``False``: a child task must never see
+    (or outlive) the private context, so the ContextVar is cleared for the duration of the scope.
+    """
     task = _current_task()
     if task is None:
         return None
-    token = RAGContextToken(task, _contexts.get(task))
+    token = RAGContextToken(task, _contexts.get(task), previous_var=_context_var.get())
     user_id = (user_id or "").strip()
     channel = (channel or "").strip()
     authenticated_user = (
@@ -78,7 +86,7 @@ def bind_execution_context(
         thread_id=(thread_id or "").strip(),
     )
     _contexts[task] = context
-    _context_var.set(context)
+    _context_var.set(context if inherit_children else None)
 
     token.bound = _contexts[task]
     return token
@@ -95,7 +103,7 @@ def reset_execution_context(token: RAGContextToken | None) -> None:
         _contexts.pop(token.task, None)
     else:
         _contexts[token.task] = token.previous
-    _context_var.set(token.previous)
+    _context_var.set(token.previous_var)
 
 
 def current_execution_context() -> RAGExecutionContext | None:

@@ -617,7 +617,7 @@ async def maestro_handler_context(
         active = True
         try:
             assert_options_current()
-            rag_token = incoming.bind_runtime_context()
+            rag_token = incoming.bind_runtime_context(inherit_children=False)
             tokens = bind_handler_context(persistence=resources.persistence, agent_id=scope.instance_agent_id)
             guard_token = bind_handler_scope_guard(lambda: active and asyncio.current_task() is task and not cancellation.cancelled)
             _active[task] = incoming.context.maestro
