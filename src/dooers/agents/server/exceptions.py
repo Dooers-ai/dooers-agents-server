@@ -35,3 +35,15 @@ class HandlerError(Exception):
 
 class ThreadManagementModeError(DispatchError):
     """Entrada/histórico legado indisponível neste servidor configurado Maestro."""
+
+
+class TaskRunRejected(Exception):
+    """``AgentServer.run_task`` refused the request (bad or missing token, malformed body).
+
+    ``status`` is the HTTP status the agent's endpoint should answer with.
+    """
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message

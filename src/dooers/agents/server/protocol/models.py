@@ -387,6 +387,11 @@ class ChatContext(BaseModel):
 
     llm_model: str | None = None
     reasoning_effort: str | None = None
+    #: IANA time zone of the person typing (e.g. ``America/Sao_Paulo``). Used for local
+    #: dates in prompts and for scheduling; validate before use.
+    timezone: str | None = None
+    #: BCP 47 UI locale (e.g. ``pt-BR``) — a hint for the answer language.
+    locale: str | None = None
 
 
 class User(BaseModel):
@@ -399,6 +404,13 @@ class User(BaseModel):
     system_role: str = "user"
     organization_role: str = "member"
     workspace_role: str = "member"
+    #: The member's actual organization role. ``organization_role`` above is the role
+    #: the platform lets the runtime act on for thread supervision (core reports a
+    #: plain member when the user lacks ``thread:view_others``); creator settings use
+    #: this one. ``None`` on older cores — fall back to ``organization_role``.
+    organization_member_role: str | None = None
+    #: Platform permissions for this connection (e.g. ``thread:view_others``).
+    permissions: list[str] = []
     # How this session connected — "dashboard" (authenticated platform user),
     # "public_authenticated" (signed in via public chat link),
     # "guest" (anonymous public chat visitor). Set from the validation
@@ -415,11 +427,14 @@ class ConnectionUser(BaseModel):
     name: str = ""
     identity_ids: list[str] = []
     system_role: str = "user"
+    permissions: list[str] = []
 
 
 class ConnectionOrganization(BaseModel):
     id: str
     role: str = "member"
+    #: Actual org role (``role`` is the thread-supervision role). Missing on older cores.
+    member_role: str | None = None
     plan: str = "free"
 
 
@@ -489,6 +504,8 @@ class ConnectionContext(BaseModel):
     workspace: ConnectionWorkspace
     agent: ConnectionAgent
     policies: ConnectionPolicies = ConnectionPolicies()
+    #: ``chat`` (a person opened the chat) or ``task`` (the core started a scheduled task for them).
+    purpose: str | None = None
 
 
 class ThreadEvent(BaseModel):

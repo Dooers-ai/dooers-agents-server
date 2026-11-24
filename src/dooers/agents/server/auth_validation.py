@@ -105,6 +105,8 @@ class AuthValidationResult:
     can_configure_settings: bool = False
     organization_plan: str = "free"
     workspace_queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
+    #: Why the core issued the token: ``chat`` or ``task`` (``None`` on older cores).
+    purpose: str | None = None
 
 
 class AuthValidationClient:
@@ -219,6 +221,8 @@ class AuthValidationClient:
             system_role=ctx.user.system_role or "user",
             organization_role=ctx.organization.role or "member",
             workspace_role=ctx.workspace.role or "member",
+            organization_member_role=ctx.organization.member_role,
+            permissions=ctx.user.permissions,
             connection_type=ctx.connection_type or "dashboard",
         )
 
@@ -239,6 +243,7 @@ class AuthValidationClient:
             can_configure_settings=ctx.agent.can_configure_settings,
             organization_plan=ctx.organization.plan,
             workspace_queues=ctx.workspace.catalog(),
+            purpose=ctx.purpose,
         )
 
     async def _validate_legacy(
@@ -304,6 +309,8 @@ class AuthValidationClient:
                 system_role=ctx.user.system_role or "user",
                 organization_role=ctx.organization.role or "member",
                 workspace_role=ctx.workspace.role or "member",
+                organization_member_role=ctx.organization.member_role,
+                permissions=ctx.user.permissions,
             )
 
             rate_limits: dict[str, Any] = {}

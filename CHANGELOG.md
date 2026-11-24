@@ -26,6 +26,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the delivery failed with `handler_contract_error`. The run is read back with
   the same `agent_id` the handler wrote. A UUID stays valid.
 
+## [0.31.0] — 2026-11-24
+
+Platform support for frontier, multi-user agents. Every new frame is additive; clients must
+check the server version (servers before 0.31.0 close the socket on an unknown frame type).
+
+### Added
+
+- **Token streaming.** `send.text_delta(delta, stream_id=)` / `send.reasoning_delta(...)` stream an
+  assistant message while it is generated; `send.text(text, stream_id=)` /
+  `send.reasoning(text, stream_id=)` finalize it (same event id). The first delta broadcasts
+  `event.append` with `streaming: true`, the next ones a new S2C frame **`event.delta`**
+  (`thread_id`, `event_id`, `kind`, `delta`, `seq`, coalesced every ~50 ms / 512 chars), and the
+  final message is persisted and broadcast with `finalized: true`. Streams left open are
+  finalized at `run_end`, on handler errors and on cancellation. `send.new_stream_id()` helper.
+  WhatsApp and other channels only receive the final text.
+- **Stop a run.** C2S **`run.cancel`** `{thread_id, run_id?}` (participants or thread managers).
+  The pipeline interrupts the handler at its current `await` (never in the middle of its own
+  persistence), keeps the streamed text with `data.interrupted = true`, and records the run as
+  `canceled`. `incoming.context.cancelled` for cooperative checks; `AgentServer.cancel_run()` and
+  `AgentServer.run_registry` for REST/dispatch runs. A `running` row nobody owns for 10 minutes
+  (crash/redeploy) is closed by `run.cancel` too.
+- **Turns no longer block the socket.** `AgentServer.handle` runs `event.create` turns on a
+  per-connection worker (same one-at-a-time order as before), so pings, `run.cancel`,
+  subscriptions and settings frames are served while the agent works, and a turn finishes even
+  if the browser disconnects. Routers built by hand keep the inline behaviour.
+- **Thread metadata isolation**: `thread.upsert` (title, participants, dates) now reaches only sockets
+  that may read the thread; before, every socket connected to the agent got it and the client added
+  other people's new chats to the sidebar. Sockets without a session receive nothing.
+- **Parallel threads**: turns run off the WebSocket receive loop, one queue per thread — the turns of a
+  thread keep their order, different threads run in parallel (up to `max_parallel_turns`, env
+  `AGENT_MAX_PARALLEL_TURNS`, default 4, per connection). A long answer in one chat no longer holds
+  the others. Per-turn context (RAG scope, sandbox session, OTEL span) stays per task.
+- **Long-term memory** (`features/memory`): tables `{prefix}memories` (scopes `user` /
+  `workspace`, kinds, tags, pinned, usage, expiry, soft delete) and `{prefix}memory_prefs`
+  (enabled, custom instructions, "about me"). Handler API `memory.long_term`
+  (`remember` with de-duplication, `recall` ranked by full-text relevance + pinning + usage +
+  recency, `list`, `update`, `forget`, `preferences`, `set_preferences`); owners always come from
+  the turn context. WebSocket: `memory.list | create | update | delete | prefs.get |
+  prefs.update` → `memory.list.result`, `memory.upsert`, `memory.deleted`, `memory.prefs`.
+  Personal (`user`) memory is private; `workspace` memory is shared with the workspace members.
+  Every memory records its author (`author_id`, `author_name`); a workspace memory is editable by
+  managers and by its author. Moving a personal memory to the workspace is an explicit action
+  (`LongTermMemory.share()`, or `memory.update` with `scope: "workspace"`), never the model's own
+  call. `AgentContext.participants` / `is_shared` let handlers keep personal memory out of threads
+  other people read. Guests have no memory.
+  `format_memories_for_prompt()` helper.
+- **Scheduled tasks** (`dooers.tools.tasks`): reminders and recurring work live on the Dooers
+  Tasks service, which fires them with Cloud Tasks (agents on Cloud Run scale to zero, so an
+  in-process poller cannot be trusted). `tasks.schedule(title=, instruction=, due_at=,
+  recurrence=)` (`freq` hourly/daily/weekly/monthly, `interval`, `byWeekday`, `byMonthday`,
+  `atTime`, `timezone`, `until`, `count`), `list`, `get`, `reschedule`, `cancel`. The task acts for
+  the person of the turn: the SDK exchanges the turn's core-signed handshake token
+  (`presence_token`) plus the runtime API key for a `tasks-service-core` token `on_behalf_of` that
+  person; personal tasks (default) need no workspace. When the time comes the core re-checks
+  that the person may still use the agent and calls **`AgentServer.run_task(handler,
+  authorization=, body=)`** (mount it at `POST /internal/tasks/run`): the token must be a core
+  handshake with `purpose: "task"`; the run is skipped unless it is the task's current one; the
+  handler runs in the task's conversation as that person with
+  `incoming.context.trigger = {"type": "task", "task_id", "run_id", "title", "due_at",
+  "recurring"}`, and the outcome (last text as summary, or the error) is reported back. Rejections
+  raise `TaskRunRejected(status, message)`. Configured by `DOOERS_TASKS_SERVICE_URL`. Each run of
+  a recurring task is recorded as a closed subtask of the series: `tasks.runs(task_id)`. Workspace
+  tasks: `on_success_status` / `on_failure_status` (custom status ids) for each run's outcome.
+  `ConnectionContext.purpose` / `AuthValidationResult.purpose` (`chat` | `task`);
+  `dispatch(..., presence_token=)`.
+- **Durable agent artifacts.** `AgentServer.store_artifact(...)` uploads generated files to chat
+  storage and returns a `ref_id`; `send.document(..., ref_id=, size_bytes=)` and
+  `send.image(..., ref_id=, filename=)` persist it so the URL is re-signed on every replay.
+- `ChatContext.timezone` and `ChatContext.locale`; `incoming.context.timezone`.
+- `dispatch(..., chat_context=, trigger=, actor=, data=)`.
+- **`dooers.tools.sandbox`**: managed sandbox client (`open`, `exec`, `write_file`, `read_file`,
+  `close`) authenticated with a Core service token (`sandbox-service` / `sandbox:exec`), one
+  sandbox per thread. Configured by `DOOERS_SANDBOX_SERVICE_URL`.
+- Config: `memory_enabled` (`AGENT_MEMORY_ENABLED`). Analytics events `run.canceled`, `task.run`.
+
+### Fixed
+
+- **Thread events no longer reach every socket of the agent.** `event.append`, `run.upsert` and
+  `event.delta` (pipeline, REST dispatch and `BroadcastManager.send_event`) go only to sockets
+  subscribed to the thread or whose user participates in it. Before, an agent shared by an
+  organization streamed each person's conversation to everyone connected to it.
+- The tool execution context (RAG, sandbox) now reaches child tasks, so parallel tool calls
+  started with `asyncio.gather` keep the agent/workspace/user scope.
+- Building `AgentIncoming` outside a running event loop no longer raises `RuntimeError`.
+- `run.upsert` at the end of a run keeps the original `started_at`.
+- Inbound events recorded with a non-user actor (`ingest`, scheduled tasks) no longer fail validation.
+
+## [0.30.0] — 2026-11-24
+
+### Added
+
+- A feedback frame can send `clear`. Clicking a thumb that is already on
+  records `feedback.clear` for that message instead of another like or dislike.
+
+## [0.29.0] — 2026-11-23
+
+### Changed
+
+- Reading other people's threads (supervision) now follows the platform permission
+  `thread:view_others`, which the organization grants through a custom role. Being an org
+  manager or a workspace manager is no longer enough. The core sends the permission list
+  in the connection context (`user.permissions`); with it present and without the
+  permission, the runtime never elevates, whatever the roles say. Cores that predate
+  permissions keep the previous role rules.
+- Creator settings follow the member's actual org role (`organization.member_role`),
+  since `organization.role` may now be lowered for thread supervision.
+
+### Fixed
+
+- Building an incoming message outside a running event loop (sync code, tests) no
+  longer raises `RuntimeError: no running event loop`; the RAG execution context is
+  simply not bound there.
+
+## [0.28.0] — 2026-11-21
+
+### Added
+
+- A like or dislike on a message stores the thread id and the message text
+  with the vote. The text is copied from the event the agent already saved.
+  `export_agent_feedback` uses that copy, and still looks up the local event
+  when an older row does not have it.
+
+## [0.27.0] — 2026-11-20
+
+### Added
+
+- Analytics batches sent to Core carry a short-lived `analytics:write` service
+  token when the agent runtime key can mint one. If the mint fails, the batch
+  is still delivered without the header, so a Core that has not started
+  requiring the token keeps accepting it.
+- `export_agent_feedback`: a host can expose feedback download to a customer
+  system. The caller authenticates with `ANALYTICS_EXPORT_SECRET` (`Authorization:
+  Bearer`). The agent reads `GET /api/v2/analytics/agent/feedback` on Core with
+  `analytics:read` and adds `thread_id` and `message` from the local event.
+
 ## [0.26.0] — 2026-11-16
 
 ### Added

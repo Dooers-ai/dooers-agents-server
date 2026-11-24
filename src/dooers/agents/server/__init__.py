@@ -1,7 +1,13 @@
 from dooers.agents.server.config import AgentConfig, MaestroConfig, OnSettingsUpdated
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
-from dooers.agents.server.exceptions import DispatchError, HandlerError, ThreadManagementModeError, UnsupportedContentTypeError
+from dooers.agents.server.exceptions import (
+    DispatchError,
+    HandlerError,
+    TaskRunRejected,
+    ThreadManagementModeError,
+    UnsupportedContentTypeError,
+)
 from dooers.agents.server.features.analytics import (
     AgentAnalytics,
     AnalyticsBatch,
@@ -9,6 +15,7 @@ from dooers.agents.server.features.analytics import (
     AnalyticsEvent,
     AnalyticsEventPayload,
 )
+from dooers.agents.server.features.analytics.export import export_agent_feedback
 from dooers.agents.server.features.channels.whatsapp import (
     WhatsappOutboundCallback,
     WhatsappToolsClient,
@@ -23,7 +30,19 @@ from dooers.agents.server.features.channels.whatsapp import (
     verify_dooers_whatsapp_tool_inbound_with_persistence,
     whatsapp_thread_id,
 )
+from dooers.agents.server.features.memory import (
+    InMemoryMemoryStore,
+    LongTermMemory,
+    MemoryOwner,
+    MemoryPreferences,
+    MemoryRecord,
+    MemoryStore,
+    MemoryUnavailableError,
+    PostgresMemoryStore,
+    format_memories_for_prompt,
+)
 from dooers.agents.server.features.settings import (
+    LLM_MODELS_FIELD_ID,
     AgentSettings,
     SettingsBroadcaster,
     SettingsField,
@@ -33,7 +52,6 @@ from dooers.agents.server.features.settings import (
     SettingsSchema,
     SettingsSelectOption,
     apply_chat_llm_override,
-    LLM_MODELS_FIELD_ID,
     resolve_chat_llm_override,
 )
 from dooers.agents.server.handlers.content_policy import normalize_allowed_content_types
@@ -41,7 +59,7 @@ from dooers.agents.server.handlers.context import AgentContext
 from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.pipeline import Handler, UploadReferenceError
-from dooers.agents.server.handlers.send import AgentSend
+from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.llm import format_user_input
 from dooers.agents.server.maestro import MaestroDeliveryAdapter
 from dooers.agents.server.persistence.base import Persistence
@@ -60,8 +78,6 @@ from dooers.agents.server.protocol.models import (
     Thread,
     ThreadEvent,
     User,
-    WorkspaceQueueCatalog,
-    WorkspaceQueueMember,
     WireC2S_AudioPart,
     WireC2S_ContactPart,
     WireC2S_ContentPart,
@@ -74,9 +90,12 @@ from dooers.agents.server.protocol.models import (
     WireS2C_DocumentPart,
     WireS2C_ImagePart,
     WireS2C_TextPart,
+    WorkspaceQueueCatalog,
+    WorkspaceQueueMember,
 )
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.repository import Repository
+from dooers.agents.server.runs import ActiveRun, RunRegistry
 from dooers.agents.server.server import AgentServer
 
 __all__ = [
@@ -90,6 +109,7 @@ __all__ = [
     "AgentContext",
     "AgentIncoming",
     "AgentSend",
+    "AgentEvent",
     "AgentMemory",
     "ConnectionRegistry",
     "BroadcastManager",
@@ -99,6 +119,7 @@ __all__ = [
     "DispatchError",
     "ThreadManagementModeError",
     "HandlerError",
+    "TaskRunRejected",
     "UnsupportedContentTypeError",
     "UploadReferenceError",
     "normalize_allowed_content_types",
@@ -135,9 +156,23 @@ __all__ = [
     "RunStatus",
     "Actor",
     "EventType",
+    # Run control
+    "RunRegistry",
+    "ActiveRun",
+    # Long-term memory
+    "LongTermMemory",
+    "MemoryOwner",
+    "MemoryPreferences",
+    "MemoryRecord",
+    "MemoryStore",
+    "MemoryUnavailableError",
+    "InMemoryMemoryStore",
+    "PostgresMemoryStore",
+    "format_memories_for_prompt",
     # Analytics
     "AnalyticsEvent",
     "AnalyticsEventPayload",
+    "export_agent_feedback",
     "AnalyticsBatch",
     "AnalyticsCollector",
     "AgentAnalytics",

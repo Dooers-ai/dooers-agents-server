@@ -1,0 +1,299 @@
+"""Router: background turns, run.cancel and memory.* frames."""
+
+from __future__ import annotations
+
+import asyncio
+
+from dooers.agents.server.features.memory import InMemoryMemoryStore
+from dooers.agents.server.handlers.router import Router
+from dooers.agents.server.protocol.models import User
+from dooers.agents.server.protocol.parser import parse_frame
+from dooers.agents.server.registry import ConnectionRegistry
+from dooers.agents.server.runs import RunRegistry
+from tests.fakes import FakeSocket, MemoryPersistence
+
+
+async def _router(handler, *, user: User, memory_store=None):
+    persistence = MemoryPersistence()
+    registry = ConnectionRegistry()
+    subscriptions: dict[str, set[str]] = {}
+    runs = RunRegistry()
+    router = Router(
+        persistence=persistence,
+        handler=handler,
+        registry=registry,
+        subscriptions=subscriptions,
+        run_registry=runs,
+        memory_store=memory_store,
+    )
+    ws = FakeSocket()
+    router._agent_id = "a1"
+    router._organization_id = "o1"
+    router._workspace_id = "w1"
+    router._user = user
+    router._ws = ws
+    await registry.register("a1", ws, user=user, workspace_id="w1", ws_id=router._ws_id)
+    subscriptions[router._ws_id] = set()
+    return router, ws, persistence, runs
+
+
+def _create(text: str, frame_id: str) -> dict:
+    return {
+        "id": frame_id,
+        "type": "event.create",
+        "payload": {"event": {"type": "message", "actor": "user", "content": [{"type": "text", "text": text}]}},
+    }
+
+
+def _frame(raw: dict):
+    import json
+
+    return parse_frame(json.dumps(raw))
+
+
+async def test_turn_runs_in_background_and_can_be_stopped():
+    started = asyncio.Event()
+
+    async def handler(incoming, send, memory, analytics, settings):
+        yield send.run_start()
+        sid = send.new_stream_id()
+        yield send.text_delta("trabalhando…", stream_id=sid)
+        started.set()
+        await asyncio.sleep(30)
+        yield send.run_end()
+
+    user = User(user_id="u1")
+    router, ws, persistence, runs = await _router(handler, user=user)
+    await router.route(
+        ws,
+        _frame(
+            {
+                "id": "f1",
+                "type": "event.create",
+                "payload": {"event": {"type": "message", "actor": "user", "content": [{"type": "text", "text": "oi"}]}},
+            }
+        ),
+    )
+    # route() returned while the turn is still running: the socket keeps being served.
+    await asyncio.wait_for(started.wait(), 2)
+    thread_id = next(iter(persistence.threads))
+    await router.route(ws, _frame({"id": "ping", "type": "ping", "payload": {}}))
+    assert ws.frames("pong")
+    await router.route(ws, _frame({"id": "c1", "type": "run.cancel", "payload": {"thread_id": thread_id}}))
+    acks = {f["payload"]["ack_id"]: f["payload"] for f in ws.frames("ack")}
+    assert acks["c1"]["ok"] is True
+    await asyncio.wait_for(router.wait_idle(), 2)
+    run = next(iter(persistence.runs.values()))
+    assert run.status == "canceled"
+    assert ws.frames("event.delta") == [] or all(f["payload"]["thread_id"] == thread_id for f in ws.frames("event.delta"))
+    assert persistence.messages(thread_id)[0].data["interrupted"] is True
+    # Nothing left to cancel.
+    await router.route(ws, _frame({"id": "c2", "type": "run.cancel", "payload": {"thread_id": thread_id}}))
+    acks = {f["payload"]["ack_id"]: f["payload"] for f in ws.frames("ack")}
+    assert acks["c2"]["error"]["code"] == "RUN_NOT_FOUND"
+
+
+def _message(text: str, frame_id: str, thread_id: str | None = None) -> dict:
+    payload: dict = {"event": {"type": "message", "actor": "user", "content": [{"type": "text", "text": text}]}}
+    if thread_id:
+        payload["thread_id"] = thread_id
+    return {"id": frame_id, "type": "event.create", "payload": payload}
+
+
+def _slow_handler(order: list[str], delay: float = 0.05):
+    async def handler(incoming, send, memory, analytics, settings):
+        order.append(f"start:{incoming.message}")
+        await asyncio.sleep(delay)
+        order.append(f"end:{incoming.message}")
+        yield send.text("ok")
+
+    return handler
+
+
+async def test_different_threads_run_in_parallel():
+    order: list[str] = []
+    router, ws, _, _ = await _router(_slow_handler(order), user=User(user_id="u1"))
+    for text in ("a", "b"):
+        await router.route(ws, _frame(_message(text, text)))  # two new threads
+    await asyncio.wait_for(router.wait_idle(), 2)
+    # Both started before either ended: a long answer in one chat does not hold the other.
+    assert order[:2] == ["start:a", "start:b"]
+
+
+async def test_turns_of_one_thread_keep_their_order():
+    order: list[str] = []
+    router, ws, persistence, _ = await _router(_slow_handler(order, 0.02), user=User(user_id="u1"))
+    await router.route(ws, _frame(_message("a", "f1")))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    thread_id = next(iter(persistence.threads))
+    order.clear()
+    for text in ("b", "c"):
+        await router.route(ws, _frame(_message(text, text, thread_id)))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert order == ["start:b", "end:b", "start:c", "end:c"]
+
+
+async def test_follow_up_to_a_new_thread_waits_for_the_first_turn():
+    order: list[str] = []
+    gate = asyncio.Event()
+
+    async def handler(incoming, send, memory, analytics, settings):
+        order.append(f"start:{incoming.message}")
+        if incoming.message == "a":
+            gate.set()
+            await asyncio.sleep(0.05)
+        order.append(f"end:{incoming.message}")
+        yield send.text("ok")
+
+    router, ws, persistence, _ = await _router(handler, user=User(user_id="u1"))
+    await router.route(ws, _frame(_message("a", "f1")))
+    await asyncio.wait_for(gate.wait(), 1)
+    thread_id = next(iter(persistence.threads))
+    await router.route(ws, _frame(_message("b", "f2", thread_id)))  # queued under the real id
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert order == ["start:a", "end:a", "start:b", "end:b"]
+
+
+async def test_parallel_turns_respect_the_connection_limit():
+    running = 0
+    peak = 0
+
+    async def handler(incoming, send, memory, analytics, settings):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        yield send.text("ok")
+
+    router, ws, _, _ = await _router(handler, user=User(user_id="u1"))
+    router._turn_slots = asyncio.Semaphore(2)
+    for i in range(5):
+        await router.route(ws, _frame(_message(f"m{i}", f"f{i}")))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert peak == 2
+
+
+async def _noop(incoming, send, memory, analytics, settings):  # pragma: no cover
+    if False:
+        yield
+
+
+async def test_memory_frames_crud_and_workspace_permissions():
+    store = InMemoryMemoryStore()
+    member = User(user_id="u1", workspace_role="member")
+    router, ws, _, _ = await _router(_noop, user=member, memory_store=store)
+
+    await router.route(ws, _frame({"id": "m1", "type": "memory.create", "payload": {"content": "Gosta de chá", "pinned": True}}))
+    await router.route(ws, _frame({"id": "m2", "type": "memory.create", "payload": {"content": "Regra do time", "scope": "workspace"}}))
+    acks = {f["payload"]["ack_id"]: f["payload"] for f in ws.frames("ack")}
+    assert acks["m1"]["ok"] is True
+    # Adding to the workspace from the panel is an explicit choice any member may make.
+    assert acks["m2"]["ok"] is True
+    upserts = ws.frames("memory.upsert")
+    assert upserts and upserts[0]["payload"]["memory"]["content"] == "Gosta de chá"
+
+    await router.route(ws, _frame({"id": "l1", "type": "memory.list", "payload": {}}))
+    result = ws.frames("memory.list.result")[-1]["payload"]
+    assert result["available"] is True and result["can_manage_workspace"] is False
+    memory_id = next(m["id"] for m in result["memories"] if m["scope"] == "user")
+
+    await router.route(ws, _frame({"id": "u1", "type": "memory.update", "payload": {"memory_id": memory_id, "content": "Chá verde"}}))
+    await router.route(ws, _frame({"id": "d1", "type": "memory.delete", "payload": {"memory_id": memory_id}}))
+    assert ws.frames("memory.deleted")[0]["payload"]["memory_id"] == memory_id
+
+    await router.route(ws, _frame({"id": "p1", "type": "memory.prefs.update", "payload": {"custom_instructions": "Seja breve"}}))
+    prefs = ws.frames("memory.prefs")[-1]["payload"]
+    assert prefs["prefs"]["custom_instructions"] == "Seja breve"
+
+
+async def test_memory_unavailable_without_store():
+    router, ws, _, _ = await _router(_noop, user=User(user_id="u1"))
+    await router.route(ws, _frame({"id": "l1", "type": "memory.list", "payload": {}}))
+    assert ws.frames("memory.list.result")[0]["payload"]["available"] is False
+
+
+async def _member_router(store, user):
+    router, ws, _, _ = await _router(_noop, user=user, memory_store=store)
+    return router, ws
+
+
+async def test_workspace_memory_author_and_managers_moderate():
+    store = InMemoryMemoryStore()
+    ana = User(user_id="ana", user_name="Ana", workspace_role="member")
+    router_ana, ws_ana = await _member_router(store, ana)
+    await router_ana.route(
+        ws_ana, _frame({"id": "c1", "type": "memory.create", "payload": {"content": "Clientes chegam pelo WhatsApp", "scope": "workspace"}})
+    )
+    record = ws_ana.frames("memory.upsert")[-1]["payload"]["memory"]
+    assert record["scope"] == "workspace" and record["author_id"] == "ana" and record["author_name"] == "Ana"
+
+    bruno = User(user_id="bruno", workspace_role="member")
+    router_bruno, ws_bruno = await _member_router(store, bruno)
+    await router_bruno.route(ws_bruno, _frame({"id": "d1", "type": "memory.delete", "payload": {"memory_id": record["id"]}}))
+    assert ws_bruno.frames("ack")[-1]["payload"]["error"]["code"] == "FORBIDDEN"
+
+    manager = User(user_id="carla", workspace_role="manager")
+    router_carla, ws_carla = await _member_router(store, manager)
+    await router_carla.route(
+        ws_carla, _frame({"id": "u1", "type": "memory.update", "payload": {"memory_id": record["id"], "pinned": True}})
+    )
+    assert ws_carla.frames("ack")[-1]["payload"]["ok"] is True
+
+    await router_ana.route(ws_ana, _frame({"id": "d2", "type": "memory.delete", "payload": {"memory_id": record["id"]}}))
+    assert ws_ana.frames("ack")[-1]["payload"]["ok"] is True
+
+
+async def test_sharing_a_personal_memory_moves_it_to_the_workspace():
+    store = InMemoryMemoryStore()
+    ana = User(user_id="ana", user_name="Ana")
+    router, ws = await _member_router(store, ana)
+    await router.route(ws, _frame({"id": "c1", "type": "memory.create", "payload": {"content": "O time usa Notion"}}))
+    personal = ws.frames("memory.upsert")[-1]["payload"]["memory"]
+    assert personal["scope"] == "user"
+
+    await router.route(
+        ws, _frame({"id": "s1", "type": "memory.update", "payload": {"memory_id": personal["id"], "scope": "workspace"}})
+    )
+    assert ws.frames("ack")[-1]["payload"]["ok"] is True
+    assert ws.frames("memory.deleted")[-1]["payload"]["memory_id"] == personal["id"]
+    shared = ws.frames("memory.upsert")[-1]["payload"]["memory"]
+    assert shared["scope"] == "workspace" and shared["content"] == "O time usa Notion" and shared["author_id"] == "ana"
+
+
+async def test_no_workspace_memory_in_personal_chats():
+    store = InMemoryMemoryStore()
+    router, ws = await _member_router(store, User(user_id="ana"))
+    router._workspace_id = ""
+    await router.route(ws, _frame({"id": "c1", "type": "memory.create", "payload": {"content": "x", "scope": "workspace"}}))
+    assert ws.frames("ack")[-1]["payload"]["error"]["code"] == "FORBIDDEN"
+
+
+def test_context_knows_when_a_thread_is_shared():
+    from dooers.agents.server.handlers.context import AgentContext
+
+    alone = AgentContext(thread_id="t", agent_id="a", event_id="e", user=User(user_id="ana"), participants=[User(user_id="ana")])
+    together = AgentContext(
+        thread_id="t", agent_id="a", event_id="e", user=User(user_id="ana"), participants=[User(user_id="ana"), User(user_id="bruno")]
+    )
+    assert alone.is_shared is False and together.is_shared is True
+
+
+
+async def test_parallel_turns_keep_their_own_execution_context():
+    from dooers.tools.rag.runtime import current_execution_context
+
+    seen: dict[str, str] = {}
+
+    async def handler(incoming, send, memory, analytics, settings):
+        await asyncio.sleep(0.02)  # both turns are in flight here
+        ctx = current_execution_context()
+        seen[incoming.message] = ctx.thread_id if ctx else ""
+        yield send.text("ok")
+
+    router, ws, persistence, _ = await _router(handler, user=User(user_id="u1"))
+    for text in ("a", "b"):
+        await router.route(ws, _frame(_message(text, text)))
+    await asyncio.wait_for(router.wait_idle(), 2)
+    assert seen["a"] and seen["b"] and seen["a"] != seen["b"]
+    assert set(seen.values()) == set(persistence.threads)

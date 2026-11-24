@@ -4,6 +4,7 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, Field
 
 from dooers.agents.server.features.analytics.models import AnalyticsEventPayload
+from dooers.agents.server.features.memory.models import MemoryPreferences, MemoryRecord
 from dooers.agents.server.features.settings.models import SettingsField, SettingsFieldGroup
 from dooers.agents.server.protocol.models import (
     ChatContext,
@@ -156,7 +157,7 @@ class AnalyticsUnsubscribePayload(BaseModel):
 class FeedbackPayload(BaseModel):
     target_type: Literal["event", "run", "thread"]
     target_id: str
-    feedback: Literal["like", "dislike"]
+    feedback: Literal["like", "dislike", "clear"]
     reason: str | None = None
     classification: str | None = None
 
@@ -281,6 +282,92 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
+# --- Run control / long-term memory (0.31.0) ---
+
+
+class RunCancelPayload(BaseModel):
+    thread_id: str
+    #: Optional: only stop this run (stale clicks on an old run are ignored).
+    run_id: str | None = None
+
+
+class C2S_RunCancel(BaseModel):
+    id: str
+    type: Literal["run.cancel"] = "run.cancel"
+    payload: RunCancelPayload
+
+
+class MemoryListPayload(BaseModel):
+    scope: Literal["user", "workspace"] | None = None
+    query: str | None = None
+    cursor: str | None = None
+    limit: int | None = None
+
+
+class C2S_MemoryList(BaseModel):
+    id: str
+    type: Literal["memory.list"] = "memory.list"
+    payload: MemoryListPayload = Field(default_factory=MemoryListPayload)
+
+
+class MemoryCreatePayload(BaseModel):
+    content: str
+    scope: Literal["user", "workspace"] = "user"
+    kind: str = "fact"
+    tags: list[str] = Field(default_factory=list)
+    pinned: bool = False
+
+
+class C2S_MemoryCreate(BaseModel):
+    id: str
+    type: Literal["memory.create"] = "memory.create"
+    payload: MemoryCreatePayload
+
+
+class MemoryUpdatePayload(BaseModel):
+    memory_id: str
+    content: str | None = None
+    tags: list[str] | None = None
+    pinned: bool | None = None
+    kind: str | None = None
+    #: ``"workspace"`` shares a personal memory with the workspace members (explicit action).
+    scope: Literal["workspace"] | None = None
+
+
+class C2S_MemoryUpdate(BaseModel):
+    id: str
+    type: Literal["memory.update"] = "memory.update"
+    payload: MemoryUpdatePayload
+
+
+class MemoryDeletePayload(BaseModel):
+    memory_id: str
+
+
+class C2S_MemoryDelete(BaseModel):
+    id: str
+    type: Literal["memory.delete"] = "memory.delete"
+    payload: MemoryDeletePayload
+
+
+class C2S_MemoryPrefsGet(BaseModel):
+    id: str
+    type: Literal["memory.prefs.get"] = "memory.prefs.get"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryPrefsUpdatePayload(BaseModel):
+    enabled: bool | None = None
+    custom_instructions: str | None = None
+    about_me: str | None = None
+
+
+class C2S_MemoryPrefsUpdate(BaseModel):
+    id: str
+    type: Literal["memory.prefs.update"] = "memory.prefs.update"
+    payload: MemoryPrefsUpdatePayload
+
+
 class C2S_Ping(BaseModel):
     id: str
     type: Literal["ping"] = "ping"
@@ -308,6 +395,13 @@ ClientToServer = Annotated[
     | C2S_SettingsPublicSchema
     | C2S_SettingsSeed
     | C2S_SettingsMergeServiceSecrets
+    | C2S_RunCancel
+    | C2S_MemoryList
+    | C2S_MemoryCreate
+    | C2S_MemoryUpdate
+    | C2S_MemoryDelete
+    | C2S_MemoryPrefsGet
+    | C2S_MemoryPrefsUpdate
     | C2S_Ping,
     Field(discriminator="type"),
 ]
@@ -487,6 +581,71 @@ class S2C_SettingsPublicSchemaResult(BaseModel):
     payload: SettingsPublicSchemaResultPayload
 
 
+class EventDeltaPayload(BaseModel):
+    """Incremental text for an event announced with ``streaming: true`` (append ``delta``)."""
+
+    thread_id: str
+    event_id: str
+    run_id: str | None = None
+    kind: Literal["text", "reasoning"] = "text"
+    delta: str
+    #: Monotonic per event; clients may drop out-of-order duplicates.
+    seq: int = 0
+
+
+class S2C_EventDelta(BaseModel):
+    id: str
+    type: Literal["event.delta"] = "event.delta"
+    payload: EventDeltaPayload
+
+
+class MemoryListResultPayload(BaseModel):
+    memories: list[MemoryRecord]
+    cursor: str | None = None
+    has_more: bool = False
+    #: False when the agent has no long-term memory store (or the user is a guest).
+    available: bool = True
+    #: True when this user may create/edit ``workspace`` memories.
+    can_manage_workspace: bool = False
+
+
+class S2C_MemoryListResult(BaseModel):
+    id: str
+    type: Literal["memory.list.result"] = "memory.list.result"
+    payload: MemoryListResultPayload
+
+
+class MemoryUpsertPayload(BaseModel):
+    memory: MemoryRecord
+
+
+class S2C_MemoryUpsert(BaseModel):
+    id: str
+    type: Literal["memory.upsert"] = "memory.upsert"
+    payload: MemoryUpsertPayload
+
+
+class MemoryDeletedPayload(BaseModel):
+    memory_id: str
+
+
+class S2C_MemoryDeleted(BaseModel):
+    id: str
+    type: Literal["memory.deleted"] = "memory.deleted"
+    payload: MemoryDeletedPayload
+
+
+class MemoryPrefsPayload(BaseModel):
+    prefs: MemoryPreferences
+    available: bool = True
+
+
+class S2C_MemoryPrefs(BaseModel):
+    id: str
+    type: Literal["memory.prefs"] = "memory.prefs"
+    payload: MemoryPrefsPayload
+
+
 class S2C_Pong(BaseModel):
     id: str
     type: Literal["pong"] = "pong"
@@ -509,5 +668,10 @@ ServerToClient = (
     | S2C_SettingsSnapshot
     | S2C_SettingsPatch
     | S2C_SettingsPublicSchemaResult
+    | S2C_EventDelta
+    | S2C_MemoryListResult
+    | S2C_MemoryUpsert
+    | S2C_MemoryDeleted
+    | S2C_MemoryPrefs
     | S2C_Pong
 )

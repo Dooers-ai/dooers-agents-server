@@ -51,6 +51,7 @@ class AgentIncoming:
             workspace_id=self.context.workspace_id,
             user_id=self.context.user.user_id,
             channel=self.context.channel,
+            thread_id=self.context.thread_id,
         )
 
     @staticmethod

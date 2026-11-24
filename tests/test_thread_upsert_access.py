@@ -64,12 +64,12 @@ async def test_thread_upsert_access_is_per_connection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_thread_upsert_omits_access_without_a_session() -> None:
+async def test_thread_upsert_skips_sockets_without_a_session() -> None:
+    """No identity, no thread: a socket that cannot be checked for read access learns nothing."""
     registry = ConnectionRegistry()
     anonymous = _Socket()
     await registry.register("agent-1", anonymous)
 
-    await broadcast_thread_upsert(registry, "agent-1", _thread())
+    sent = await broadcast_thread_upsert(registry, "agent-1", _thread())
 
-    thread = json.loads(anonymous.messages[0])["payload"]["thread"]
-    assert "access" not in thread
+    assert sent == 0 and anonymous.messages == []

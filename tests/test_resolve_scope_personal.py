@@ -14,9 +14,11 @@ from dooers.agents.server.thread_access import (
     actor_id_is_participant,
     end_of_utc_day,
     resolve_list_scope,
+    resolve_scope,
     resolve_thread_access,
     user_is_thread_participant,
 )
+from dooers.agents.server.thread_access import resolve_list_scope as resolve_scope
 
 
 def _thread(*, workspace_id: str, owner_id: str, participant_ids: list[str]) -> Thread:
