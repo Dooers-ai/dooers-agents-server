@@ -14,6 +14,8 @@ class AnalyticsEvent(StrEnum):
     MESSAGE_S2C = "message.s2c"
     TOOL_CALLED = "tool.called"
     ERROR_OCCURRED = "error.occurred"
+    RUN_CANCELED = "run.canceled"
+    TASK_RUN = "task.run"
 
     # Feedback events
     FEEDBACK_LIKE = "feedback.like"

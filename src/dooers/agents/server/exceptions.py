@@ -31,3 +31,15 @@ class HandlerError(Exception):
     def __init__(self, message: str, original: Exception | None = None):
         super().__init__(message)
         self.original = original
+
+
+class TaskRunRejected(Exception):
+    """``AgentServer.run_task`` refused the request (bad or missing token, malformed body).
+
+    ``status`` is the HTTP status the agent's endpoint should answer with.
+    """
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message

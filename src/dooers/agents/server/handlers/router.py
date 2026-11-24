@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 import bcrypt
 
 from dooers.agents.server.auth_validation import AuthValidationClient
-from dooers.agents.server.broadcast import broadcast_thread_upsert
+from dooers.agents.server.broadcast import (
+    PipelineBroadcaster,
+    broadcast_thread_upsert,
+    make_memory_notifier,
+)
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
 from dooers.agents.server.features.settings.models import SettingsFieldVisibility
@@ -28,7 +32,14 @@ from dooers.agents.server.protocol.frames import (
     C2S_EventCreate,
     C2S_EventList,
     C2S_Feedback,
+    C2S_MemoryCreate,
+    C2S_MemoryDelete,
+    C2S_MemoryList,
+    C2S_MemoryPrefsGet,
+    C2S_MemoryPrefsUpdate,
+    C2S_MemoryUpdate,
     C2S_Ping,
+    C2S_RunCancel,
     C2S_SettingsMergeServiceSecrets,
     C2S_SettingsPatch,
     C2S_SettingsPublicSchema,
@@ -38,22 +49,22 @@ from dooers.agents.server.protocol.frames import (
     C2S_ThreadArtifactsList,
     C2S_ThreadDelete,
     C2S_ThreadList,
-    C2S_ThreadSearch,
     C2S_ThreadParticipantsAdd,
+    C2S_ThreadSearch,
     C2S_ThreadSubscribe,
     C2S_ThreadUnsubscribe,
     C2S_ThreadUpdate,
     ClientToServer,
-    EventAppendPayload,
     EventListResultPayload,
     FeedbackAckPayload,
-    RunUpsertPayload,
+    MemoryListResultPayload,
+    MemoryPrefsPayload,
     S2C_Ack,
-    S2C_EventAppend,
     S2C_EventListResult,
     S2C_FeedbackAck,
+    S2C_MemoryListResult,
+    S2C_MemoryPrefs,
     S2C_Pong,
-    S2C_RunUpsert,
     S2C_SettingsPublicSchemaResult,
     S2C_ThreadArtifactsListResult,
     S2C_ThreadDeleted,
@@ -88,11 +99,17 @@ from dooers.agents.server.version import PACKAGE_VERSION, SERVER_NAME
 
 if TYPE_CHECKING:
     from dooers.agents.server.features.analytics.collector import AnalyticsCollector
+    from dooers.agents.server.features.memory.api import MemoryNotifier
+    from dooers.agents.server.features.memory.store import MemoryStore
     from dooers.agents.server.features.settings.broadcaster import SettingsBroadcaster
     from dooers.agents.server.features.settings.models import SettingsSchema
+    from dooers.agents.server.runs import RunRegistry
     from dooers.agents.server.upload_store import UploadStore
 
 logger = logging.getLogger("agents")
+
+#: ``run.cancel`` closes a ``running`` row no process owns only after this long (crash recovery).
+STALE_RUN_SECONDS = 10 * 60
 
 
 class WebSocketProtocol(Protocol):
@@ -183,7 +200,32 @@ class Router:
         agent_config: AgentConfig | None = None,
         whatsapp_outbound: Any = None,
         view_grants: ThreadViewGrantStore | None = None,
+        run_registry: RunRegistry | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_notifier: MemoryNotifier | None = None,
+        pipeline_broadcaster: PipelineBroadcaster | None = None,
+        background_turns: bool | None = None,
     ):
+        self._run_registry = run_registry
+        self._memory_store = memory_store
+        self._memory_notifier = memory_notifier or make_memory_notifier(registry)
+        self._pipeline_broadcaster = pipeline_broadcaster or PipelineBroadcaster(
+            registry=registry,
+            persistence=persistence,
+            subscriptions=subscriptions,
+            hydrate=hydrate_thread_events_for_client,
+        )
+        #: Run ``event.create`` turns off the receive loop so pings, ``run.cancel`` and other
+        #: frames are served while the agent works. Defaults on when a run registry is wired
+        #: (``AgentServer.handle``); routers built by hand keep the old inline behaviour.
+        self._background_turns = run_registry is not None if background_turns is None else background_turns
+        #: One queue (and one worker task) per thread: a thread's turns keep their order, while
+        #: different threads run in parallel — a long answer in one chat does not hold the others.
+        self._turn_queues: dict[str, asyncio.Queue[tuple[WebSocketProtocol, C2S_EventCreate]]] = {}
+        self._turn_workers: dict[str, asyncio.Task] = {}
+        max_parallel = getattr(agent_config, "max_parallel_turns", 4) if agent_config is not None else 4
+        self._turn_slots = asyncio.Semaphore(max(1, int(max_parallel or 1)))
+        self._thread_locks: dict[str, asyncio.Lock] = {}
         self._persistence = persistence
         self._handler = handler
         self._registry = registry
@@ -231,6 +273,9 @@ class Router:
             content_policy_denial_message=content_policy_denial_message,
             agent_config=agent_config,
             whatsapp_outbound=whatsapp_outbound,
+            run_registry=run_registry,
+            memory_store=memory_store,
+            memory_notifier=self._memory_notifier,
         )
 
     @property
@@ -292,35 +337,8 @@ class Router:
         await self._registry.broadcast_except(self._agent_id, ws, message)
 
     async def _broadcast_to_agent_dict(self, agent_id: str, payload: dict[str, Any]) -> None:
-        """Convert a dict payload from the pipeline into S2C frames and broadcast."""
-        payload_type = payload.get("type")
-
-        if payload_type == "thread.upsert":
-            await broadcast_thread_upsert(self._registry, agent_id, payload["thread"])
-            return
-        elif payload_type == "event.append":
-            evs = payload["events"]
-            tid = payload["thread_id"]
-            thr = await self._persistence.get_thread(tid)
-            if thr is not None:
-                evs = await self._hydrate_events_for_client(evs, thr)
-            frame = S2C_EventAppend(
-                id=_generate_id(),
-                payload=EventAppendPayload(
-                    thread_id=tid,
-                    events=evs,
-                ),
-            )
-        elif payload_type == "run.upsert":
-            frame = S2C_RunUpsert(
-                id=_generate_id(),
-                payload=RunUpsertPayload(run=payload["run"]),
-            )
-        else:
-            return
-
-        message = serialize_frame(frame)
-        await self._registry.broadcast(agent_id, message)
+        """Pipeline payload → S2C frames, delivered only to sockets allowed to see the thread."""
+        await self._pipeline_broadcaster(agent_id, payload)
 
     async def route(self, ws: WebSocketProtocol, frame: ClientToServer) -> None:
         self._ws = ws
@@ -342,7 +360,10 @@ class Router:
             case C2S_ThreadUpdate():
                 await self._handle_thread_update(ws, frame)
             case C2S_EventCreate():
-                await self._handle_event_create(ws, frame)
+                if self._background_turns:
+                    self._enqueue_turn(ws, frame)
+                else:
+                    await self._handle_event_create(ws, frame)
             case C2S_EventList():
                 await self._handle_event_list(ws, frame)
             case C2S_ThreadArtifactsList():
@@ -367,6 +388,21 @@ class Router:
             case C2S_SettingsMergeServiceSecrets():
                 await self._handle_settings_merge_service_secrets(ws, frame)
 
+            case C2S_RunCancel():
+                await self._handle_run_cancel(ws, frame)
+            case C2S_MemoryList():
+                await self._handle_memory_list(ws, frame)
+            case C2S_MemoryCreate():
+                await self._handle_memory_create(ws, frame)
+            case C2S_MemoryUpdate():
+                await self._handle_memory_update(ws, frame)
+            case C2S_MemoryDelete():
+                await self._handle_memory_delete(ws, frame)
+            case C2S_MemoryPrefsGet():
+                await self._handle_memory_prefs_get(ws, frame)
+            case C2S_MemoryPrefsUpdate():
+                await self._handle_memory_prefs_update(ws, frame)
+
             case C2S_Ping():
                 await self._handle_ping(ws, frame)
 
@@ -385,7 +421,286 @@ class Router:
                     del subscriptions[agent_id]
         self._settings_ws_context.pop(self._ws_id, None)
 
+    # --- background turns --------------------------------------------------------------
+
+    def _enqueue_turn(self, ws: WebSocketProtocol, frame: C2S_EventCreate) -> None:
+        """Queue a turn behind the earlier turns of the same thread.
+
+        A message without ``thread_id`` opens a new thread, so it gets a queue of its own. Each
+        worker runs in its own task, which keeps per-turn context (RAG scope, sandbox session,
+        OTEL span) isolated: it lives in ContextVars / task-keyed maps.
+        """
+        key = frame.payload.thread_id or f"new:{frame.id}"
+        queue = self._turn_queues.get(key)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._turn_queues[key] = queue
+        queue.put_nowait((ws, frame))
+        worker = self._turn_workers.get(key)
+        if worker is None or worker.done():
+            self._turn_workers[key] = asyncio.create_task(self._turn_worker_loop(key), name=f"dooers-turns-{self._ws_id}-{key}")
+
+    async def _turn_worker_loop(self, key: str) -> None:
+        queue = self._turn_queues[key]
+        while True:
+            try:
+                ws, frame = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                # No await between the check and the removal: a turn queued meanwhile cannot be lost.
+                self._turn_queues.pop(key, None)
+                self._turn_workers.pop(key, None)
+                return
+            try:
+                async with self._turn_slots:
+                    await self._handle_event_create(ws, frame)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — one failed turn must not stop the thread's queue
+                logger.exception("[agents] background turn failed ws=%s thread=%s", self._ws_id, key)
+
+    async def wait_idle(self) -> None:
+        """Wait until every queued turn of this connection finished (tests, graceful shutdown)."""
+        while self._turn_workers:
+            await asyncio.gather(*list(self._turn_workers.values()), return_exceptions=True)
+
+    def _stop_turn_worker(self) -> None:
+        """On disconnect: drop turns that never started, let the ones in flight finish."""
+        for queue in self._turn_queues.values():
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+    # --- run control ---------------------------------------------------------------------
+
+    async def _handle_run_cancel(self, ws: WebSocketProtocol, frame: C2S_RunCancel) -> None:
+        if not self._agent_id:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "NOT_CONNECTED", "message": "Must connect first"})
+            return
+        thread_id = (frame.payload.thread_id or "").strip()
+        thread = await self._persistence.get_thread(thread_id) if thread_id else None
+        if thread is None or thread.agent_id != self._agent_id:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "NOT_FOUND", "message": "Thread not found"})
+            return
+        user = self._user or User(user_id="")
+        access = resolve_thread_access(user, thread, connection_workspace_id=self._workspace_id)
+        if not (access.write or access.manage):
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "FORBIDDEN", "message": "Cannot stop runs on this thread"})
+            return
+        signalled = 0
+        if self._run_registry is not None:
+            signalled = self._run_registry.cancel(
+                thread_id, run_id=frame.payload.run_id, reason="user_canceled", by=user.user_id or None
+            )
+        if signalled == 0:
+            signalled = await self._cancel_stale_runs(thread_id, frame.payload.run_id)
+        if signalled == 0:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "RUN_NOT_FOUND", "message": "No active run on this thread"})
+            return
+        logger.info("[agents] run.cancel thread=%s run=%s by=%s", thread_id, frame.payload.run_id, user.user_id)
+        await self._send_ack(ws, frame.id)
+
+    async def _cancel_stale_runs(self, thread_id: str, run_id: str | None) -> int:
+        """Close ``running`` rows nobody in this process executes and that are clearly abandoned
+        (crash or redeploy mid-run) so the UI stops waiting forever."""
+        from dooers.agents.server.protocol.models import Run
+
+        try:
+            runs = await self._persistence.list_runs(thread_id=thread_id, status="running", limit=20)
+        except Exception:  # noqa: BLE001
+            return 0
+        now = datetime.now(UTC)
+        closed = 0
+        for run in runs:
+            if run_id and run.id != run_id:
+                continue
+            if (now - run.started_at).total_seconds() < STALE_RUN_SECONDS:
+                continue
+            ended = Run(
+                id=run.id,
+                thread_id=run.thread_id,
+                agent_id=run.agent_id,
+                status="canceled",
+                started_at=run.started_at,
+                ended_at=now,
+                error="stale_run",
+            )
+            await self._persistence.update_run(ended)
+            await self._broadcast_to_agent_dict(self._agent_id or "", {"type": "run.upsert", "run": ended})
+            closed += 1
+        return closed
+
+    # --- long-term memory ------------------------------------------------------------------
+
+    def _memory_owner(self):
+        from dooers.agents.server.features.memory.models import MemoryOwner
+
+        user = self._user or User(user_id="")
+        return MemoryOwner(
+            agent_id=self._agent_id or "",
+            organization_id=self._organization_id,
+            workspace_id=self._workspace_id,
+            user_id=user.user_id or "",
+            user_name=user.user_name or "",
+        )
+
+    def _memory_api(self):
+        from dooers.agents.server.features.memory.api import LongTermMemory
+
+        return LongTermMemory(self._memory_store, self._memory_owner(), notifier=self._memory_notifier)
+
+    def _can_manage_workspace_memory(self) -> bool:
+        user = self._user or User(user_id="")
+        if not self._workspace_id:
+            return False
+        return (
+            user.system_role == "admin"
+            or user.organization_role in ("owner", "manager")
+            or user.workspace_role == "manager"
+        )
+
+    async def _memory_guard(self, ws: WebSocketProtocol, frame_id: str):
+        if not self._agent_id:
+            await self._send_ack(ws, frame_id, ok=False, error={"code": "NOT_CONNECTED", "message": "Must connect first"})
+            return None
+        api = self._memory_api()
+        if not api.available:
+            await self._send_ack(
+                ws, frame_id, ok=False, error={"code": "MEMORY_UNAVAILABLE", "message": "Long-term memory is not available"}
+            )
+            return None
+        return api
+
+    async def _handle_memory_list(self, ws: WebSocketProtocol, frame: C2S_MemoryList) -> None:
+        api = self._memory_api()
+        if not self._agent_id or not api.available:
+            await self._send(
+                ws,
+                S2C_MemoryListResult(
+                    id=_generate_id(),
+                    payload=MemoryListResultPayload(memories=[], available=False),
+                ),
+            )
+            return
+        try:
+            offset = max(0, int(frame.payload.cursor or 0))
+        except ValueError:
+            offset = 0
+        limit = max(1, min(int(frame.payload.limit or 50), 200))
+        records, has_more = await api.list(scope=frame.payload.scope, query=frame.payload.query, limit=limit, offset=offset)
+        await self._send(
+            ws,
+            S2C_MemoryListResult(
+                id=_generate_id(),
+                payload=MemoryListResultPayload(
+                    memories=records,
+                    cursor=str(offset + len(records)) if has_more else None,
+                    has_more=has_more,
+                    available=True,
+                    can_manage_workspace=self._can_manage_workspace_memory(),
+                ),
+            ),
+        )
+
+    async def _handle_memory_create(self, ws: WebSocketProtocol, frame: C2S_MemoryCreate) -> None:
+        api = await self._memory_guard(ws, frame.id)
+        if api is None:
+            return
+        payload = frame.payload
+        # Any member may add to the workspace memory from the panel: it is an explicit choice
+        # ("Workspace" in the form), never inferred. Without a workspace there is no one to share with.
+        if payload.scope == "workspace" and not self._workspace_id:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "FORBIDDEN", "message": "No workspace to share with"})
+            return
+        try:
+            await api.remember(
+                payload.content,
+                scope=payload.scope,
+                kind=payload.kind,
+                tags=payload.tags,
+                pinned=payload.pinned,
+                created_by=f"user:{api.owner.user_id}",
+            )
+        except ValueError as e:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "INVALID_PAYLOAD", "message": str(e)})
+            return
+        await self._send_ack(ws, frame.id)
+
+    async def _memory_target(self, ws: WebSocketProtocol, frame_id: str, memory_id: str):
+        api = await self._memory_guard(ws, frame_id)
+        if api is None:
+            return None, None
+        record = await api.get(memory_id)
+        if record is None:
+            await self._send_ack(ws, frame_id, ok=False, error={"code": "NOT_FOUND", "message": "Memory not found"})
+            return None, None
+        if not api.can_modify(record, manager=self._can_manage_workspace_memory()):
+            await self._send_ack(
+                ws,
+                frame_id,
+                ok=False,
+                error={"code": "FORBIDDEN", "message": "Only managers and its author edit a workspace memory"},
+            )
+            return None, None
+        return api, record
+
+    async def _handle_memory_update(self, ws: WebSocketProtocol, frame: C2S_MemoryUpdate) -> None:
+        api, record = await self._memory_target(ws, frame.id, frame.payload.memory_id)
+        if api is None or record is None:
+            return
+        if frame.payload.scope == "workspace" and record.scope == "user":
+            shared = await api.share(record.id)
+            if shared is None:
+                await self._send_ack(ws, frame.id, ok=False, error={"code": "FORBIDDEN", "message": "No workspace to share with"})
+            else:
+                await self._send_ack(ws, frame.id)
+            return
+        try:
+            await api.update(
+                record.id,
+                content=frame.payload.content,
+                tags=frame.payload.tags,
+                pinned=frame.payload.pinned,
+                kind=frame.payload.kind,
+            )
+        except ValueError as e:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "INVALID_PAYLOAD", "message": str(e)})
+            return
+        await self._send_ack(ws, frame.id)
+
+    async def _handle_memory_delete(self, ws: WebSocketProtocol, frame: C2S_MemoryDelete) -> None:
+        api, record = await self._memory_target(ws, frame.id, frame.payload.memory_id)
+        if api is None or record is None:
+            return
+        await api.forget(record.id)
+        await self._send_ack(ws, frame.id)
+
+    async def _send_prefs(self, recipients: list[WebSocketProtocol], prefs: Any, available: bool) -> None:
+        frame = S2C_MemoryPrefs(id=_generate_id(), payload=MemoryPrefsPayload(prefs=prefs, available=available))
+        for target in recipients:
+            await self._send(target, frame)
+
+    async def _handle_memory_prefs_get(self, ws: WebSocketProtocol, frame: C2S_MemoryPrefsGet) -> None:
+        api = self._memory_api()
+        prefs = await api.preferences()
+        await self._send_prefs([ws], prefs, api.available and bool(self._agent_id))
+
+    async def _handle_memory_prefs_update(self, ws: WebSocketProtocol, frame: C2S_MemoryPrefsUpdate) -> None:
+        api = await self._memory_guard(ws, frame.id)
+        if api is None:
+            return
+        prefs = await api.set_preferences(
+            enabled=frame.payload.enabled,
+            custom_instructions=frame.payload.custom_instructions,
+            about_me=frame.payload.about_me,
+        )
+        await self._send_ack(ws, frame.id)
+        recipients = self._registry.connections_for_user(self._agent_id or "", api.owner.user_id) or [ws]
+        await self._send_prefs(recipients, prefs, True)
+
     async def cleanup(self) -> None:
+        self._stop_turn_worker()
         logger.info(
             "[agents] router cleanup: ws=%s, agent=%s, had_analytics_sub=%s",
             self._ws_id,
@@ -551,6 +866,7 @@ class Router:
             ws,
             user=self._user or User(user_id=""),
             workspace_id=self._workspace_id,
+            ws_id=self._ws_id,
         )
         self._subscriptions[self._ws_id] = set()
         await self._send_ack(
@@ -1061,11 +1377,9 @@ class Router:
                 created_at=datetime.now(UTC),
             )
             await self._persistence.create_event(queue_event)
-            await self._broadcast_to_agent(
-                S2C_EventAppend(
-                    id=_generate_id(),
-                    payload=EventAppendPayload(thread_id=thread_id, events=[queue_event]),
-                )
+            await self._broadcast_to_agent_dict(
+                self._agent_id or "",
+                {"type": "event.append", "thread_id": thread_id, "events": [queue_event]},
             )
 
         thread_out = attach_thread_access(thread, user, connection_workspace_id=self._workspace_id)
@@ -1235,14 +1549,21 @@ class Router:
             user_name=context.user.user_name or None,
             user_email=context.user.user_email or None,
         )
+        # Turns of one thread never overlap. The per-thread queues already order them, except the
+        # first message of a new thread (queued as ``new:<frame>``) and a follow-up that already
+        # carries the new thread's id — this lock covers that window.
+        lock = self._thread_locks.setdefault(result.thread.id, asyncio.Lock())
         try:
-            async for _event in self._pipeline.execute(context, result):
-                pass
+            async with lock:
+                async for _event in self._pipeline.execute(context, result):
+                    pass
         except HandlerError:
             tracker.fail()
             # Pipeline already handled cleanup (error event, run failure, broadcast)
         finally:
             tracker.end()
+            if not lock.locked() and self._thread_locks.get(result.thread.id) is lock:
+                self._thread_locks.pop(result.thread.id, None)
 
     async def _handle_event_list(self, ws: WebSocketProtocol, frame: C2S_EventList) -> None:
         if not self._agent_id:

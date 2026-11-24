@@ -137,5 +137,12 @@ class AgentConfig:
     #: The worker never talks to GCP directly.
     otel_service_url: str = field(default_factory=lambda: (os.environ.get("AGENT_OTEL_SERVICE_URL") or "").strip())
 
+    #: Long-term memory (``memory.long_term`` + ``memory.*`` frames). Needs a SQL backend.
+    memory_enabled: bool = field(default_factory=lambda: _env_bool("AGENT_MEMORY_ENABLED", True))
+    #: Turns of one WebSocket connection that may run at the same time. Turns of the SAME thread
+    #: always run one after the other; different threads run in parallel up to this limit
+    #: (``AGENT_MAX_PARALLEL_TURNS``). 1 restores the old one-turn-at-a-time behaviour.
+    max_parallel_turns: int = field(default_factory=lambda: max(1, int(os.environ.get("AGENT_MAX_PARALLEL_TURNS", "4") or 4)))
+
     #: Service name on exported spans (env ``OTEL_SERVICE_NAME``). Empty → platform default.
     otel_service_name: str = field(default_factory=lambda: (os.environ.get("OTEL_SERVICE_NAME") or "").strip())

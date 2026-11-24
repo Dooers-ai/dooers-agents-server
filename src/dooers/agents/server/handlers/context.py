@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from dooers.agents.server.protocol.models import (
     ChatContext,
@@ -27,6 +28,32 @@ class AgentContext:
     #: Workspace queue catalog from the connect handshake (snapshot).
     queues: list[WorkspaceQueueCatalog] = field(default_factory=list)
     chat_context: ChatContext | None = None
+    #: Why this turn runs when no person typed it, e.g. ``{"type": "task", "task_id": ..., "run_id": ...}``.
+    trigger: dict[str, Any] | None = None
+    #: People taking part in the thread (from the thread row; the agent itself excluded).
+    participants: list[User] = field(default_factory=list)
+    #: Set by the pipeline; ``cancelled`` reads it. Not part of the public constructor contract.
+    _active_run: Any = field(default=None, repr=False)
+
+    @property
+    def cancelled(self) -> bool:
+        """True once someone pressed Stop (``run.cancel``). Long loops should check it."""
+        return bool(getattr(self._active_run, "cancel_requested", False))
+
+    @property
+    def is_shared(self) -> bool:
+        """True when someone besides the current user takes part in the thread.
+
+        Personal memory must stay out of such threads: whatever the agent recalls about one person
+        can end up in an answer the others read.
+        """
+        me = (self.user.user_id or "").strip()
+        return any((p.user_id or "").strip() not in ("", me) for p in self.participants)
+
+    @property
+    def timezone(self) -> str | None:
+        """IANA time zone reported by the client for this turn (unvalidated hint)."""
+        return self.chat_context.timezone if self.chat_context else None
 
     def members_for_queue(self, slug: str | None = None) -> list[WorkspaceQueueMember]:
         """Members of ``slug``, or of the current thread queue when omitted."""

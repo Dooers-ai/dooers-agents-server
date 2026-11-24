@@ -8,12 +8,21 @@ from typing import Any
 from pydantic import ValidationError
 
 from dooers.agents.server.auth_validation import AuthValidationClient
-from dooers.agents.server.broadcast import BroadcastManager, broadcast_thread_upsert
+from dooers.agents.server.broadcast import (
+    BroadcastManager,
+    PipelineBroadcaster,
+    make_memory_notifier,
+)
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
+from dooers.agents.server.exceptions import TaskRunRejected
 from dooers.agents.server.features.analytics.agent_analytics import AgentAnalytics
 from dooers.agents.server.features.analytics.collector import AnalyticsCollector
+from dooers.agents.server.features.analytics.models import AnalyticsEvent
+from dooers.agents.server.features.memory.api import LongTermMemory
+from dooers.agents.server.features.memory.models import MemoryOwner, MemoryRecord
+from dooers.agents.server.features.memory.store import MemoryStore, PostgresMemoryStore
 from dooers.agents.server.features.settings.agent_settings import AgentSettings
 from dooers.agents.server.features.settings.broadcaster import SettingsBroadcaster
 from dooers.agents.server.handlers.content_policy import normalize_allowed_content_types
@@ -23,22 +32,18 @@ from dooers.agents.server.handlers.router import Handler, Router, WebSocketProto
 from dooers.agents.server.observability.service_token import core_base_url
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.persistence.postgres import PostgresPersistence
-from dooers.agents.server.protocol.frames import (
-    EventAppendPayload,
-    RunUpsertPayload,
-    S2C_EventAppend,
-    S2C_RunUpsert,
-)
 from dooers.agents.server.protocol.models import (
+    ChatContext,
     Thread,
     ThreadEvent,
     User,
     WireC2S_ContentPart,
     WorkspaceQueueCatalog,
 )
-from dooers.agents.server.protocol.parser import parse_frame, serialize_frame
+from dooers.agents.server.protocol.parser import parse_frame
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.repository import Repository
+from dooers.agents.server.runs import RunRegistry
 from dooers.agents.server.settings import (
     ANALYTICS_BATCH_SIZE,
     ANALYTICS_FLUSH_INTERVAL,
@@ -128,6 +133,13 @@ class AgentServer:
         self._settings_broadcaster: SettingsBroadcaster | None = None
         self._auth_validator: AuthValidationClient | None = None
         self._guest_cleanup_task: asyncio.Task | None = None
+
+        #: Executions in this process (``run.cancel`` from any socket finds them here).
+        self._run_registry = RunRegistry()
+        self._memory_store: MemoryStore | None = None
+        self._instance_id = f"agent-{uuid.uuid4().hex[:12]}"
+        self._pipeline_broadcaster: PipelineBroadcaster | None = None
+        self._memory_notify_impl = make_memory_notifier(self._registry)
 
     async def _hydrate_thread_events_impl(
         self,
@@ -286,6 +298,13 @@ class AgentServer:
             persistence=self._persistence,
             subscriptions=self._subscriptions,
         )
+        self._pipeline_broadcaster = PipelineBroadcaster(
+            registry=self._registry,
+            persistence=self._persistence,
+            subscriptions=self._subscriptions,
+            hydrate=self._hydrate_thread_events_impl,
+        )
+        await self._init_long_term_features(self._persistence)
 
         if self._config.analytics_enabled:
             batch_size = self._config.analytics_batch_size or ANALYTICS_BATCH_SIZE
@@ -416,6 +435,10 @@ class AgentServer:
             agent_config=self._config,
             whatsapp_outbound=self._resolve_whatsapp_outbound(persistence),
             view_grants=self._view_grants,
+            run_registry=self._run_registry,
+            memory_store=self._memory_store,
+            memory_notifier=self._notify_memory,
+            pipeline_broadcaster=self._pipeline_broadcaster,
         )
 
         try:
@@ -472,22 +495,21 @@ class AgentServer:
         channel: str = "dooers-platform",
         channel_meta: dict[str, Any] | None = None,
         queues: list[WorkspaceQueueCatalog] | None = None,
+        *,
+        chat_context: ChatContext | None = None,
+        trigger: dict[str, Any] | None = None,
+        actor: str = "user",
+        data: dict[str, Any] | None = None,
+        presence_token: str | None = None,
     ) -> DispatchStream:
+        """Run ``handler`` outside a WebSocket (REST, webhooks, scheduled task runs).
+
+        ``actor="system"`` with a ``trigger`` records the inbound event as platform-originated
+        (e.g. a reminder firing) instead of as something the user typed.
+        """
         persistence = await self._ensure_initialized()
 
-        pipeline = HandlerPipeline(
-            persistence=persistence,
-            broadcast_callback=self._broadcast_dict_to_agent,
-            analytics_collector=self._analytics_collector,
-            settings_broadcaster=self._settings_broadcaster,
-            settings_schema=self._config.settings_schema,
-            assistant_name=self._config.assistant_name,
-            upload_store=self._upload_store,
-            allowed_content_types=self._allowed_content_types,
-            content_policy_denial_message=self._content_policy_denial_message,
-            agent_config=self._config,
-            whatsapp_outbound=self._resolve_whatsapp_outbound(persistence),
-        )
+        pipeline = self._new_pipeline(persistence, whatsapp_outbound=self._resolve_whatsapp_outbound(persistence))
 
         context = HandlerContext(
             handler=handler,
@@ -503,6 +525,12 @@ class AgentServer:
             content=content,
             queues=list(queues or []),
             allowed_queues=_catalog_slugs(queues),
+            chat_context=chat_context,
+            trigger=trigger,
+            persist_actor=actor,
+            persist_author=None if actor == "user" else (self._config.assistant_name if actor == "assistant" else "System"),
+            data=data,
+            presence_token=presence_token,
         )
 
         result = await pipeline.setup(context)
@@ -557,19 +585,7 @@ class AgentServer:
                 yield None
 
         persistence = await self._ensure_initialized()
-        pipeline = HandlerPipeline(
-            persistence=persistence,
-            broadcast_callback=self._broadcast_dict_to_agent,
-            analytics_collector=self._analytics_collector,
-            settings_broadcaster=self._settings_broadcaster,
-            settings_schema=self._config.settings_schema,
-            assistant_name=self._config.assistant_name,
-            upload_store=self._upload_store,
-            allowed_content_types=self._allowed_content_types,
-            content_policy_denial_message=self._content_policy_denial_message,
-            agent_config=self._config,
-            whatsapp_outbound=None,
-        )
+        pipeline = self._new_pipeline(persistence, whatsapp_outbound=None)
         context = HandlerContext(
             handler=_noop_handler,
             agent_id=agent_id,
@@ -615,6 +631,175 @@ class AgentServer:
     async def memory(self, thread_id: str) -> AgentMemory:
         persistence = await self._ensure_initialized()
         return AgentMemory(thread_id=thread_id, persistence=persistence)
+
+    async def long_term_memory(
+        self,
+        *,
+        agent_id: str,
+        user_id: str,
+        organization_id: str = "",
+        workspace_id: str = "",
+    ) -> LongTermMemory:
+        """Long-term memory of one user outside a handler (admin jobs, REST endpoints)."""
+        await self._ensure_initialized()
+        owner = MemoryOwner(agent_id=agent_id, organization_id=organization_id, workspace_id=workspace_id, user_id=user_id)
+        return LongTermMemory(self._memory_store, owner, notifier=self._notify_memory)
+
+    async def run_task(self, handler: Handler, *, authorization: str | None, body: dict[str, Any]) -> dict[str, Any]:
+        """Run a scheduled task: ``POST /internal/tasks/run`` from the Dooers Tasks service.
+
+        The bearer token is the handshake token the core minted for the person who scheduled the
+        task (``purpose: task``) after re-checking, at that moment, that they may still use this
+        agent. It is validated with the core like a chat session; the turn then runs as that person
+        in the task's conversation, with ``incoming.context.trigger = {"type": "task", ...}``.
+        Returns once the run finished and its outcome was reported to the Tasks service (Cloud
+        Tasks holds the request open for that). A run that is not the task's current one (a retried
+        delivery, a task changed meanwhile) is skipped.
+        """
+        from dooers.tools import tasks
+
+        token = (authorization or "").strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if not token:
+            raise TaskRunRejected(401, "missing token")
+        persistence = await self._ensure_initialized()
+        assert self._auth_validator is not None
+        result = await self._auth_validator.validate(auth_token=token, agent_id=str(body.get("agent_id") or ""), guest_user_id="")
+        if not result.valid or result.purpose != "task" or result.user is None or not result.user.user_id or not result.agent_id:
+            raise TaskRunRejected(401, result.reason or "not a task run token")
+        task_id = str(body.get("task_id") or "")
+        run_id = str(body.get("run_id") or "")
+        if not task_id or not run_id:
+            raise TaskRunRejected(400, "task_id and run_id are required")
+        workspace_id = result.workspace_id or ""
+        personal = not workspace_id
+        identity = tasks.Identity(result.agent_id, token, result.user.user_id, persistence)
+
+        current = await tasks.get(task_id, personal=personal, identity=identity)
+        if current.get("status") != "running" or str(current.get("current_run_id") or "") != run_id:
+            logger.info("[agents] task run skipped task=%s run=%s status=%s", task_id, run_id, current.get("status"))
+            return {"ok": True, "skipped": True}
+
+        thread_id = str(body.get("thread_id") or "") or None
+        if thread_id:
+            thread = await persistence.get_thread(thread_id)
+            if thread is None or thread.agent_id != result.agent_id:
+                thread_id = None
+        instruction = str(body.get("instruction") or current.get("goal") or current.get("title") or "")
+        trigger = {
+            "type": "task",
+            "task_id": task_id,
+            "run_id": run_id,
+            "title": str(body.get("title") or current.get("title") or ""),
+            "due_at": body.get("due_at"),
+            "recurring": bool(body.get("recurring")),
+        }
+        succeeded, summary, error = True, "", ""
+        out_thread = thread_id
+        try:
+            stream = await self.dispatch(
+                handler,
+                agent_id=result.agent_id,
+                message=instruction,
+                user=result.user,
+                organization_id=result.organization_id or "",
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                thread_title=trigger["title"] or None,
+                trigger=trigger,
+                actor="system",
+                # Recorded on the event too: the chat shows "Scheduled task: <title>" and the
+                # history knows this message came from the task, not from the person.
+                data={"trigger": trigger},
+                presence_token=token,
+            )
+            out_thread = stream.thread_id
+            events = await stream.collect()
+            for event in events:
+                if event.send_type == "text" and event.data.get("text"):
+                    summary = str(event.data["text"])
+                elif event.send_type == "run_end" and event.data.get("status") == "failed":
+                    succeeded, error = False, str(event.data.get("error") or "run failed")
+        except Exception as exc:  # noqa: BLE001 — the run failed; the task says so
+            logger.exception("[agents] task run failed task=%s", task_id)
+            succeeded, error = False, f"{type(exc).__name__}: {str(exc)[:300]}"
+        await self._track_task_run(result, task_id, run_id, succeeded)
+        await tasks.report_run(
+            task_id,
+            run_id=run_id,
+            succeeded=succeeded,
+            summary=summary[:500] or None,
+            error=error or None,
+            personal=personal,
+            identity=identity,
+        )
+        return {"ok": True, "outcome": "succeeded" if succeeded else "failed", "thread_id": out_thread}
+
+    async def _track_task_run(self, result: Any, task_id: str, run_id: str, succeeded: bool) -> None:
+        if self._analytics_collector is None:
+            return
+        try:
+            await self._analytics_collector.track(
+                agent_id=result.agent_id,
+                event=AnalyticsEvent.TASK_RUN.value,
+                organization_id=result.organization_id or "",
+                workspace_id=result.workspace_id or "",
+                user_id=result.user.user_id if result.user else None,
+                data={"task_id": task_id, "run_id": run_id, "status": "succeeded" if succeeded else "failed"},
+            )
+        except Exception:  # noqa: BLE001 — analytics never fails a run
+            logger.debug("[agents] task run analytics failed", exc_info=True)
+
+    @property
+    def run_registry(self) -> RunRegistry:
+        return self._run_registry
+
+    def cancel_run(self, thread_id: str, *, run_id: str | None = None, reason: str = "canceled") -> int:
+        """Stop the run(s) executing on ``thread_id`` in this process. Returns how many were signalled."""
+        return self._run_registry.cancel(thread_id, run_id=run_id, reason=reason)
+
+    async def store_artifact(
+        self,
+        *,
+        data: bytes,
+        filename: str,
+        mime_type: str,
+        agent_id: str,
+        thread_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Persist an agent-generated file to chat storage.
+
+        Returns ``{"ref_id", "url", "object_key", "size_bytes"}`` — pass ``ref_id`` to
+        ``send.document/send.image`` so the URL is re-signed whenever the thread is replayed —
+        or ``None`` when no durable storage is configured (``CHAT_STORAGE_SERVICE=none``).
+        """
+        from dooers.agents.server.storage.chat_artifacts import (
+            chat_storage_service_ready,
+            put_chat_artifact,
+            sign_chat_artifact_read_url,
+        )
+
+        await self._ensure_initialized()
+        if not data:
+            raise ValueError("empty artifact")
+        if not chat_storage_service_ready(self._config):
+            return None
+        ref_id = f"art_{uuid.uuid4().hex}"
+        uri, object_key = await asyncio.to_thread(
+            put_chat_artifact,
+            self._config,
+            data=data,
+            content_type=mime_type,
+            agent_id=agent_id,
+            thread_id=thread_id,
+            ref_id=ref_id,
+            filename=filename,
+        )
+        if not uri:
+            return None
+        url = await asyncio.to_thread(sign_chat_artifact_read_url, self._config, object_key)
+        return {"ref_id": ref_id, "url": url or uri, "object_key": object_key, "size_bytes": len(data)}
 
     async def settings(self, agent_id: str) -> AgentSettings:
         persistence = await self._ensure_initialized()
@@ -691,35 +876,50 @@ class AgentServer:
         )
 
     async def _broadcast_dict_to_agent(self, agent_id: str, payload: dict[str, Any]) -> None:
-        """Convert dict payload to S2C frame and broadcast via registry."""
-        payload_type = payload.get("type")
-
-        if payload_type == "thread.upsert":
-            await broadcast_thread_upsert(self._registry, agent_id, payload["thread"])
+        """Convert a pipeline payload to S2C frames for the sockets allowed to see the thread."""
+        if self._pipeline_broadcaster is None:
             return
-        elif payload_type == "event.append":
-            evs = payload["events"]
-            tid = payload["thread_id"]
-            thr = await self._persistence.get_thread(tid)
-            if thr is not None:
-                evs = await self._hydrate_thread_events_impl(evs, thr)
-            frame = S2C_EventAppend(
-                id=str(uuid.uuid4()),
-                payload=EventAppendPayload(
-                    thread_id=tid,
-                    events=evs,
-                ),
-            )
-        elif payload_type == "run.upsert":
-            frame = S2C_RunUpsert(
-                id=str(uuid.uuid4()),
-                payload=RunUpsertPayload(run=payload["run"]),
-            )
-        else:
-            return
+        await self._pipeline_broadcaster(agent_id, payload)
 
-        message = serialize_frame(frame)
-        await self._registry.broadcast(agent_id, message)
+    def _new_pipeline(self, persistence: Persistence, *, whatsapp_outbound: Any) -> HandlerPipeline:
+        return HandlerPipeline(
+            persistence=persistence,
+            broadcast_callback=self._broadcast_dict_to_agent,
+            analytics_collector=self._analytics_collector,
+            settings_broadcaster=self._settings_broadcaster,
+            settings_schema=self._config.settings_schema,
+            assistant_name=self._config.assistant_name,
+            upload_store=self._upload_store,
+            allowed_content_types=self._allowed_content_types,
+            content_policy_denial_message=self._content_policy_denial_message,
+            agent_config=self._config,
+            whatsapp_outbound=whatsapp_outbound,
+            run_registry=self._run_registry,
+            memory_store=self._memory_store,
+            memory_notifier=self._notify_memory,
+        )
+
+    async def _init_long_term_features(self, persistence: Persistence) -> None:
+        """Long-term memory needs SQL; other backends run without it."""
+        if not isinstance(persistence, PostgresPersistence):
+            logger.info("[agents] long-term memory disabled for database_type=%s", self._config.database_type)
+            return
+        if self._config.memory_enabled:
+            store = PostgresMemoryStore(persistence)
+            try:
+                if self._config.database_auto_migrate:
+                    await store.migrate()
+                self._memory_store = store
+            except Exception:  # noqa: BLE001 — degrade, never block boot
+                logger.exception("[agents] long-term memory migration failed; feature disabled")
+
+    def use_stores(self, *, memory_store: MemoryStore | None = None) -> None:
+        """Override the long-term memory store (tests, custom backends). Call before serving traffic."""
+        if memory_store is not None:
+            self._memory_store = memory_store
+
+    async def _notify_memory(self, action: str, record: MemoryRecord | None, user_id: str | None) -> None:
+        await self._memory_notify_impl(action, record, user_id)
 
     async def close(self) -> None:
         if self._guest_cleanup_task:

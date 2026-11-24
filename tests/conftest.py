@@ -65,6 +65,8 @@ def router_harness() -> RouterHarness:
     """A connected Router with a mock persistence; the real pipeline.setup runs,
     pipeline.execute is replaced by a recorder of the HandlerContext it receives."""
     persistence = AsyncMock()
+    # The broadcaster reads the thread to pick who may receive each frame; no thread, no delivery.
+    persistence.get_thread.return_value = None
     router = Router(
         persistence=persistence,
         handler=_noop_handler,

@@ -387,6 +387,11 @@ class ChatContext(BaseModel):
 
     llm_model: str | None = None
     reasoning_effort: str | None = None
+    #: IANA time zone of the person typing (e.g. ``America/Sao_Paulo``). Used for local
+    #: dates in prompts and for scheduling; validate before use.
+    timezone: str | None = None
+    #: BCP 47 UI locale (e.g. ``pt-BR``) — a hint for the answer language.
+    locale: str | None = None
 
 
 class User(BaseModel):
@@ -499,6 +504,8 @@ class ConnectionContext(BaseModel):
     workspace: ConnectionWorkspace
     agent: ConnectionAgent
     policies: ConnectionPolicies = ConnectionPolicies()
+    #: ``chat`` (a person opened the chat) or ``task`` (the core started a scheduled task for them).
+    purpose: str | None = None
 
 
 class ThreadEvent(BaseModel):

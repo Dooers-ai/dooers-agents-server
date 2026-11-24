@@ -41,8 +41,8 @@ app = FastAPI()
 openai = AsyncOpenAI()
 
 agent_server = AgentServer(AgentConfig(
-    database_type="sqlite",
-    database_name="agent.db",
+    # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+    database_type="postgres",
     assistant_name="My Assistant",
 ))
 
@@ -210,6 +210,96 @@ all_values = await settings.get_all(exclude=["avatar_base64"])
 await settings.set("field_id", new_value)
 ```
 
+## Frontier agent features (0.31)
+
+### Streaming
+
+```python
+async def agent_handler(incoming, send, memory, analytics, settings):
+    yield send.run_start()
+    sid = send.new_stream_id()
+    async for chunk in llm_stream(...):
+        if incoming.context.cancelled:      # user pressed Stop
+            break
+        yield send.text_delta(chunk, stream_id=sid)
+    yield send.text(full_text, stream_id=sid)   # finalize (same event id)
+    yield send.run_end()
+```
+
+`send.reasoning_delta` / `send.reasoning(..., stream_id=)` do the same for thinking. Clients
+receive `event.append` (`streaming: true`), then `event.delta` frames, then the final event.
+
+### Stop (`run.cancel`)
+
+Clients send `run.cancel {thread_id, run_id?}`. The handler is interrupted at its current
+`await` (an LLM stream, a tool) and the partial text is kept with `data.interrupted = true`; the
+run ends as `canceled`. Outside WebSockets use `agent_server.cancel_run(thread_id)`.
+
+### Long-term memory
+
+```python
+mem = memory.long_term                       # bound to this user + workspace + agent
+if mem.available:
+    prefs = await mem.preferences()          # custom instructions / about me / enabled
+    relevant = await mem.recall(incoming.message, limit=8)
+    await mem.remember("Prefers answers in bullet points", kind="preference")
+    await mem.remember("Fiscal year closes on the 25th", scope="workspace")
+```
+
+Users manage their memories over the socket (`memory.list|create|update|delete|prefs.*`).
+
+### Reminders and recurring tasks
+
+Scheduled work lives on the Dooers Tasks service (`DOOERS_TASKS_SERVICE_URL`), acting for the
+person of the turn:
+
+```python
+from dooers.tools import tasks
+
+if tasks.available():
+    await tasks.schedule(
+        title="Weekly market brief",
+        instruction="Search the news about our competitors and summarize them",
+        due_at="2026-11-23T12:00:00Z",
+        recurrence={"freq": "weekly", "byWeekday": [0], "atTime": "09:00",
+                    "timezone": incoming.context.timezone or "America/Sao_Paulo"},
+    )
+
+@app.post("/internal/tasks/run")                 # the core calls it when a task is due
+async def run_task(request: Request):
+    try:
+        return await agent_server.run_task(agent_handler,
+                                           authorization=request.headers.get("authorization"),
+                                           body=await request.json())
+    except TaskRunRejected as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+```
+
+When a task runs, the handler runs in the task's conversation as the person who scheduled it,
+with `incoming.context.trigger == {"type": "task", "task_id": ..., "run_id": ..., "title": ...}`.
+
+### Durable generated files
+
+```python
+stored = await agent_server.store_artifact(
+    data=pdf_bytes, filename="report.pdf", mime_type="application/pdf",
+    agent_id=incoming.context.agent_id, thread_id=incoming.context.thread_id,
+)
+if stored:
+    yield send.document(stored["url"], "report.pdf", "application/pdf",
+                        ref_id=stored["ref_id"], size_bytes=stored["size_bytes"])
+```
+
+### Managed sandbox
+
+```python
+from dooers.tools import sandbox
+
+box = await sandbox.open(profile="documents")
+await box.write_file("in.csv", data)
+result = await box.exec(["python3", "-c", "import pandas; print(pandas.__version__)"])
+```
+
 ## Dispatch API
 
 Full signature for programmatic handler execution.
@@ -370,8 +460,8 @@ schema = SettingsSchema(
 )
 
 agent_server = AgentServer(AgentConfig(
-    database_type="sqlite",
-    database_name="agent.db",
+    # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+    database_type="postgres",
     settings_schema=schema,
 ))
 ```
@@ -440,8 +530,8 @@ agent_server = AgentServer(AgentConfig(
 
 ```python
 agent_server = AgentServer(AgentConfig(
-    database_type="sqlite",
-    database_name="agent.db",
+    # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+    database_type="postgres",
     database_table_prefix="agent_",
     database_auto_migrate=True,
 ))

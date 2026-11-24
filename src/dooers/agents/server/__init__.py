@@ -1,7 +1,7 @@
 from dooers.agents.server.config import AgentConfig, OnSettingsUpdated
 from dooers.agents.server.database import SqlDatabase
 from dooers.agents.server.dispatch import DispatchStream
-from dooers.agents.server.exceptions import DispatchError, HandlerError, UnsupportedContentTypeError
+from dooers.agents.server.exceptions import DispatchError, HandlerError, TaskRunRejected, UnsupportedContentTypeError
 from dooers.agents.server.features.analytics import (
     AgentAnalytics,
     AnalyticsBatch,
@@ -24,6 +24,17 @@ from dooers.agents.server.features.channels.whatsapp import (
     verify_dooers_whatsapp_tool_inbound_with_persistence,
     whatsapp_thread_id,
 )
+from dooers.agents.server.features.memory import (
+    InMemoryMemoryStore,
+    LongTermMemory,
+    MemoryOwner,
+    MemoryPreferences,
+    MemoryRecord,
+    MemoryStore,
+    MemoryUnavailableError,
+    PostgresMemoryStore,
+    format_memories_for_prompt,
+)
 from dooers.agents.server.features.settings import (
     LLM_MODELS_FIELD_ID,
     AgentSettings,
@@ -42,7 +53,7 @@ from dooers.agents.server.handlers.context import AgentContext
 from dooers.agents.server.handlers.incoming import AgentIncoming
 from dooers.agents.server.handlers.memory import AgentMemory
 from dooers.agents.server.handlers.pipeline import Handler, UploadReferenceError
-from dooers.agents.server.handlers.send import AgentSend
+from dooers.agents.server.handlers.send import AgentEvent, AgentSend
 from dooers.agents.server.llm import format_user_input
 from dooers.agents.server.persistence.base import Persistence
 from dooers.agents.server.protocol.models import (
@@ -77,6 +88,7 @@ from dooers.agents.server.protocol.models import (
 )
 from dooers.agents.server.registry import ConnectionRegistry
 from dooers.agents.server.repository import Repository
+from dooers.agents.server.runs import ActiveRun, RunRegistry
 from dooers.agents.server.server import AgentServer
 
 __all__ = [
@@ -88,6 +100,7 @@ __all__ = [
     "AgentContext",
     "AgentIncoming",
     "AgentSend",
+    "AgentEvent",
     "AgentMemory",
     "ConnectionRegistry",
     "BroadcastManager",
@@ -96,6 +109,7 @@ __all__ = [
     "DispatchStream",
     "DispatchError",
     "HandlerError",
+    "TaskRunRejected",
     "UnsupportedContentTypeError",
     "UploadReferenceError",
     "normalize_allowed_content_types",
@@ -132,6 +146,19 @@ __all__ = [
     "RunStatus",
     "Actor",
     "EventType",
+    # Run control
+    "RunRegistry",
+    "ActiveRun",
+    # Long-term memory
+    "LongTermMemory",
+    "MemoryOwner",
+    "MemoryPreferences",
+    "MemoryRecord",
+    "MemoryStore",
+    "MemoryUnavailableError",
+    "InMemoryMemoryStore",
+    "PostgresMemoryStore",
+    "format_memories_for_prompt",
     # Analytics
     "AnalyticsEvent",
     "AnalyticsEventPayload",
