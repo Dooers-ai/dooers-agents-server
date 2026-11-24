@@ -156,7 +156,7 @@ class AnalyticsUnsubscribePayload(BaseModel):
 class FeedbackPayload(BaseModel):
     target_type: Literal["event", "run", "thread"]
     target_id: str
-    feedback: Literal["like", "dislike"]
+    feedback: Literal["like", "dislike", "clear"]
     reason: str | None = None
     classification: str | None = None
 

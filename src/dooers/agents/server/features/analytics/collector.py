@@ -125,7 +125,12 @@ class AnalyticsCollector:
         organization_id: str | None = None,
         workspace_id: str | None = None,
     ) -> None:
-        event = AnalyticsEvent.FEEDBACK_LIKE if feedback_type == "like" else AnalyticsEvent.FEEDBACK_DISLIKE
+        if feedback_type == "like":
+            event = AnalyticsEvent.FEEDBACK_LIKE
+        elif feedback_type == "clear":
+            event = AnalyticsEvent.FEEDBACK_CLEAR
+        else:
+            event = AnalyticsEvent.FEEDBACK_DISLIKE
         message: str | None = None
         if target_type == "event" and target_id and self._persistence is not None:
             try:
