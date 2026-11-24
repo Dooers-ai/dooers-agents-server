@@ -7,21 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Maestro integration is now named Dooers Threads. The module is
+  `dooers.agents.server.dooers_threads`, the extras are `dooers-threads` and
+  `dooers-threads-contracts`, and the config value is `thread_management="dooers_threads"`.
+  A declaration with the old `thread_management` value is rejected.
+
 ### Added
 
-- `dooers.agents.server.maestro.decide_group_turn`: in a Maestro thread with
+- `dooers.agents.server.dooers_threads.decide_group_turn`: in a Dooers Threads thread with
   several agents, decides whether this agent speaks before generating the
   answer. Fixed rules need no model (only agent in the thread, structured
   mention of this agent, human message that mentions only other agents). Otherwise
   the agent's own model classifies who owns the topic (`classify` callable,
   JSON `{"owners": [...]}`), and code decides: the owner answers, others
   yield, and a general topic goes to the first generalist. Returns
-  `MaestroGroupTurn` with ready OpenAI messages (author of each message,
+  `DooersThreadsGroupTurn` with ready OpenAI messages (author of each message,
   participants, answer rules) or silence. The SDK still calls no model.
 
 ### Fixed
 
-- In Maestro mode, `send.run_start(agent_id="...")` takes any text, as in production
+- In Dooers Threads mode, `send.run_start(agent_id="...")` takes any text, as in production
   (`Run.agent_id` is free text). Before, the bundled contract accepted only a UUID
   and the delivery failed with `handler_contract_error`. The run is read back with
   the same `agent_id` the handler wrote. A UUID stays valid.

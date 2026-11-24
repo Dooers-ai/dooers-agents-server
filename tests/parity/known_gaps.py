@@ -23,7 +23,8 @@ execution scenario matches, except the ones below that need Core's connection co
 ``dispatch`` outside a delivery) and the public chat (plan 6).
 
 Task 6a (2026-11-13): ``AgentServer.ingest`` and ``chat_upload`` no longer raise in Dooers Threads mode (``server_ingest`` ends at
-the first agent API call; ``chat_upload`` ends at its ``dispatch``).
+the first agent API call; ``chat_upload`` ends at its ``dispatch``). Note: ``server_ingest`` still fails in Dooers Threads mode
+(see the 2026-11-13 plan 5 task 8 note below).
 
 Task 6b (2026-11-13): ``AgentServer.dispatch`` no longer raises in Dooers Threads mode: it publishes over the agent API and follows
 the thread (``tests/test_dooers_threads_dispatch.py``, ``tests/test_dooers_threads_dispatch_run.py``). The scripts that call it end at
@@ -48,7 +49,9 @@ through ``create_text_delivery_adapter``: the harness mirrors the thread and the
 ``FakeDooersThreads`` so the delivery protocol can run, and mirrors the handler's own outputs (plus the delivery's
 own lifecycle, which ``FakeDooersThreads`` has no notion of) back into ``FakeAgentApi`` as they happen, so a later
 agent-api read (``AgentServer.memory()``/``.repository()``, the dispatch stream's own polling) sees them too.
-``server_dispatch``, ``server_ingest`` and ``memory_by_thread_id`` now match exactly. Three scenarios differ
+``server_dispatch`` and ``memory_by_thread_id`` now match exactly. ``server_ingest`` does not match yet: it is a known
+failing scenario in Dooers Threads mode (final review I2: the 0.31.0 ingest with a non-user actor is not supported there).
+Three scenarios differ
 only by a permanent declared difference the investigation surfaced (not one the brief anticipated, each
 backed by production's own code or test suite, never by a change to it): ``repository_crud`` (a fresh
 agent-api thread always has the agent as a participant), ``chat_upload`` (an attachment's ``url`` resolves to
@@ -241,9 +244,11 @@ GAPS: dict[str, Gap] = {
     "incoming_fields": _declared("media_link_size", deliveries=_RESPONDED * 2),
     # Plan 5, task 8: the harness wires ``tests/parity/fake_agent_api.py`` into ``_run_dooers_threads_server`` (an
     # AgentServer ingress scenario's ``DooersThreadsAgentApi`` calls now reach it, and a ``trigger: true`` publication
-    # is delivered for real through ``create_text_delivery_adapter``). ``server_dispatch``, ``server_ingest`` and
-    # ``memory_by_thread_id`` now match exactly. ``repository_crud`` differs only by a permanent declared
-    # difference: a fresh agent-api thread always has the agent as a participant (real Dooers Threads behavior,
+    # is delivered for real through ``create_text_delivery_adapter``). ``server_dispatch`` and
+    # ``memory_by_thread_id`` now match exactly (``server_ingest`` does not: it is a known failing scenario, final
+    # review I2: the 0.31.0 ingest with a non-user actor is not supported in Dooers Threads mode).
+    # ``repository_crud`` differs only by a permanent declared difference: a fresh agent-api thread always has the
+    # agent as a participant (real Dooers Threads behavior,
     # already accepted as a divergence in ``test_dooers_threads_agent_persistence.py``'s own
     # ``test_create_thread_owner_is_the_user``), which ``Repository.create_thread`` never adds without a run.
     "repository_crud": _declared("agent_api_thread_has_agent", deliveries=()),
