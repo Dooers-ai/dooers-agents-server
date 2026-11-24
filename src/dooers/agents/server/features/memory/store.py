@@ -387,15 +387,18 @@ class PostgresMemoryStore:
         terms = [t for t in _terms(query) if len(t) >= 3][:12]
         args.append(" OR ".join(terms) if terms else "")
         q_index = len(args)
-        args.append([f"%{t}%" for t in terms] or ["%%"])
-        like_index = len(args)
         doc = "to_tsvector('simple', content)"
-        match = (
-            f"(pinned OR ({doc} @@ websearch_to_tsquery('simple', ${q_index})) OR content ILIKE ANY(${like_index})"
-            f" OR array_to_string(tags, ' ') ILIKE ANY(${like_index}))"
-            if terms
-            else "TRUE"
-        )
+        if terms:
+            args.append([f"%{t}%" for t in terms])
+            like_index = len(args)
+            match = (
+                f"(pinned OR ({doc} @@ websearch_to_tsquery('simple', ${q_index})) OR content ILIKE ANY(${like_index})"
+                f" OR array_to_string(tags, ' ') ILIKE ANY(${like_index}))"
+            )
+        else:
+            # Short messages ("ok", "oi") have no searchable term: every visible memory competes on
+            # pinning/recency. No ILIKE parameter then — Postgres rejects unused bind arguments.
+            match = "TRUE"
         async with self._pool().acquire() as conn:
             rows = await conn.fetch(
                 f"""
