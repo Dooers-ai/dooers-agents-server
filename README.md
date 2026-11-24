@@ -41,8 +41,8 @@ app = FastAPI()
 openai = AsyncOpenAI()
 
 agent_server = AgentServer(AgentConfig(
-    database_type="sqlite",
-    database_name="agent.db",
+    # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+    database_type="postgres",
     assistant_name="My Assistant",
 ))
 
@@ -460,8 +460,8 @@ schema = SettingsSchema(
 )
 
 agent_server = AgentServer(AgentConfig(
-    database_type="sqlite",
-    database_name="agent.db",
+    # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+    database_type="postgres",
     settings_schema=schema,
 ))
 ```
@@ -530,8 +530,8 @@ agent_server = AgentServer(AgentConfig(
 
 ```python
 agent_server = AgentServer(AgentConfig(
-    database_type="sqlite",
-    database_name="agent.db",
+    # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+    database_type="postgres",
     database_table_prefix="agent_",
     database_auto_migrate=True,
 ))

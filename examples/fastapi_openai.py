@@ -47,8 +47,8 @@ settings_schema = SettingsSchema(
 
 agent_server = AgentServer(
     AgentConfig(
-        database_type="sqlite",
-        database_name="agent.db",
+        # Local: Postgres from AGENT_DATABASE_HOST/PORT/USER/PASSWORD/NAME. Hosted on Dooers: "dooers".
+        database_type="postgres",
         settings_schema=settings_schema,
     )
 )
