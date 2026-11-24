@@ -20,6 +20,7 @@ class AnalyticsEvent(StrEnum):
     # Feedback events
     FEEDBACK_LIKE = "feedback.like"
     FEEDBACK_DISLIKE = "feedback.dislike"
+    FEEDBACK_CLEAR = "feedback.clear"
 
 
 class AnalyticsEventPayload(BaseModel):

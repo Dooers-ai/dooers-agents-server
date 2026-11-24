@@ -157,7 +157,7 @@ class AnalyticsUnsubscribePayload(BaseModel):
 class FeedbackPayload(BaseModel):
     target_type: Literal["event", "run", "thread"]
     target_id: str
-    feedback: Literal["like", "dislike"]
+    feedback: Literal["like", "dislike", "clear"]
     reason: str | None = None
     classification: str | None = None
 
@@ -282,7 +282,7 @@ class C2S_SettingsMergeServiceSecrets(BaseModel):
     payload: SettingsMergeServiceSecretsPayload
 
 
-# --- Run control / long-term memory (0.30.0) ---
+# --- Run control / long-term memory (0.31.0) ---
 
 
 class RunCancelPayload(BaseModel):

@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.30.0] — 2026-11-23
+## [0.31.0] — 2026-11-24
 
 Platform support for frontier, multi-user agents. Every new frame is additive; clients must
-check the server version (servers before 0.30.0 close the socket on an unknown frame type).
+check the server version (servers before 0.31.0 close the socket on an unknown frame type).
 
 ### Added
 
@@ -91,6 +91,14 @@ check the server version (servers before 0.30.0 close the socket on an unknown f
 - Building `AgentIncoming` outside a running event loop no longer raises `RuntimeError`.
 - `run.upsert` at the end of a run keeps the original `started_at`.
 - Inbound events recorded with a non-user actor (`ingest`, scheduled tasks) no longer fail validation.
+
+## [0.30.0] — 2026-11-24
+
+### Added
+
+- A feedback frame can send `clear`. Clicking a thumb that is already on
+  records `feedback.clear` for that message instead of another like or dislike.
+
 ## [0.29.0] — 2026-11-23
 
 ### Changed

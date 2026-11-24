@@ -47,7 +47,7 @@ class MemoryRecord(BaseModel):
     created_by: str | None = None
     #: The person the memory came from — who chatted when the agent saved it, or who wrote it in
     #: the UI. On ``workspace`` memories this is who may edit/delete it besides the managers, and
-    #: what the panel shows as "added by". Empty on rows written before 0.30.
+    #: what the panel shows as "added by". Empty on rows written before 0.31.
     author_id: str = ""
     author_name: str = ""
     use_count: int = 0
