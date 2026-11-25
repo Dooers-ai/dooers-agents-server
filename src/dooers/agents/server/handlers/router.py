@@ -20,7 +20,13 @@ from dooers.agents.server.broadcast import (
 )
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
-from dooers.agents.server.features.settings.models import SettingsFieldVisibility, normalize_setting_value
+from dooers.agents.server.features.settings.models import (
+    SettingsFieldVisibility,
+    is_personal_user,
+    merge_user_values,
+    normalize_setting_value,
+    user_settings_key,
+)
 from dooers.agents.server.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
 from dooers.agents.server.persistence.base import Persistence
@@ -166,6 +172,11 @@ def _can_access_creator_settings(user: User, *, agent_owner_user_id: str | None)
     if agent_owner_user_id and user.user_id == agent_owner_user_id:
         return True
     return False
+
+
+def _can_edit_own_settings(user: User | None) -> bool:
+    """USER fields are personal: any signed-in dashboard user edits their own values."""
+    return bool(user and user.connection_type == "dashboard" and is_personal_user(user.user_id))
 
 
 def _can_configure_runtime_settings(user: User | None, *, can_configure_settings: bool) -> bool:
@@ -1842,17 +1853,14 @@ class Router:
                     },
                 )
                 return
-        elif not _can_configure_runtime_settings(
-            self._user,
-            can_configure_settings=self._can_configure_settings,
-        ):
+        elif not _can_edit_own_settings(self._user):
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
                 error={
                     "code": "FORBIDDEN",
-                    "message": "Runtime settings require configure access to this agent",
+                    "message": "Personal settings require a signed-in dashboard session",
                 },
             )
             return
@@ -1869,6 +1877,10 @@ class Router:
 
         if self._settings_broadcaster:
             values = await self._persistence.get_settings(agent_id)
+            if audience != "creator" and self._user and is_personal_user(self._user.user_id):
+                # The person sees their own values for USER fields, the agent's for the rest.
+                own = await self._persistence.get_settings(user_settings_key(agent_id, self._user.user_id))
+                values = merge_user_values(values, own, self._settings_schema)
             await self._settings_broadcaster.broadcast_snapshot_to_ws(
                 agent_id=agent_id,
                 ws=ws,
@@ -1962,17 +1974,14 @@ class Router:
                     error={"code": "FORBIDDEN", "message": "Creator settings access was denied"},
                 )
                 return
-        elif not _can_configure_runtime_settings(
-            self._user,
-            can_configure_settings=self._can_configure_settings,
-        ):
+        elif not _can_edit_own_settings(self._user):
             await self._send_ack(
                 ws,
                 frame.id,
                 ok=False,
                 error={
                     "code": "FORBIDDEN",
-                    "message": "Runtime settings require configure access to this agent",
+                    "message": "Personal settings require a signed-in dashboard session",
                 },
             )
             return
@@ -2020,6 +2029,18 @@ class Router:
             await self._send_ack(ws, frame.id, ok=False, error={"code": "INVALID_VALUE", "message": str(exc)})
             return
 
+        if effective_audience != "creator":
+            # A USER field saved from the chat settings page is this person's own value: it does
+            # not change what anyone else gets. Only this connection hears the patch.
+            assert self._user is not None
+            await self._persistence.update_setting(user_settings_key(self._agent_id, self._user.user_id), field_id, value)
+            if self._settings_broadcaster:
+                await self._settings_broadcaster.send_patch_to_ws(
+                    ws, agent_id=self._agent_id, field_id=field_id, value=value
+                )
+            await self._send_ack(ws, frame.id)
+            return
+
         await self._persistence.update_setting(self._agent_id, field_id, value)
 
         if self._settings_broadcaster:
@@ -2027,6 +2048,7 @@ class Router:
                 agent_id=self._agent_id,
                 field_id=field_id,
                 value=value,
+                schema=self._settings_schema,
             )
 
         await self._send_ack(ws, frame.id)

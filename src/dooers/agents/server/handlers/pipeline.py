@@ -462,7 +462,7 @@ class HandlerPipeline:
             workspace_id=context.workspace_id,
         )
 
-        settings = self._create_settings(agent_id=context.agent_id)
+        settings = self._create_settings(agent_id=context.agent_id, user_id=context.user.user_id)
 
         state = _TurnState(
             context=context,
@@ -1823,13 +1823,14 @@ class HandlerPipeline:
             workspace_id=workspace_id,
         )
 
-    def _create_settings(self, agent_id: str) -> AgentSettings:
+    def _create_settings(self, agent_id: str, user_id: str | None = None) -> AgentSettings:
         if self._settings_schema and self._settings_broadcaster:
             return AgentSettings(
                 agent_id=agent_id,
                 schema=self._settings_schema,
                 persistence=self._persistence,
                 broadcaster=self._settings_broadcaster,
+                user_id=user_id,
             )
 
         from dooers.agents.server.features.settings.models import SettingsSchema

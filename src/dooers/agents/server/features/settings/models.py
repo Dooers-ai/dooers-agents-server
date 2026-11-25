@@ -67,6 +67,37 @@ class SettingsFieldGroup(BaseModel):
     hint: str | None = None
 
 
+USER_SCOPE_SEPARATOR = "::user::"
+
+
+def user_settings_key(agent_id: str, user_id: str) -> str:
+    """Storage key of one person's values for ``USER`` fields (same table as the agent's)."""
+    return f"{agent_id}{USER_SCOPE_SEPARATOR}{user_id}"
+
+
+def is_personal_user(user_id: str | None) -> bool:
+    """People who get their own ``USER`` values: signed-in users, not guests or the agent."""
+    return bool(user_id) and not str(user_id).startswith("guest:")
+
+
+def user_field_ids(schema: "SettingsSchema | None") -> set[str]:
+    """Ids of the fields each person sets for themselves (``USER`` visibility)."""
+    if schema is None:
+        return set()
+    return {f.id for f in _collect_all_fields(schema.fields) if f.visibility == SettingsFieldVisibility.USER}
+
+
+def merge_user_values(agent_values: dict[str, Any], user_values: dict[str, Any], schema: "SettingsSchema | None") -> dict[str, Any]:
+    """The agent's values with this person's own values on top — only for ``USER`` fields.
+
+    A person who never saved a field keeps the agent's value (what everyone saw before
+    per-user settings existed), then the schema default.
+    """
+    allowed = user_field_ids(schema)
+    personal = {k: v for k, v in (user_values or {}).items() if k in allowed}
+    return {**(agent_values or {}), **personal}
+
+
 def normalize_setting_value(field: SettingsField, value: Any) -> Any:
     """``value`` as stored for ``field``; raises ``ValueError`` when it does not fit.
 

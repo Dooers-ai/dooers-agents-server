@@ -20,6 +20,8 @@ The **schema is not** global to the platform: each worker ships its own schema i
 4. The server validates the field (exists, not `readonly`, `visibility` matches the subscription audience, `INTERNAL` rejected from WS), persists it, and broadcasts **`settings.patch`** to subscribers that should see that field.
 5. In the **handler**, your code uses `await settings.get("field_id")` / `get_all()` / `set()` — same storage as the UI (including `INTERNAL` fields).
 
+**`USER` fields are personal (0.33.0+).** On the chat settings page (`audience=user`) each signed-in person edits their **own** value: it is stored under `<agent_id>::user::<user_id>`, is never broadcast to other people, and needs no configure permission on the agent. In the handler, `settings.get()` / `get_all()` return the values of the person the turn runs for: their own value, else the agent-level value, else the schema default. The agent-level value of a `USER` field is the default for everyone and is set from the Studio (`audience=creator`). Guests never get personal values. `CREATOR` and `INTERNAL` fields stay agent-wide. Anything that must be shared (a knowledge-base upload, an API key for the whole team) belongs in a `CREATOR` field.
+
 **Creator audience:** allowed only if the connected user’s `organization_role` is `owner` or `manager`, or their `user_id` matches `agent_owner_user_id` (trusted from the platform client).
 
 ## Defining a schema in Python
@@ -106,7 +108,7 @@ Defined in `dooers/features/settings/models.py`:
 | `required` | Default `False`. Semantics for validation are enforced by your worker if needed. |
 | `readonly` | If `True`, users cannot patch via WebSocket; `settings.set()` in the handler also rejects updates. |
 | `value` | Default when no value is stored. |
-| `visibility` | `SettingsFieldVisibility`: **`INTERNAL`** (handler-only), **`CREATOR`** (studio snapshot when `audience=creator`), **`USER`** (runtime config when `audience=user`). Default `USER`. |
+| `visibility` | `SettingsFieldVisibility`: **`INTERNAL`** (handler-only), **`CREATOR`** (studio snapshot when `audience=creator`), **`USER`** (personal: each person's own value on the chat settings page; the Studio sets the default). Default `USER`. |
 | `placeholder` | Optional placeholder text inside the input. |
 | `hint` | Optional help text. UIs show an (i) icon next to the label with this text on hover. Also on `SettingsFieldGroup`. |
 | `options` | For `select` and `multiselect`: `SettingsSelectOption` list. |

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] — 2026-11-25
+
+### Changed
+
+- **`USER` settings are personal.** A value saved on the chat settings page (`audience=user`)
+  belongs to that person: stored under `<agent_id>::user::<user_id>` in the same settings
+  table (no migration), never broadcast to others, and editable by any signed-in dashboard
+  user (configure permission no longer required for `audience=user`).
+- `settings.get()` / `get_all()` in the handler return the turn user's values for `USER`
+  fields: own value → agent value → schema default. Guests and service turns get the agent's.
+- The Studio (`audience=creator`) still sets the agent-wide value, which is now the default
+  for people who have not saved their own. `on_settings_updated` receives the scoped key
+  for personal writes.
+
 ## [0.32.0] — 2026-11-25
 
 ### Added
