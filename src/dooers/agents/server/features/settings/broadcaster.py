@@ -65,6 +65,21 @@ class SettingsBroadcaster:
         except Exception:
             logger.warning("[agents] failed to send settings snapshot")
 
+    async def send_patch_to_ws(self, ws: WebSocketProtocol, *, agent_id: str, field_id: str, value: Any) -> None:
+        """A patch only this connection hears: a person's own value for a USER field."""
+        from dooers.agents.server.protocol.frames import S2C_SettingsPatch, SettingsPatchBroadcastPayload
+
+        message = S2C_SettingsPatch(
+            id=str(uuid4()),
+            payload=SettingsPatchBroadcastPayload(
+                agent_id=agent_id, field_id=field_id, value=value, updated_at=datetime.now(UTC)
+            ),
+        )
+        try:
+            await ws.send_text(message.model_dump_json())
+        except Exception:
+            logger.warning("[agents] failed to send personal settings patch")
+
     async def broadcast_patch(
         self,
         agent_id: str,
@@ -109,6 +124,10 @@ class SettingsBroadcaster:
                 if field_vis == SettingsFieldVisibility.CREATOR and aud != "creator":
                     continue
                 if field_vis == SettingsFieldVisibility.USER and aud not in ("user", "creator"):
+                    continue
+                # The agent-level value of a USER field is only the default: people on the chat
+                # settings page may have their own, so they get the new default on next load.
+                if field_vis == SettingsFieldVisibility.USER and aud == "user":
                     continue
             ws = ctx.get("ws")
             if ws is None or ws is exclude_ws:
