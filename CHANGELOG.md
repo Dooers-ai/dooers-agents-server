@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] — 2026-11-25
+
+### Added
+
+- `SettingsFieldType.MULTISELECT`: several `options`, `value` is a list. `settings.patch`
+  validates it (unknown option → `INVALID_VALUE`; duplicates dropped; option order kept).
+- `hint` on `SettingsField` and `SettingsFieldGroup`: help text that UIs show as an (i)
+  icon next to the label. Requires dooers-agents-client 0.25 to render.
+
 ## [0.31.0] — 2026-11-24
 
 Platform support for frontier, multi-user agents. Every new frame is additive; clients must

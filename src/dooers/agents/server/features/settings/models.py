@@ -8,6 +8,8 @@ class SettingsFieldType(StrEnum):
     TEXT = "text"
     NUMBER = "number"
     SELECT = "select"
+    MULTISELECT = "multiselect"
+    """Several ``options``; ``value`` is a list of option values."""
     CHECKBOX = "checkbox"
     TEXTAREA = "textarea"
     PASSWORD = "password"
@@ -43,6 +45,8 @@ class SettingsField(BaseModel):
     user_editable: bool = True
 
     placeholder: str | None = None
+    hint: str | None = None
+    """Help text shown next to the label (an (i) icon with the text on hover)."""
     options: list[SettingsSelectOption] | None = None
     min: int | float | None = None
     max: int | float | None = None
@@ -60,6 +64,28 @@ class SettingsFieldGroup(BaseModel):
     fields: list[SettingsField]
     collapsible: Literal["open", "closed"] | None = None
     visibility: SettingsFieldVisibility = SettingsFieldVisibility.USER
+    hint: str | None = None
+
+
+def normalize_setting_value(field: SettingsField, value: Any) -> Any:
+    """``value`` as stored for ``field``; raises ``ValueError`` when it does not fit.
+
+    Only ``multiselect`` is checked: a list of option values, de-duplicated in option order.
+    """
+    if field.type != SettingsFieldType.MULTISELECT:
+        return value
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("multiselect value must be a list of strings")
+    if field.options is None:
+        return list(dict.fromkeys(value))
+    order = [opt.value for opt in field.options]
+    unknown = sorted(set(value) - set(order))
+    if unknown:
+        raise ValueError(f"unknown option(s): {', '.join(unknown)}")
+    chosen = set(value)
+    return [option for option in order if option in chosen]
 
 
 def _collect_all_fields(items: list["SettingsField | SettingsFieldGroup"]) -> list[SettingsField]:
