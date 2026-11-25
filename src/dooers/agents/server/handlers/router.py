@@ -20,7 +20,7 @@ from dooers.agents.server.broadcast import (
 )
 from dooers.agents.server.config import AgentConfig
 from dooers.agents.server.exceptions import HandlerError, UnsupportedContentTypeError
-from dooers.agents.server.features.settings.models import SettingsFieldVisibility
+from dooers.agents.server.features.settings.models import SettingsFieldVisibility, normalize_setting_value
 from dooers.agents.server.handlers.pipeline import Handler, HandlerContext, HandlerPipeline, UploadReferenceError
 from dooers.agents.server.handlers.thread_artifacts import list_thread_artifacts
 from dooers.agents.server.persistence.base import Persistence
@@ -2012,6 +2012,12 @@ class Router:
                     "message": "This field is fixed at template level; only the agent owner or organization admin can change it",
                 },
             )
+            return
+
+        try:
+            value = normalize_setting_value(field, value)
+        except ValueError as exc:
+            await self._send_ack(ws, frame.id, ok=False, error={"code": "INVALID_VALUE", "message": str(exc)})
             return
 
         await self._persistence.update_setting(self._agent_id, field_id, value)

@@ -86,6 +86,7 @@ Wire / enum values are lowercase strings (e.g. `"text"`, `"email"`).
 | `text` | Single-line string | `placeholder` |
 | `number` | Int or float | `min`, `max` |
 | `select` | Enum-like choice | **`options`**: list of `SettingsSelectOption(value=..., label=...)` |
+| `multiselect` | Several choices; `value` is a list of option values | **`options`** (same as `select`). Patches are validated: unknown options are refused (`INVALID_VALUE`), duplicates dropped, order follows `options`. |
 | `checkbox` | Boolean | — |
 | `textarea` | Long text | `placeholder`, **`rows`** |
 | `password` | Secret string (masked in UIs) | `placeholder` |
@@ -106,8 +107,9 @@ Defined in `dooers/features/settings/models.py`:
 | `readonly` | If `True`, users cannot patch via WebSocket; `settings.set()` in the handler also rejects updates. |
 | `value` | Default when no value is stored. |
 | `visibility` | `SettingsFieldVisibility`: **`INTERNAL`** (handler-only), **`CREATOR`** (studio snapshot when `audience=creator`), **`USER`** (runtime config when `audience=user`). Default `USER`. |
-| `placeholder` | Optional hint text. |
-| `options` | For `select` only: `SettingsSelectOption` list. |
+| `placeholder` | Optional placeholder text inside the input. |
+| `hint` | Optional help text. UIs show an (i) icon next to the label with this text on hover. Also on `SettingsFieldGroup`. |
+| `options` | For `select` and `multiselect`: `SettingsSelectOption` list. |
 | `min` / `max` | For `number` (optional bounds). |
 | `rows` | For `textarea` (optional). |
 | `src` / `width` / `height` | For `image` (display metadata). |
