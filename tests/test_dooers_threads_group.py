@@ -183,6 +183,7 @@ def test_invoked_broadcast_after_other_reply_requires_answer():
 
     class Memory:
         _envelope = {"instance_agent_id": FIN, "recipient_participant_id": PART[FIN]}
+
         async def snapshot(self):
             return context
 
@@ -194,3 +195,27 @@ def test_invoked_broadcast_after_other_reply_requires_answer():
     assert SILENCE not in turn.messages[0]["content"]
     assert "nunca repita" not in turn.messages[0]["content"]
     assert "acionado explicitamente" in turn.messages[0]["content"]
+
+
+def test_decide_group_turn_accepts_the_handler_memory():
+    """O handler recebe o ``AgentMemory`` de produção (``DooersThreadsAgentMemory``), não a memória crua."""
+    from dooers.agents.server.dooers_threads.persistence import DooersThreadsAgentMemory
+
+    class Raw:
+        def __init__(self, snap, instance):
+            self._snap = snap
+            self._envelope = {"instance_agent_id": instance, "recipient_participant_id": PART[instance], "thread_id": "t-1"}
+            self.envelope = self._envelope
+
+        async def snapshot(self):
+            return self._snap
+
+    events = [message("e1", HUMAN, "o que é renda fixa?")]
+
+    async def classify(_messages):
+        return '{"owners": ["Agente Financeiro"]}'
+
+    handler_memory = DooersThreadsAgentMemory(Raw(snapshot(events, members=(FIN,)), FIN))
+    turn = asyncio.run(decide_group_turn(handler_memory, classify=classify, directory=DIRECTORY))
+    assert turn.answer
+    assert turn.messages[-1] == {"role": "user", "content": "Humano disse:\no que é renda fixa?"}

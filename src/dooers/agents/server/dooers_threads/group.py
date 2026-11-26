@@ -259,8 +259,10 @@ async def decide_group_turn(
     Falha da classificação (exceção ou JSON ilegível) não silencia: o agente responde com as regras de
     resposta, que ainda permitem ``[SILENCIO]``.
     """
-    snapshot = await memory.snapshot()
-    envelope = memory._envelope
+    # The handler gets the production ``AgentMemory`` (``DooersThreadsAgentMemory``); it wraps the raw memory.
+    raw = getattr(memory, "_dooers_threads", memory)
+    snapshot = await raw.snapshot()
+    envelope = raw._envelope
     own_instance_id, own_participant_id = envelope["instance_agent_id"], envelope["recipient_participant_id"]
     own = _entry(directory, own_instance_id)
     decision = pre_decision(snapshot, own_instance_id, own_participant_id)
